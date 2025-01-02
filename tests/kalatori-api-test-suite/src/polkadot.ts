@@ -1,19 +1,47 @@
 import { ApiPromise, WsProvider, Keyring } from '@polkadot/api';
 import { cryptoWaitReady, decodeAddress, encodeAddress } from '@polkadot/util-crypto';
-
-export async function updateAccountBalance(api: ApiPromise, accountAddress: string, amount: bigint): Promise<void> {
-  const keyring = new Keyring({ type: 'sr25519' });
-  const alice = keyring.addFromUri('//Alice');
-
-  const transfer = api.tx.balances.transfer(accountAddress, amount);
-  await transfer.signAndSend(alice);
-}
+import { u32 } from '@polkadot/types';
+import type { AccountInfo } from '@polkadot/types/interfaces/system';
+import type { AssetBalance } from '@polkadot/types/interfaces/assets';
+import { BN } from '@polkadot/util';
 
 export async function connectPolkadot(rpcUrl: string): Promise<ApiPromise> {
   const provider = new WsProvider(rpcUrl);
   const api = await ApiPromise.create({ provider });
   await api.isReady;
   return api;
+}
+
+export const reverseDecimals = (amount: number, decimals: number): number => {
+  return amount / Math.pow(10, decimals);
+};
+
+export async function getDotBalance(rpcUrl: string, paymentAccount: string): Promise<number> {
+  const provider = new WsProvider(rpcUrl);
+  const api = await ApiPromise.create({ provider });
+
+  const accountInfo = await api.query.system.account(paymentAccount);
+
+  // @ts-ignore
+  const freeBalance = accountInfo.data.free.toBigInt();
+
+  return Number(freeBalance);
+}
+
+export async function getAssetBalance(rpcUrl: string, paymentAccount: string, assetId: number): Promise<number> {
+  const provider = new WsProvider(rpcUrl);
+  const api = await ApiPromise.create({ provider });
+  const decodedAccount = decodeAddress(paymentAccount);
+
+  // Query the balance for the specified asset and account
+  const assetIdU32 = new u32(api.registry, assetId);
+  const accountInfo = (await api.query.assets.account(assetIdU32, decodedAccount)).toJSON() as { balance: number};
+
+  if (accountInfo) {
+    return accountInfo.balance;
+  } else {
+    return 0;
+  }
 }
 
 export async function transferFunds(rpcUrl: string, paymentAccount: string, amount: number, assetId?: number) {

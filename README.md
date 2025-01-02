@@ -11,7 +11,7 @@ Client facing frontends can communicate with Kalatori leveraging exposed API des
 ---
 ### Download
 
-Download the latest Docker container or x86-64 release from the [GitHub releases page](https://github.com/Alzymologist/Kalatori-backend/releases/latest).
+Download the latest Docker container or x86-64 release from the [GitHub releases page](https://github.com/Kalapaja/Kalatori/releases/latest).
 
 ---
 
@@ -120,11 +120,11 @@ Kalatori is open-source software licensed under the GPLv3 License. See the [LICE
 
 Join the discussion and get support on:
 - [Kalatori Matrix](https://matrix.to/#/#Kalatori-support:matrix.zymologia.fi)
-- [GitHub Discussions](https://github.com/Alzymologist/Kalatori-backend/discussions)
+- [GitHub Discussions](https://github.com/Kalapaja/Kalatori/discussions)
 
 ### Roadmap
 
-Refer to the Kalatori project [board](https://github.com/orgs/Alzymologist/projects/2) and [milestones](https://github.com/Alzymologist/Kalatori-backend/milestones) for the current roadmap and upcoming features.
+Refer to the Kalatori project [board](https://github.com/orgs/Kalapaja/projects/2) and [milestones](https://github.com/Kalapaja/Kalatori/milestones) for the current roadmap and upcoming features.
 
 ### Acknowledgments
 

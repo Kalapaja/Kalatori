@@ -11,6 +11,8 @@ services:
     volumes:
       - ./pd.yml:/app/config.yml
     command: ["chopsticks", "-c", "/app/config.yml", "-p", "8000", "--addr", "0.0.0.0"]
+    networks:
+      - kalatori-network
 
   chopsticks-polkadot-2:
     build:
@@ -22,6 +24,8 @@ services:
     volumes:
       - ./pd-2.yml:/app/config.yml
     command: [ "chopsticks", "-c", "/app/config.yml", "-p", "8500", "--addr", "0.0.0.0" ]
+    networks:
+      - kalatori-network
 
   chopsticks-statemint:
     build:
@@ -33,6 +37,8 @@ services:
     volumes:
       - ./pd-ah.yml:/app/config.yml
     command: ["chopsticks", "-c", "/app/config.yml", "-p", "9000", "--addr", "0.0.0.0"]
+    networks:
+      - kalatori-network
 
   chopsticks-statemint-2:
     build:
@@ -44,3 +50,10 @@ services:
     volumes:
       - ./pd-ah-2.yml:/app/config.yml
     command: [ "chopsticks", "-c", "/app/config.yml", "-p", "9500", "--addr", "0.0.0.0" ]
+    networks:
+      - kalatori-network
+
+
+networks:
+  kalatori-network:
+    external: true

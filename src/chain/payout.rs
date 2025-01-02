@@ -47,7 +47,7 @@ pub async fn payout(
         let block = block_hash(&client, None).await?; // TODO should retry instead
         let block_number = current_block_number(&client, &chain.metadata, &block).await?;
         let balance = order.balance(&client, &chain, &block).await?; // TODO same
-        let loss_tolerance = 10000; // TODO: replace with multiple of existential
+        let loss_tolerance = 20000; // TODO: replace with multiple of existential
                                     // TODO: add upper limit for transactions that would require manual intervention
                                     // just because it was found to be needed with non-crypto trade, who knows why?
         let currency = chain
