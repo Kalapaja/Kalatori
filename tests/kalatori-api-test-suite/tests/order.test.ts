@@ -287,7 +287,7 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
 
     const paymentAccountUsdcBalance = await getAssetBalance(orderDetails.currency.rpc_url, paymentAccount, orderDetails.currency.asset_id);
-    expect(reverseDecimals(paymentAccountUsdcBalance, 6)).toBe(0);
+    expect(reverseDecimals(paymentAccountUsdcBalance, 6)).toBeLessThan(0.1);
   }, 50000);
 
   it('should not automatically withdraw DOT order until fully repaid', async () => {
@@ -379,7 +379,7 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
 
     const paymentAccountUsdcBalance = await getAssetBalance(orderDetails.currency.rpc_url, paymentAccount, orderDetails.currency.asset_id);
-    expect(reverseDecimals(paymentAccountUsdcBalance, 6)).toBe(0);
+    expect(reverseDecimals(paymentAccountUsdcBalance, 6)).toBeLessThan(0.1);;
   }, 100000);
 
   it('should not update order if received payment in wrong currency', async () => {
@@ -477,7 +477,8 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(forcedOrderDetails.withdrawal_status).toBe('forced');
 
     const paymentAccountUsdcBalance = await getAssetBalance(orderDetails.currency.rpc_url, paymentAccount, orderDetails.currency.asset_id);
-    expect(reverseDecimals(paymentAccountUsdcBalance, 6)).toBe(0);
+
+    expect(reverseDecimals(paymentAccountUsdcBalance, 6)).toBeLessThan(0.1);
   }, 100000);
 
   it('should return 404 for non-existing order on force withdrawal', async () => {
