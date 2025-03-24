@@ -86,7 +86,7 @@ KALATORI_CONFIG="configs/polkadot.toml" \
 KALATORI_SEED="bottom drive obey lake curtain smoke basket hold race lonely fit walk" \
 KALATORI_RECIPIENT="5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY" \
 KALATORI_REMARK="test" \
-kalatori
+cargo r
 ````
 
 ### Testing
@@ -124,7 +124,7 @@ Join the discussion and get support on:
 
 ### Roadmap
 
-Refer to the Kalatori project [board](https://github.com/orgs/Kalapaja/projects/2) and [milestones](https://github.com/Kalapaja/Kalatori/milestones) for the current roadmap and upcoming features.
+Refer to the Kalatori [milestones](https://github.com/Kalapaja/Kalatori/milestones) for the current roadmap and upcoming features.
 
 ### Acknowledgments
 
