@@ -6,7 +6,7 @@ Kalatori is an open-source daemon designed to enable secure and scalable blockch
 
 The daemon derives unique accounts for each payment using a provided seed phrase and outputs all payments to a specified recipient wallet. It also offers limited transaction tracking for order management. Kalatori operates in a multithreaded mode and supports multiple currencies configured in a simple TOML-based configuration file.
 
-Client facing frontends can communicate with Kalatori leveraging exposed API described in the [API documentation](https://alzymologist.github.io/kalatori-api).
+Client facing frontends can communicate with Kalatori leveraging exposed API described in the [API documentation](https://kalapaja.github.io/kalatori-api/).
 
 ---
 ### Download
