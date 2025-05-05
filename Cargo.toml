@@ -72,6 +72,7 @@ substrate_parser = "0.7.0"
 substrate-constructor = "0.2.0"
 mnemonic-external = "0.1.0"
 substrate-crypto-light = "0.1.0"
+tower-http = { version = "0.6.2", features = ["cors"] }
 
 [build-dependencies]
 # Don't forget to update me in `[dependencies]`!

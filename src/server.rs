@@ -13,7 +13,7 @@ use axum::{
 };
 use axum_macros::debug_handler;
 use std::{borrow::Cow, collections::HashMap, future::Future, net::SocketAddr};
-
+use tower_http::cors::{CorsLayer};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -26,19 +26,26 @@ pub async fn new(
 ) -> Result<impl Future<Output = Result<Cow<'static, str>, Error>>, ServerError> {
     let v2: Router<State> = Router::new()
         .route("/order/:order_id", routing::post(order))
+        .layer(CorsLayer::permissive())
         .route(
             "/order/:order_id/forceWithdrawal",
             routing::post(force_withdrawal),
         )
+        .layer(CorsLayer::permissive())
         .route("/status", routing::get(status))
+        .layer(CorsLayer::permissive())
         .route("/health", routing::get(health))
+        .layer(CorsLayer::permissive())
         .route("/audit", routing::get(audit))
-        .route("/order/:order_id/investigate", routing::post(investigate));
+        .layer(CorsLayer::permissive())
+        .route("/order/:order_id/investigate", routing::post(investigate))
+        .layer(CorsLayer::permissive());
     let app = Router::new()
         .route(
             "/public/v2/payment/:paymentAccount",
             routing::post(public_payment_account),
         )
+        .layer(CorsLayer::permissive())
         .nest("/v2", v2)
         .with_state(state);
 

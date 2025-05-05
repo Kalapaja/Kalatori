@@ -58,6 +58,7 @@ pub async fn process_order(
             .await
             .map_err(|_| OrderError::InternalError)
     } else {
+        tracing::info!("No payload found");
         return state
             .order_status(&order_id)
             .await

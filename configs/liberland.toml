@@ -1,0 +1,11 @@
+account-lifetime = 604800000 # 1 week.
+debug = true
+depth = 86400000 # 1 day.
+
+[[chain]]
+name = "Liberland_testnet"
+native-token = "LLD"
+decimals = 12
+endpoints = [
+    "wss://testchain.liberland.org",
+]
