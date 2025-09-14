@@ -18,35 +18,25 @@ use crate::{
 use codec::{DecodeAll, Encode};
 use frame_metadata::{
     v15::{
-        ExtrinsicMetadata as ExtrinsicMetadataV15,
-        PalletCallMetadata as PalletCallMetadataV15,
+        ExtrinsicMetadata as ExtrinsicMetadataV15, PalletCallMetadata as PalletCallMetadataV15,
         PalletConstantMetadata as PalletConstantMetadataV15,
         PalletErrorMetadata as PalletErrorMetadataV15,
-        PalletEventMetadata as PalletEventMetadataV15,
-        PalletMetadata as PalletMetadataV15,
+        PalletEventMetadata as PalletEventMetadataV15, PalletMetadata as PalletMetadataV15,
         PalletStorageMetadata as PalletStorageMetadataV15,
-        RuntimeApiMetadata as RuntimeApiMetadataV15,
-        RuntimeMetadataV15,
-        SignedExtensionMetadata as SignedExtensionMetadataV15,
-        StorageEntryMetadata,
-        StorageEntryModifier as StorageEntryModifierV15,
-        StorageEntryType,
-        StorageEntryType as StorageEntryTypeV15,
-        StorageHasher as StorageHasherV15,
+        RuntimeApiMetadata as RuntimeApiMetadataV15, RuntimeMetadataV15,
+        SignedExtensionMetadata as SignedExtensionMetadataV15, StorageEntryMetadata,
+        StorageEntryModifier as StorageEntryModifierV15, StorageEntryType,
+        StorageEntryType as StorageEntryTypeV15, StorageHasher as StorageHasherV15,
     },
     v16::{
-        ExtrinsicMetadata as ExtrinsicMetadataV16,
-        PalletCallMetadata as PalletCallMetadataV16,
+        ExtrinsicMetadata as ExtrinsicMetadataV16, PalletCallMetadata as PalletCallMetadataV16,
         PalletConstantMetadata as PalletConstantMetadataV16,
         PalletErrorMetadata as PalletErrorMetadataV16,
-        PalletEventMetadata as PalletEventMetadataV16,
-        PalletMetadata as PalletMetadataV16,
+        PalletEventMetadata as PalletEventMetadataV16, PalletMetadata as PalletMetadataV16,
         PalletStorageMetadata as PalletStorageMetadataV16,
-        RuntimeApiMetadata as RuntimeApiMetadataV16,
-        RuntimeMetadataV16,
+        RuntimeApiMetadata as RuntimeApiMetadataV16, RuntimeMetadataV16,
         StorageEntryMetadata as StorageEntryMetadataV16,
-        StorageEntryModifier as StorageEntryModifierV16,
-        StorageEntryType as StorageEntryTypeV16,
+        StorageEntryModifier as StorageEntryModifierV16, StorageEntryType as StorageEntryTypeV16,
         StorageHasher as StorageHasherV16,
         TransactionExtensionMetadata as TransactionExtensionMetadataV16,
     },
@@ -245,7 +235,7 @@ pub async fn metadata(
                 }
                 Ok(RuntimeMetadata::V15(runtime_metadata_v15)) => {
                     // Some nodes might respond with older version even when asked for V16.
-                    return Ok(runtime_metadata_v15)
+                    return Ok(runtime_metadata_v15);
                 }
                 Ok(_) => return Err(ChainError::NoMetadataV15),
                 Err(_) => return Err(ChainError::MetadataNotDecodeable),
@@ -276,7 +266,9 @@ pub async fn metadata(
                 }
                 match RuntimeMetadata::decode_all(&mut &bytes[4..]) {
                     Ok(RuntimeMetadata::V15(runtime_metadata_v15)) => Ok(runtime_metadata_v15),
-                    Ok(RuntimeMetadata::V16(runtime_metadata_v16)) => Ok(v16_to_v15(runtime_metadata_v16)),
+                    Ok(RuntimeMetadata::V16(runtime_metadata_v16)) => {
+                        Ok(v16_to_v15(runtime_metadata_v16))
+                    }
                     Ok(_) => Err(ChainError::NoMetadataV15),
                     Err(_) => Err(ChainError::MetadataNotDecodeable),
                 }
@@ -300,10 +292,16 @@ fn map_storage_hasher(h: StorageHasherV16) -> StorageHasherV15 {
     }
 }
 
-fn map_storage_entry_type(ty: StorageEntryTypeV16<PortableForm>) -> StorageEntryTypeV15<PortableForm> {
+fn map_storage_entry_type(
+    ty: StorageEntryTypeV16<PortableForm>,
+) -> StorageEntryTypeV15<PortableForm> {
     match ty {
         StorageEntryTypeV16::Plain(t) => StorageEntryTypeV15::Plain(t),
-        StorageEntryTypeV16::Map { hashers, key, value } => StorageEntryTypeV15::Map {
+        StorageEntryTypeV16::Map {
+            hashers,
+            key,
+            value,
+        } => StorageEntryTypeV15::Map {
             hashers: hashers.into_iter().map(map_storage_hasher).collect(),
             key,
             value,
@@ -317,36 +315,52 @@ fn v16_to_v15(meta: RuntimeMetadataV16) -> RuntimeMetadataV15 {
         .into_iter()
         .map(|p: PalletMetadataV16<PortableForm>| PalletMetadataV15 {
             name: p.name,
-            storage: p.storage.map(|s: PalletStorageMetadataV16<PortableForm>| PalletStorageMetadataV15 {
-                prefix: s.prefix,
-                entries: s
-                    .entries
-                    .into_iter()
-                    .map(|e: StorageEntryMetadataV16<PortableForm>| StorageEntryMetadata {
-                        name: e.name,
-                        modifier: match e.modifier {
-                            StorageEntryModifierV16::Optional => StorageEntryModifierV15::Optional,
-                            StorageEntryModifierV16::Default => StorageEntryModifierV15::Default,
-                        },
-                        ty: map_storage_entry_type(e.ty),
-                        default: e.default,
-                        docs: e.docs,
-                    })
-                    .collect(),
+            storage: p.storage.map(|s: PalletStorageMetadataV16<PortableForm>| {
+                PalletStorageMetadataV15 {
+                    prefix: s.prefix,
+                    entries: s
+                        .entries
+                        .into_iter()
+                        .map(
+                            |e: StorageEntryMetadataV16<PortableForm>| StorageEntryMetadata {
+                                name: e.name,
+                                modifier: match e.modifier {
+                                    StorageEntryModifierV16::Optional => {
+                                        StorageEntryModifierV15::Optional
+                                    }
+                                    StorageEntryModifierV16::Default => {
+                                        StorageEntryModifierV15::Default
+                                    }
+                                },
+                                ty: map_storage_entry_type(e.ty),
+                                default: e.default,
+                                docs: e.docs,
+                            },
+                        )
+                        .collect(),
+                }
             }),
-            calls: p.calls.map(|c: PalletCallMetadataV16<PortableForm>| PalletCallMetadataV15 { ty: c.ty }),
-            event: p.event.map(|e: PalletEventMetadataV16<PortableForm>| PalletEventMetadataV15 { ty: e.ty }),
+            calls: p
+                .calls
+                .map(|c: PalletCallMetadataV16<PortableForm>| PalletCallMetadataV15 { ty: c.ty }),
+            event: p
+                .event
+                .map(|e: PalletEventMetadataV16<PortableForm>| PalletEventMetadataV15 { ty: e.ty }),
             constants: p
                 .constants
                 .into_iter()
-                .map(|c: PalletConstantMetadataV16<PortableForm>| PalletConstantMetadataV15 {
-                    name: c.name,
-                    ty: c.ty,
-                    value: c.value,
-                    docs: c.docs,
-                })
+                .map(
+                    |c: PalletConstantMetadataV16<PortableForm>| PalletConstantMetadataV15 {
+                        name: c.name,
+                        ty: c.ty,
+                        value: c.value,
+                        docs: c.docs,
+                    },
+                )
                 .collect(),
-            error: p.error.map(|e: PalletErrorMetadataV16<PortableForm>| PalletErrorMetadataV15 { ty: e.ty }),
+            error: p
+                .error
+                .map(|e: PalletErrorMetadataV16<PortableForm>| PalletErrorMetadataV15 { ty: e.ty }),
             index: p.index,
             docs: p.docs,
         })
@@ -371,21 +385,25 @@ fn v16_to_v15(meta: RuntimeMetadataV16) -> RuntimeMetadataV15 {
         indexes
             .iter()
             .filter_map(|idx| ext_v16.transaction_extensions.get((*idx).0 as usize))
-            .map(|e: &TransactionExtensionMetadataV16<PortableForm>| SignedExtensionMetadataV15 {
-                identifier: e.identifier.clone(),
-                ty: e.ty,
-                additional_signed: e.implicit,
-            })
+            .map(
+                |e: &TransactionExtensionMetadataV16<PortableForm>| SignedExtensionMetadataV15 {
+                    identifier: e.identifier.clone(),
+                    ty: e.ty,
+                    additional_signed: e.implicit,
+                },
+            )
             .collect()
     } else {
         ext_v16
             .transaction_extensions
             .iter()
-            .map(|e: &TransactionExtensionMetadataV16<PortableForm>| SignedExtensionMetadataV15 {
-                identifier: e.identifier.clone(),
-                ty: e.ty,
-                additional_signed: e.implicit,
-            })
+            .map(
+                |e: &TransactionExtensionMetadataV16<PortableForm>| SignedExtensionMetadataV15 {
+                    identifier: e.identifier.clone(),
+                    ty: e.ty,
+                    additional_signed: e.implicit,
+                },
+            )
             .collect()
     };
 
@@ -405,7 +423,10 @@ fn v16_to_v15(meta: RuntimeMetadataV16) -> RuntimeMetadataV15 {
         .map(|(key, val)| {
             (
                 key,
-                frame_metadata::v15::CustomValueMetadata { ty: val.ty, value: val.value },
+                frame_metadata::v15::CustomValueMetadata {
+                    ty: val.ty,
+                    value: val.value,
+                },
             )
         })
         .collect();
@@ -426,27 +447,29 @@ fn v16_to_v15(meta: RuntimeMetadataV16) -> RuntimeMetadataV15 {
         apis: meta
             .apis
             .into_iter()
-            .map(|api: RuntimeApiMetadataV16<PortableForm>| RuntimeApiMetadataV15 {
-                name: api.name,
-                methods: api
-                    .methods
-                    .into_iter()
-                    .map(|m| frame_metadata::v15::RuntimeApiMethodMetadata {
-                        name: m.name,
-                        inputs: m
-                            .inputs
-                            .into_iter()
-                            .map(|p| frame_metadata::v15::RuntimeApiMethodParamMetadata {
-                                name: p.name,
-                                ty: p.ty,
-                            })
-                            .collect(),
-                        output: m.output,
-                        docs: m.docs,
-                    })
-                    .collect(),
-                docs: api.docs,
-            })
+            .map(
+                |api: RuntimeApiMetadataV16<PortableForm>| RuntimeApiMetadataV15 {
+                    name: api.name,
+                    methods: api
+                        .methods
+                        .into_iter()
+                        .map(|m| frame_metadata::v15::RuntimeApiMethodMetadata {
+                            name: m.name,
+                            inputs: m
+                                .inputs
+                                .into_iter()
+                                .map(|p| frame_metadata::v15::RuntimeApiMethodParamMetadata {
+                                    name: p.name,
+                                    ty: p.ty,
+                                })
+                                .collect(),
+                            output: m.output,
+                            docs: m.docs,
+                        })
+                        .collect(),
+                    docs: api.docs,
+                },
+            )
             .collect(),
         outer_enums,
         custom,
@@ -973,11 +996,7 @@ async fn match_extrinsics_with_events_at_block(
         .find_map(|encoded| {
             // Try decoding using provided metadata first.
             let mut try_decode = |meta: &RuntimeMetadataV15| {
-                substrate_parser::decode_as_unchecked_extrinsic(
-                    &encoded.as_ref(),
-                    &mut (),
-                    meta,
-                )
+                substrate_parser::decode_as_unchecked_extrinsic(&encoded.as_ref(), &mut (), meta)
             };
 
             let decoded = match try_decode(metadata_v15) {
