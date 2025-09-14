@@ -3,17 +3,17 @@ depth = 3600000 # 1 hour.
 debug = true
 
 [[chain]]
-name = "rococo"
+name = "polkadot"
 native-token = "DOT"
 decimals = 10
 endpoints = [
-    "wss://node-polkadot.zymologia.fi",
+    "wss://chopsticks.dot.kampe.la",
 ]
 
 [[chain]]
 name = "statemint"
 endpoints = [
-    "wss://node-polkadot-ah.zymologia.fi",
+    "wss://chopsticks.ah.kampe.la",
 ]
 
 [[chain.asset]]

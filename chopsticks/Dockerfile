@@ -1,11 +1,10 @@
 # Dockerfile
-FROM node:16-alpine
+FROM node:20-alpine
 
 # Set the working directory
 WORKDIR /app
 
-# Install Chopsticks
-RUN npm install -g @acala-network/chopsticks
+RUN npm install -g @acala-network/chopsticks@latest
 
 # Expose ports for both instances
 EXPOSE 8000 8500 9000 9500

@@ -225,17 +225,6 @@ pub enum ChainError {
     #[error("unexpected storage value format for the key \"{0:?}\"")]
     StorageValueFormat(Value),
 
-    //#[error("Chain returned zero for block time")]
-    //ZeroBlockTime,
-
-    //#[error("Runtime api call response should be String, but received {0:?}")]
-    //StateCallResponse(Value),
-
-    //#[error("Could not fetch BABE expected block time")]
-    //BabeExpectedBlockTime,
-
-    //#[error("Aura slot duration could not be parsed as u64")]
-    //AuraSlotDurationFormat,
     #[error("internal error is occurred")] // TODO this should be replaced by specific errors
     Util(#[from] UtilError),
 
@@ -254,7 +243,7 @@ pub enum ChainError {
     #[error("block subscription is terminated")]
     BlockSubscriptionTerminated,
 
-    #[error("metadata error is occurred")]
+    #[error("metadata error is occurred: {0}")]
     MetaVersionErrorPallets(#[from] MetaVersionErrorPallets),
 
     #[error("storage registry error is occurred")]

@@ -5,7 +5,7 @@ authors = [
     	"Vova Lando <vova.lando@gmail.com>",
      	"Artyom Sheviakov <fluidcells@pm.me>",
 ]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 description = "A gateway daemon for Kalatori."
 license = "GPL-3.0-or-later"
@@ -37,7 +37,7 @@ axum-macros = "0.4"
 primitive-types = { version = "0.13", features = ["codec", "serde"] }
 jsonrpsee = { version = "0.24", features = ["ws-client"] }
 thiserror = "2"
-frame-metadata = "18"
+frame-metadata = { version = "22", features = ["current", "decode", "unstable"] }
 const-hex = "1"
 codec = { package = "parity-scale-codec", version = "3", features = [
     "chain-error",
@@ -68,14 +68,18 @@ async-lock = "3"
 time = "0.3"
 reqwest = "0.12"
 
-substrate_parser = "0.7.0"
+substrate_parser = { git = "https://github.com/Vovke/substrate-parser" }
 substrate-constructor = "0.2.0"
 mnemonic-external = "0.1.0"
-substrate-crypto-light = "0.1.0"
+substrate-crypto-light = "0.2.0"
 
 [build-dependencies]
 # Don't forget to update me in `[dependencies]`!
 shadow-rs = { version = "0.36", default-features = false }
+
+[patch.crates-io]
+substrate_parser = { git = "https://github.com/Vovke/substrate-parser" } # TODO: switch to Kalapaja
+substrate-constructor = { git = "https://github.com/Kalapaja/substrate-constructor.git" }
 
 [profile.release]
 strip = true

@@ -8,3 +8,7 @@ kalatori.toml
 
 .vscode
 .idea
+
+# dev
+substrate-parser
+substrate-constructor

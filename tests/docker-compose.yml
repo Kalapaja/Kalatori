@@ -10,7 +10,7 @@ services:
       - "8000:8000"
     volumes:
       - ../chopsticks/pd.yml:/app/config.yml
-    command: ["chopsticks", "-c", "/app/config.yml", "-p", "8000", "--addr", "0.0.0.0"]
+    command: ["chopsticks", "-c", "/app/config.yml", "-p", "8000", "--host", "0.0.0.0"]
     networks:
       - kalatori-network
 
@@ -23,7 +23,7 @@ services:
       - "9000:9000"
     volumes:
       - ../chopsticks/pd-ah.yml:/app/config.yml
-    command: ["chopsticks", "-c", "/app/config.yml", "-p", "9000", "--addr", "0.0.0.0"]
+    command: ["chopsticks", "-c", "/app/config.yml", "-p", "9000", "--host", "0.0.0.0"]
     networks:
       - kalatori-network
 

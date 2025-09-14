@@ -913,9 +913,9 @@ dependencies = [
 
 [[package]]
 name = "frame-metadata"
-version = "18.0.0"
+version = "22.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daaf440c68eb2c3d88e5760fe8c7af3f9fee9181fab6c2f2c4e7cc48dcc40bb8"
+checksum = "2753bc34b8cf637f58a4f7c3fcd54e8e588503bc9bba449bd8f5a1ab202b0172"
 dependencies = [
  "cfg-if",
  "parity-scale-codec",
@@ -1622,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "kalatori"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "ahash",
  "async-lock",
@@ -2879,9 +2879,8 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "substrate-constructor"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "269619703d949df9b9a1772ed2cdc6b2ff805dd9ff7e0f5c19241bc53cff6d93"
+version = "0.2.1"
+source = "git+https://github.com/Kalapaja/substrate-constructor.git#49aff01c1c65adaa2249b9273cd64285c28c3fb9"
 dependencies = [
  "bitvec",
  "external-memory-tools",
@@ -2899,9 +2898,9 @@ dependencies = [
 
 [[package]]
 name = "substrate-crypto-light"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86eaa081c10ed391947506525a50da570841ccf93f83a642ff91f36732e91b51"
+checksum = "07f2440dc08d9aa7c56d7faca325a0d023f78d076cb058d102bc3480f7e6c831"
 dependencies = [
  "base58",
  "blake2b_simd",
@@ -2920,9 +2919,8 @@ dependencies = [
 
 [[package]]
 name = "substrate_parser"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7608864a21e2c356727f7ac0206252fb2c1cc4cee7c8539216528c6b54efca5"
+version = "0.7.1"
+source = "git+https://github.com/Vovke/substrate-parser#5222ec8986a4b0e50fe0fc99a9e7cb7d9d24f9f4"
 dependencies = [
  "bitvec",
  "external-memory-tools",
