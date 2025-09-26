@@ -61,7 +61,7 @@ clap = { version = "4", features = [
     "deprecated",
 ] }
 # Don't forget to update me in `[build-dependencies]`!
-shadow-rs = { version = "0.36", default-features = false }
+shadow-rs = { version = "1.3", default-features = false }
 ahash = "0.8"
 indoc = "2"
 async-lock = "3"
@@ -77,7 +77,7 @@ substrate-crypto-light = "0.2.0"
 
 [build-dependencies]
 # Don't forget to update me in `[dependencies]`!
-shadow-rs = { version = "0.36", default-features = false }
+shadow-rs = { version = "1.3", default-features = false }
 
 [patch.crates-io]
 substrate_parser = { git = "https://github.com/Vovke/substrate-parser" } # TODO: switch to Kalapaja
