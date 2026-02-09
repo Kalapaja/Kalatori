@@ -57,12 +57,12 @@ build-release: # Build the daemon with --release flag
 	cargo build --release
 
 start-chopsticks: # Start chopsticks for Asset Hub in docker compose with port-forwarding
-	cd chopsticks; \
-	docker compose up -d
+	cd dev; \
+	docker compose up -d chopsticks-asset-hub chopsticks-asset-hub-2
 
 stop-chopsticks: # Stop chopsticks for Asset Hub in docker compose
-	cd chopsticks; \
-	docker compose down
+	cd dev; \
+	docker compose down chopsticks-asset-hub chopsticks-asset-hub-2
 
 # TODO: add some health check for chopsticks to avoid errors on connection while it's not initialized
 run: start-chopsticks # Ensure that chopsticks is started and run kalatori daemon locally

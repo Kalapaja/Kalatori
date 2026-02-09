@@ -3,22 +3,22 @@ version: '3.8'
 services:
   chopsticks-asset-hub:
     build:
-      context: .
+      context: ./chopsticks
       dockerfile: Dockerfile
     container_name: chopsticks-asset-hub
     ports:
       - "9000:9000"
     volumes:
-      - ./pd-ah.yml:/app/config.yml
+      - ./chopsticks/pd-ah.yml:/app/config.yml
     command: ["chopsticks", "-c", "/app/config.yml", "--port", "9000", "--host", "0.0.0.0"]
 
   chopsticks-asset-hub-2:
     build:
-      context: .
+      context: ./chopsticks
       dockerfile: Dockerfile
     container_name: chopsticks-asset-hub-2
     ports:
       - "9500:9500"
     volumes:
-      - ./pd-ah-2.yml:/app/config.yml
+      - ./chopsticks/pd-ah-2.yml:/app/config.yml
     command: [ "chopsticks", "-c", "/app/config.yml", "--port", "9500", "--host", "0.0.0.0" ]
