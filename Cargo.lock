@@ -3607,6 +3607,7 @@ dependencies = [
  "tracing-test",
  "trait-variant",
  "uuid",
+ "url",
  "zeroize",
 ]
 

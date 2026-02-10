@@ -379,6 +379,9 @@ pub enum OrderError {
     #[error("order parameter invalid: {0:?}")]
     InvalidParameter(String),
 
+    #[error("invalid callback URL")]
+    InvalidCallback(#[from] UrlValidationError),
+
     #[error("internal error is occurred")]
     InternalError,
 }
