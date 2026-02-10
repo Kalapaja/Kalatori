@@ -52,33 +52,33 @@ const MAX_URL_LENGTH: usize = 2048;
 ///
 /// Returns the resolved IP address if valid.
 pub async fn validate_and_resolve(url: &str) -> Result<IpAddr, UrlValidationError> {
-    // 1. Length check
+    // Length check
     if url.len() > MAX_URL_LENGTH {
         return Err(UrlValidationError::TooLong);
     }
 
-    // 2. Parse URL - WHATWG standard automatically:
+    // Parse URL - WHATWG standard automatically:
     let parsed = Url::parse(url)?;
 
-    // 3. HTTPS only - blocks http://, file://, ftp://, data://, javascript:, etc.
+    // HTTPS only - blocks http://, file://, ftp://, data://, javascript:, etc.
     if parsed.scheme() != "https" {
         return Err(UrlValidationError::InvalidScheme(
             parsed.scheme().to_string(),
         ));
     }
 
-    // 4. Port must be 443 (HTTPS default)
+    // Port must be 443 (HTTPS default)
     let port = match parsed.port() {
         None | Some(443) => 443, // Default or explicit port 443 - OK
         Some(port) => return Err(UrlValidationError::InvalidPort(port)),
     };
 
-    // 5. No credentials in URL
+    // No credentials in URL
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(UrlValidationError::HasCredentials);
     }
 
-    // 6. DNS resolution + IP validation for SSRF prevention
+    // DNS resolution + IP validation for SSRF prevention
     // First resolve hostname to addresses
     let host = parsed.host_str().expect("https URLs always have a host");
     let resolved_addrs = tokio_net::lookup_host((host, port)).await.map_err(|e| {
@@ -113,7 +113,7 @@ pub async fn validate_and_resolve(url: &str) -> Result<IpAddr, UrlValidationErro
 /// Checks whether an IPv4 address is globally routable.
 ///
 /// Returns `Ok(())` if the IP is globally routable, or `Err(&'static str)` with
-/// the reason if it's not (private, loopback, link-local, CGNAT, etc.).
+/// the reason if it's not.
 fn check_ipv4_is_global(ip: Ipv4Addr) -> Result<(), &'static str> {
     // Use standard library methods where stable
     if ip.is_private() {
