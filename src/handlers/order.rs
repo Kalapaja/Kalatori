@@ -53,11 +53,11 @@ pub async fn process_order(
         // CALLBACK validation
         let mut callback = payload.callback.unwrap_or_default();
         if !callback.is_empty() {
-            let ip = url_validation::validate_and_resolve(&callback)
+            let url = url_validation::validate(&callback)
                 .await
                 .map_err(OrderError::InvalidCallback)?;
 
-            callback = ip.to_string();
+            callback = url.to_string();
         }
 
         state

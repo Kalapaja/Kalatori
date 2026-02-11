@@ -49,16 +49,17 @@ const MAX_URL_LENGTH: usize = 2048;
 ///
 /// Performs DNS resolution to verify that the URL endpoint does not target
 /// internal/private infrastructure.
+/// Host name in the returned `Url` is replaced with the resolved IP address to prevent DNS rebinding attacks.
 ///
-/// Returns the resolved IP address if valid.
-pub async fn validate_and_resolve(url: &str) -> Result<IpAddr, UrlValidationError> {
+/// Returns the [`Url`] struct for the provided URL.
+pub async fn validate(url: &str) -> Result<Url, UrlValidationError> {
     // Length check
     if url.len() > MAX_URL_LENGTH {
         return Err(UrlValidationError::TooLong);
     }
 
-    // Parse URL - WHATWG standard automatically:
-    let parsed = Url::parse(url)?;
+    // Parse URL (using WHATWG standard parser)
+    let mut parsed = Url::parse(url)?;
 
     // HTTPS only - blocks http://, file://, ftp://, data://, javascript:, etc.
     if parsed.scheme() != "https" {
@@ -89,25 +90,30 @@ pub async fn validate_and_resolve(url: &str) -> Result<IpAddr, UrlValidationErro
     })?;
 
     // Then validate each resolved IP address
-    let mut ret_ip = None;
+    let mut maybe_ip = None;
     for ip in resolved_addrs.map(|socket_addr| socket_addr.ip()) {
-        match ip {
-            IpAddr::V4(ipv4) => {
-                if let Err(reason) = check_ipv4_is_global(ipv4) {
-                    return Err(UrlValidationError::NonGlobalIp {
-                        hostname: host.to_string(),
-                        ip: ip.to_string(),
-                        reason,
-                    });
-                }
-            }
-            IpAddr::V6(_) => return Err(UrlValidationError::IpV6Detected),
+        let IpAddr::V4(ipv4) = ip else {
+            continue;
+        };
+
+        if let Err(reason) = check_ipv4_is_global(ipv4) {
+            return Err(UrlValidationError::NonGlobalIp {
+                hostname: host.to_string(),
+                ip: ip.to_string(),
+                reason,
+            });
         }
 
-        ret_ip.get_or_insert(ip);
+        maybe_ip.get_or_insert(ip);
     }
 
-    ret_ip.ok_or(UrlValidationError::NoIpAddresses(host.to_string()))
+    // Update the URL host to the resolved IP address to prevent DNS rebinding attacks.
+    let ip = maybe_ip.ok_or(UrlValidationError::NoIpAddresses(host.to_string()))?;
+    parsed
+        .set_ip_host(ip)
+        .unwrap_or_else(|()| unreachable!("HTTPS URLs always support IP hosts"));
+
+    Ok(parsed)
 }
 
 /// Checks whether an IPv4 address is globally routable.
@@ -192,11 +198,8 @@ pub enum UrlValidationError {
     #[error("DNS lookup failed for {hostname:?}: {error}")]
     DnsLookupFailed { hostname: String, error: String },
 
-    #[error("DNS lookup for {0:?} returned no IP addresses")]
+    #[error("DNS lookup for {0:?} returned no IPv4 addresses")]
     NoIpAddresses(String),
-
-    #[error("IPv6 addresses are not supported")]
-    IpV6Detected,
 
     #[error("URL hostname {hostname:?} resolves to non-global IP address {ip}: {reason}")]
     NonGlobalIp {
@@ -211,6 +214,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ntest::timeout(5_000)]
     async fn valid_https_urls() {
         let urls = [
             "https://example.com/webhook",
@@ -221,7 +225,7 @@ mod tests {
             "https://93.184.216.34/webhook",
         ];
         for url in urls {
-            assert!(validate_and_resolve(url).await.is_ok());
+            assert!(validate(url).await.is_ok());
         }
     }
 
@@ -236,7 +240,7 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::InvalidScheme(_)));
         }
     }
@@ -249,12 +253,12 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::HasCredentials));
         }
 
         // %40 = @, which may be used to obscure credentials
-        let err = validate_and_resolve("https://user%40example.com/webhook")
+        let err = validate("https://user%40example.com/webhook")
             .await
             .unwrap_err();
         assert!(matches!(err, UrlValidationError::ParseError(_)));
@@ -265,7 +269,7 @@ mod tests {
         let urls = ["https://localhost/webhook", "https://0.0.0.0/webhook"];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
         }
     }
@@ -281,19 +285,15 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
         }
     }
 
     #[tokio::test]
     async fn reject_loopback() {
-        assert!(validate_and_resolve("https://127.0.0.1/webhook")
-            .await
-            .is_err());
-        assert!(validate_and_resolve("https://127.255.255.255/webhook")
-            .await
-            .is_err());
+        assert!(validate("https://127.0.0.1/webhook").await.is_err());
+        assert!(validate("https://127.255.255.255/webhook").await.is_err());
     }
 
     #[tokio::test]
@@ -310,7 +310,7 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
         }
     }
@@ -325,7 +325,7 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
         }
     }
@@ -339,7 +339,7 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
         }
     }
@@ -356,7 +356,7 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
         }
     }
@@ -370,7 +370,7 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
         }
     }
@@ -380,7 +380,7 @@ mod tests {
         let urls = ["https://192.0.0.1/webhook", "https://192.88.99.1/webhook"];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
         }
     }
@@ -395,7 +395,7 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
         }
     }
@@ -421,7 +421,7 @@ mod tests {
         ];
 
         for url in urls {
-            let err = validate_and_resolve(url).await.unwrap_err();
+            let err = validate(url).await.unwrap_err();
             assert!(matches!(err, UrlValidationError::InvalidPort(_)));
         }
     }
@@ -429,7 +429,7 @@ mod tests {
     #[tokio::test]
     async fn reject_too_long() {
         let long_url = format!("https://example.com/{}", "a".repeat(2050));
-        let err = validate_and_resolve(&long_url).await.unwrap_err();
+        let err = validate(&long_url).await.unwrap_err();
         assert!(matches!(err, UrlValidationError::TooLong));
     }
 
@@ -437,14 +437,8 @@ mod tests {
     async fn reject_obfuscated_ips() {
         // These are all 127.0.0.1 in different representations.
         // The `url` crate normalizes them before we see host_str().
-        assert!(validate_and_resolve("https://0x7f000001/webhook")
-            .await
-            .is_err());
-        assert!(validate_and_resolve("https://2130706433/webhook")
-            .await
-            .is_err());
-        assert!(validate_and_resolve("https://0177.0.0.1/webhook")
-            .await
-            .is_err());
+        assert!(validate("https://0x7f000001/webhook").await.is_err());
+        assert!(validate("https://2130706433/webhook").await.is_err());
+        assert!(validate("https://0177.0.0.1/webhook").await.is_err());
     }
 }

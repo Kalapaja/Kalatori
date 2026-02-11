@@ -146,7 +146,7 @@ impl State {
                                                 tracing::info!("Sending callback to: {}", callback);
 
                                                 let client_res = Client::builder()
-                                                    // No redirects here to prevent different attach vectors.
+                                                    // No redirects here to prevent different attack vectors.
                                                     // Every redirect must be validated separately.
                                                     .redirect(Policy::none())
                                                     .timeout(Duration::from_secs(10))
