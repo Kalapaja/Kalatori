@@ -29,7 +29,7 @@ services:
       - ANVIL_IP_ADDR=0.0.0.0
     ports:
       - "8545:8545"
-    command: -c "anvil --fork-url https://polygon.drpc.org"
+    command: -c "anvil --fork-url https://polygon.drpc.org --hardfork prague"
 
   alto:
     image: ghcr.io/pimlicolabs/alto:latest
