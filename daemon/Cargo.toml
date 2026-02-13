@@ -108,6 +108,7 @@ mockall = "0.14"
 mockall_double = "0.3"
 indoc = "2"
 serial_test = "3.2"
+alloy = { version = "1.5", features = ["node-bindings"] }
 
 [build-dependencies]
 # Don't forget to update me in `[dependencies]`!

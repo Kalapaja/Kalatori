@@ -248,6 +248,12 @@ impl PimlicoClient {
         method: &'static str,
         params: T,
     ) -> PimlicoResult<R> {
+        // TODO: remove after local tests start working
+        // let rpc_base_url = if method == "pimlico_getTokenQuotes" {
+        //     "https://public.pimlico.io/v2/137/rpc"
+        // } else {
+        //     "http://localhost:4337"
+        // };
         let params = JsonRpcRequest::new(method, params);
 
         let response = self
