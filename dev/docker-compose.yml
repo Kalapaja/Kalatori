@@ -29,8 +29,12 @@ services:
       - ANVIL_IP_ADDR=0.0.0.0
     ports:
       - "8545:8545"
-    command: -c "anvil --fork-url https://polygon.drpc.org --hardfork prague"
+    command: -c "anvil --fork-url https://polygon.drpc.org"
 
+  # It seems alto doesn't fully support Entrypoint v0.8 ABI,
+  # so transaction result cannot be properly decoded and the
+  # simulation fails. To avoid that bug we use flags `--safe-mode false`
+  # and `--dangerous-skip-user-operation-validation` only for tests.
   alto:
     image: ghcr.io/pimlicolabs/alto:latest
     depends_on:
@@ -42,6 +46,8 @@ services:
         "--utility-private-key", "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6",
         "--rpc-url", "http://anvil:8545",
         "--port", "4337",
+        "--safe-mode", "false",
+        "--dangerous-skip-user-operation-validation",
       ]
     ports:
       - "4337:4337"
