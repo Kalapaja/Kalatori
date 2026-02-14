@@ -81,7 +81,7 @@ stop-local-bundler: # Stops local bundler
 	docker compose stop alto
 
 # TODO: add some health check for chopsticks to avoid errors on connection while it's not initialized
-run: start-chopsticks # Ensure that chopsticks is started and run kalatori daemon locally
+run: start-chopsticks start-local-polygon-node start-local-bundler # Ensure that chopsticks and polygon infra is started and run kalatori daemon locally
 	cargo run
 
 run-release: # Run kalatori daemon with --release flag without starting chopsticks
