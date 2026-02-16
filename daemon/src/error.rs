@@ -9,6 +9,7 @@ use tokio::task::JoinError;
 use tracing_subscriber::filter::ParseError;
 
 use crate::utils::task_tracker::TaskName;
+use crate::utils::url_validation::UrlValidationError;
 
 pub use pretty_cause::PrettyCause;
 

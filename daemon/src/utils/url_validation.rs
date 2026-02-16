@@ -2,8 +2,8 @@
 //!
 //! # Security Model
 //!
-//! This module validates callback URLs before the server makes outbound HTTP requests
-//! to prevent Server-Side Request Forgery (SSRF) and related attacks.
+//! This module validates callback URLs before the server makes outbound HTTP
+//! requests to prevent Server-Side Request Forgery (SSRF) and related attacks.
 //!
 //! ## Validation Checks Performed
 //!
@@ -12,8 +12,8 @@
 //! 3. **HTTPS-only** - Rejects `http://`, `file://`, `ftp://`, etc.
 //! 4. **Port restriction** - Only allows port 443 (HTTPS default)
 //! 5. **No credentials** - Rejects `user:password@host` in URL
-//! 6. **DNS resolution + IP validation** - Performs real-time DNS lookup and validates
-//!    that resolved IP addresses are:
+//! 6. **DNS resolution + IP validation** - Performs real-time DNS lookup and
+//!    validates that resolved IP addresses are:
 //!    - Not loopback (`127.0.0.0/8`, `::1`)
 //!    - Not private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
 //!    - Not link-local (`169.254.0.0/16`) - blocks cloud metadata endpoints
@@ -23,21 +23,33 @@
 //!
 //! ## DNS rebinding
 //! The attack is mitigated by the following techniques:
-//! - HTTPS requirement (certificate validation fails if DNS rebinds to localhost);
-//! - Usage of the resolved IP address for the actual HTTP request (not just hostname validation).
+//! - HTTPS requirement (certificate validation fails if DNS rebinds to
+//!   localhost);
+//! - Usage of the resolved IP address for the actual HTTP request (not just
+//!   hostname validation).
 //!
 //! ## Unpleasant characters
-//! The `url` crate rejects URLs containing CRLF characters (`\r`, `\n`), preventing HTTP header injection attacks.
-//! Additionally, the `url` crate normalizes IP addresses in various formats (hex, octal, decimal) to standard dotted-decimal notation
-//! before validation, preventing IP obfuscation techniques and double URL encoding attacks.
+//! The `url` crate rejects URLs containing CRLF characters (`\r`, `\n`),
+//! preventing HTTP header injection attacks. Additionally, the `url` crate
+//! normalizes IP addresses in various formats (hex, octal, decimal) to standard
+//! dotted-decimal notation before validation, preventing IP obfuscation
+//! techniques and double URL encoding attacks.
 //!
 //! ## Known Limitations
-//! Currently it's expected that the callback URL is a fire and forget endpoint, that doesn't return anything meaningful to the server.
-//! Also it's expected that no redirects actually happen. If these assumptions were to change, additional checks must be implemented:
-//! - In case of redirect expected, **every redirect target must be re-validated** through the validation function in the module;
-//! - In case of response body processing expected, **a maximum response size limit** must be implemented to prevent memory exhaustion `DoS` attacks via huge payloads.
+//! Currently it's expected that the callback URL is a fire and forget endpoint,
+//! that doesn't return anything meaningful to the server. Also it's expected
+//! that no redirects actually happen. If these assumptions were to change,
+//! additional checks must be implemented:
+//! - In case of redirect expected, **every redirect target must be
+//!   re-validated** through the validation function in the module;
+//! - In case of response body processing expected, **a maximum response size
+//!   limit** must be implemented to prevent memory exhaustion `DoS` attacks via
+//!   huge payloads.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{
+    IpAddr,
+    Ipv4Addr,
+};
 use thiserror::Error;
 use tokio::net as tokio_net;
 use url::Url;
@@ -45,11 +57,13 @@ use url::Url;
 /// Maximum allowed URL length.
 const MAX_URL_LENGTH: usize = 2048;
 
-/// Validates a URL for security concerns described in the [module](crate::utils::url_validation).
+/// Validates a URL for security concerns described in the
+/// [module](crate::utils::url_validation).
 ///
 /// Performs DNS resolution to verify that the URL endpoint does not target
 /// internal/private infrastructure.
-/// Host name in the returned `Url` is replaced with the resolved IP address to prevent DNS rebinding attacks.
+/// Host name in the returned `Url` is replaced with the resolved IP address to
+/// prevent DNS rebinding attacks.
 ///
 /// Returns the [`Url`] struct for the provided URL.
 pub async fn validate(url: &str) -> Result<Url, UrlValidationError> {
@@ -81,13 +95,17 @@ pub async fn validate(url: &str) -> Result<Url, UrlValidationError> {
 
     // DNS resolution + IP validation for SSRF prevention
     // First resolve hostname to addresses
-    let host = parsed.host_str().expect("https URLs always have a host");
-    let resolved_addrs = tokio_net::lookup_host((host, port)).await.map_err(|e| {
-        UrlValidationError::DnsLookupFailed {
-            hostname: host.to_string(),
-            error: e.to_string(),
-        }
-    })?;
+    let host = parsed
+        .host_str()
+        .expect("https URLs always have a host");
+    let resolved_addrs = tokio_net::lookup_host((host, port))
+        .await
+        .map_err(
+            |e| UrlValidationError::DnsLookupFailed {
+                hostname: host.to_string(),
+                error: e.to_string(),
+            },
+        )?;
 
     // Then validate each resolved IP address
     let mut maybe_ip = None;
@@ -107,8 +125,11 @@ pub async fn validate(url: &str) -> Result<Url, UrlValidationError> {
         maybe_ip.get_or_insert(ip);
     }
 
-    // Update the URL host to the resolved IP address to prevent DNS rebinding attacks.
-    let ip = maybe_ip.ok_or(UrlValidationError::NoIpAddresses(host.to_string()))?;
+    // Update the URL host to the resolved IP address to prevent DNS rebinding
+    // attacks.
+    let ip = maybe_ip.ok_or(UrlValidationError::NoIpAddresses(
+        host.to_string(),
+    ))?;
     parsed
         .set_ip_host(ip)
         .unwrap_or_else(|()| unreachable!("HTTPS URLs always support IP hosts"));
@@ -241,7 +262,10 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::InvalidScheme(_)));
+            assert!(matches!(
+                err,
+                UrlValidationError::InvalidScheme(_)
+            ));
         }
     }
 
@@ -254,14 +278,20 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::HasCredentials));
+            assert!(matches!(
+                err,
+                UrlValidationError::HasCredentials
+            ));
         }
 
         // %40 = @, which may be used to obscure credentials
         let err = validate("https://user%40example.com/webhook")
             .await
             .unwrap_err();
-        assert!(matches!(err, UrlValidationError::ParseError(_)));
+        assert!(matches!(
+            err,
+            UrlValidationError::ParseError(_)
+        ));
     }
 
     #[tokio::test]
@@ -270,7 +300,10 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
+            assert!(matches!(
+                err,
+                UrlValidationError::NonGlobalIp { .. }
+            ));
         }
     }
 
@@ -286,14 +319,25 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
+            assert!(matches!(
+                err,
+                UrlValidationError::NonGlobalIp { .. }
+            ));
         }
     }
 
     #[tokio::test]
     async fn reject_loopback() {
-        assert!(validate("https://127.0.0.1/webhook").await.is_err());
-        assert!(validate("https://127.255.255.255/webhook").await.is_err());
+        assert!(
+            validate("https://127.0.0.1/webhook")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate("https://127.255.255.255/webhook")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -311,13 +355,17 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
+            assert!(matches!(
+                err,
+                UrlValidationError::NonGlobalIp { .. }
+            ));
         }
     }
 
     #[tokio::test]
     async fn reject_cgnat() {
-        // 100.64.0.0/10 - CGNAT (RFC 6598), also covers Alibaba Cloud metadata 100.100.100.200
+        // 100.64.0.0/10 - CGNAT (RFC 6598), also covers Alibaba Cloud metadata
+        // 100.100.100.200
         let urls = [
             "https://100.64.0.1/webhook",
             "https://100.100.100.200/webhook",
@@ -326,7 +374,10 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
+            assert!(matches!(
+                err,
+                UrlValidationError::NonGlobalIp { .. }
+            ));
         }
     }
 
@@ -340,7 +391,10 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
+            assert!(matches!(
+                err,
+                UrlValidationError::NonGlobalIp { .. }
+            ));
         }
     }
 
@@ -357,7 +411,10 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
+            assert!(matches!(
+                err,
+                UrlValidationError::NonGlobalIp { .. }
+            ));
         }
     }
 
@@ -371,7 +428,10 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
+            assert!(matches!(
+                err,
+                UrlValidationError::NonGlobalIp { .. }
+            ));
         }
     }
 
@@ -381,7 +441,10 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
+            assert!(matches!(
+                err,
+                UrlValidationError::NonGlobalIp { .. }
+            ));
         }
     }
 
@@ -396,7 +459,10 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::NonGlobalIp { .. }));
+            assert!(matches!(
+                err,
+                UrlValidationError::NonGlobalIp { .. }
+            ));
         }
     }
 
@@ -422,23 +488,44 @@ mod tests {
 
         for url in urls {
             let err = validate(url).await.unwrap_err();
-            assert!(matches!(err, UrlValidationError::InvalidPort(_)));
+            assert!(matches!(
+                err,
+                UrlValidationError::InvalidPort(_)
+            ));
         }
     }
 
     #[tokio::test]
     async fn reject_too_long() {
-        let long_url = format!("https://example.com/{}", "a".repeat(2050));
+        let long_url = format!(
+            "https://example.com/{}",
+            "a".repeat(2050)
+        );
         let err = validate(&long_url).await.unwrap_err();
-        assert!(matches!(err, UrlValidationError::TooLong));
+        assert!(matches!(
+            err,
+            UrlValidationError::TooLong
+        ));
     }
 
     #[tokio::test]
     async fn reject_obfuscated_ips() {
         // These are all 127.0.0.1 in different representations.
         // The `url` crate normalizes them before we see host_str().
-        assert!(validate("https://0x7f000001/webhook").await.is_err());
-        assert!(validate("https://2130706433/webhook").await.is_err());
-        assert!(validate("https://0177.0.0.1/webhook").await.is_err());
+        assert!(
+            validate("https://0x7f000001/webhook")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate("https://2130706433/webhook")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate("https://0177.0.0.1/webhook")
+                .await
+                .is_err()
+        );
     }
 }
