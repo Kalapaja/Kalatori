@@ -46,6 +46,18 @@
 //!   limit** must be implemented to prevent memory exhaustion `DoS` attacks via
 //!   huge payloads.
 
+use serde::{
+    Deserialize,
+    Serialize,
+};
+use sqlx::encode::IsNull;
+use sqlx::error::BoxDynError;
+use sqlx::{
+    Database,
+    Decode,
+    Encode,
+    Type,
+};
 use std::net::{
     IpAddr,
     Ipv4Addr,
@@ -65,8 +77,8 @@ const MAX_URL_LENGTH: usize = 2048;
 /// Host name in the returned `Url` is replaced with the resolved IP address to
 /// prevent DNS rebinding attacks.
 ///
-/// Returns the [`Url`] struct for the provided URL.
-pub async fn validate(url: &str) -> Result<Url, UrlValidationError> {
+/// Returns the [`ValidatedUrl`] struct for the provided URL.
+pub async fn validate(url: &str) -> Result<ValidatedUrl, UrlValidationError> {
     // Length check
     if url.len() > MAX_URL_LENGTH {
         return Err(UrlValidationError::TooLong);
@@ -134,7 +146,7 @@ pub async fn validate(url: &str) -> Result<Url, UrlValidationError> {
         .set_ip_host(ip)
         .unwrap_or_else(|()| unreachable!("HTTPS URLs always support IP hosts"));
 
-    Ok(parsed)
+    Ok(ValidatedUrl(parsed))
 }
 
 /// Checks whether an IPv4 address is globally routable.
@@ -228,6 +240,65 @@ pub enum UrlValidationError {
         ip: String,
         reason: &'static str,
     },
+}
+
+/// Wrapper around `Url` that has been validated for security concerns by
+/// [`validate()`](validate).
+///
+/// The type is stored in the database as a string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidatedUrl(Url);
+
+impl ValidatedUrl {
+    /// Consumes the `ValidatedUrl` and returns the inner `Url`.
+    pub fn into_inner(self) -> Url {
+        self.0
+    }
+
+    /// Creates a `ValidatedUrl` without validation, for use in tests only.
+    #[cfg(test)]
+    pub fn new_unchecked(url: &str) -> Self {
+        Self(Url::parse(url).expect("test URL must be parseable"))
+    }
+}
+
+impl<DB> Type<DB> for ValidatedUrl
+where
+    DB: Database,
+    String: Type<DB>,
+{
+    fn type_info() -> DB::TypeInfo {
+        <String as Type<DB>>::type_info()
+    }
+
+    fn compatible(ty: &DB::TypeInfo) -> bool {
+        <String as Type<DB>>::compatible(ty)
+    }
+}
+
+impl<'q, DB> Encode<'q, DB> for ValidatedUrl
+where
+    DB: Database,
+    String: Encode<'q, DB>,
+{
+    fn encode_by_ref(
+        &self,
+        buf: &mut <DB as Database>::ArgumentBuffer<'q>,
+    ) -> Result<IsNull, BoxDynError> {
+        <String as Encode<'q, DB>>::encode(self.0.to_string(), buf)
+    }
+}
+
+impl<'r, DB> Decode<'r, DB> for ValidatedUrl
+where
+    DB: Database,
+    String: Decode<'r, DB>,
+{
+    fn decode(value: <DB as Database>::ValueRef<'r>) -> Result<Self, BoxDynError> {
+        let url = String::decode(value)?;
+        let parsed = Url::parse(&url)?;
+        Ok(Self(parsed))
+    }
 }
 
 #[cfg(test)]
