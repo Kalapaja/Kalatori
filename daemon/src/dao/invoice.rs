@@ -14,6 +14,7 @@ use crate::types::{
     InvoiceWithReceivedAmount,
     UpdateInvoiceData,
 };
+use crate::utils::url_validation::UrlValidationError;
 
 use super::DaoExecutor;
 use super::error_parsing::{
@@ -61,6 +62,12 @@ pub enum DaoInvoiceError {
     /// Database operation failed
     #[error("Database error during invoice operation")]
     DatabaseError,
+
+    #[error("Invalid URL parameter: {description}, error: {source:?}")]
+    InvalidUrlParameter {
+        description: &'static str,
+        source: UrlValidationError,
+    },
 }
 
 impl crate::api::ApiErrorExt for DaoInvoiceError {
@@ -80,6 +87,9 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
                 ..
             } => "DUPLICATE_ENTITY",
             DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
+            DaoInvoiceError::InvalidUrlParameter {
+                ..
+            } => "INVALID_PARAMETER",
         }
     }
 
@@ -98,6 +108,9 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
                 ..
             } => "INVOICE_DUPLICATE_ORDER_ID",
             DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
+            DaoInvoiceError::InvalidUrlParameter {
+                ..
+            } => "INVALID_URL_PARAMETER",
         }
     }
 
@@ -116,6 +129,9 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
                 ..
             } => "An invoice with the specified order ID already exists.",
             DaoInvoiceError::DatabaseError => "A database error occurred.",
+            DaoInvoiceError::InvalidUrlParameter {
+                description, ..
+            } => description,
         }
     }
 
@@ -134,6 +150,9 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
                 ..
             } => reqwest::StatusCode::CONFLICT,
             DaoInvoiceError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            DaoInvoiceError::InvalidUrlParameter {
+                ..
+            } => reqwest::StatusCode::BAD_REQUEST,
         }
     }
 }

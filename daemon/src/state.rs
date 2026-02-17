@@ -10,6 +10,7 @@ use uuid::Uuid;
 use kalatori_client::types::{
     CreateInvoiceParams,
     Invoice as PublicInvoice,
+    InvoiceCart as PublicInvoiceCart,
     InvoiceStatus,
     UpdateInvoiceParams,
 };
@@ -39,6 +40,8 @@ use crate::types::{
     CreateFrontEndSwapParams,
     CreateInvoiceData,
     FrontEndSwap,
+    InvoiceCart,
+    InvoiceCartItem,
     InvoiceChanges,
     InvoiceEventType,
     InvoiceWithReceivedAmount,
@@ -49,6 +52,7 @@ use crate::types::{
     Transaction,
     UpdateInvoiceData,
 };
+use crate::utils::url_validation;
 
 pub struct AppState<D: DaoInterface = DAO> {
     keyring: KeyringClient,
@@ -95,95 +99,14 @@ impl<D: DaoInterface> AppState<D> {
             .await
     }
 
-    #[expect(clippy::arithmetic_side_effects, clippy::cast_possible_wrap)]
     #[tracing::instrument(skip_all)]
     pub async fn create_invoice(
         &self,
         params: CreateInvoiceParams,
     ) -> Result<InvoiceWithReceivedAmount, DaoInvoiceError> {
-        let id = Uuid::new_v4();
-        // Later we can extend CreateInvoiceParams to include optional chain and
-        // asset_id
-        let chain = self.payments_config.default_chain;
-
-        let asset_id = self
-            .payments_config
-            .default_asset_id
-            .get(&chain)
-            .unwrap()
-            .clone();
-
-        let asset_name = self
-            .asset_names_map
-            .get(&asset_id)
-            .cloned()
-            // This should never happen, but just in case
-            .unwrap_or_else(|| "UNKNOWN".to_string());
-
-        let valid_till = Utc::now()
-            + Duration::milliseconds(
-                self.payments_config
-                    .invoice_lifetime_millis as i64,
-            );
-
-        let payment_address = match chain {
-            ChainType::PolkadotAssetHub => {
-                let derivation_params = vec![id.to_string()];
-
-                let account_id = self
-                    .keyring
-                    .generate_asset_hub_address(derivation_params.into())
-                    .await
-                    .map_err(|e| {
-                        tracing::error!(
-                            error.category = "create_invoice",
-                            error.operation = "generate_asset_hub_address",
-                            error.source = ?e,
-                            "Failed to generate payment address for new invoice",
-                        );
-                        // TODO: replace error
-                        DaoInvoiceError::DatabaseError
-                    })?;
-
-                to_base58_string(account_id.0, 0)
-            },
-            ChainType::Polygon => {
-                let derivation_params = vec![id.to_string()];
-
-                let address = self
-                    .keyring
-                    .generate_polygon_address(GenerateAddressData::from(
-                        derivation_params,
-                    ))
-                    .await
-                    .map_err(|e| {
-                        tracing::error!(
-                            error.category = "create_invoice",
-                            error.operation = "generate_polygon_address",
-                            error.source = ?e,
-                            "Failed to generate Polygon payment address for new invoice",
-                        );
-                        // TODO: replace error
-                        DaoInvoiceError::DatabaseError
-                    })?;
-
-                // Return checksummed address
-                address.to_checksum(None)
-            },
-        };
-
-        let data = CreateInvoiceData {
-            order_id: params.order_id,
-            amount: params.amount,
-            cart: params.cart,
-            redirect_url: params.redirect_url,
-            id,
-            asset_id,
-            asset_name,
-            chain,
-            payment_address,
-            valid_till,
-        };
+        let data = self
+            .create_invoice_params_to_data(params)
+            .await?;
 
         // TODO: handle errors properly
         let dao_transaction = self
@@ -224,21 +147,13 @@ impl<D: DaoInterface> AppState<D> {
         Ok(invoice_with_amount)
     }
 
-    #[expect(clippy::arithmetic_side_effects, clippy::cast_possible_wrap)]
     pub async fn update_invoice(
         &self,
         params: UpdateInvoiceParams,
     ) -> Result<InvoiceWithReceivedAmount, DaoInvoiceError> {
-        let data = UpdateInvoiceData {
-            invoice_id: params.invoice_id,
-            amount: params.amount,
-            cart: params.cart,
-            valid_till: Utc::now()
-                + Duration::milliseconds(
-                    self.payments_config
-                        .invoice_lifetime_millis as i64,
-                ),
-        };
+        let data = self
+            .update_invoice_params_to_data(params)
+            .await?;
 
         let dao_transaction = self
             .dao
@@ -523,6 +438,202 @@ impl<D: DaoInterface> AppState<D> {
             .create_front_end_swap(data)
             .await
     }
+
+    // Converts `CreateInvoiceData` from `CreateInvoiceParams`.
+    //
+    // Validates redirect URL and cart item image/product URLs and generates payment
+    // address.
+    #[expect(clippy::arithmetic_side_effects, clippy::cast_possible_wrap)]
+    async fn create_invoice_params_to_data(
+        &self,
+        params: CreateInvoiceParams,
+    ) -> Result<CreateInvoiceData, DaoInvoiceError> {
+        let id = Uuid::new_v4();
+
+        // Later we can extend CreateInvoiceParams to include optional chain and
+        // asset_id
+        let chain = self.payments_config.default_chain;
+
+        let asset_id = self
+            .payments_config
+            .default_asset_id
+            .get(&chain)
+            .unwrap()
+            .clone();
+
+        let asset_name = self
+            .asset_names_map
+            .get(&asset_id)
+            .cloned()
+            // This should never happen, but just in case
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+        let payment_address = match chain {
+            ChainType::PolkadotAssetHub => {
+                let derivation_params = vec![id.to_string()];
+
+                let account_id = self
+                    .keyring
+                    .generate_asset_hub_address(derivation_params.into())
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(
+                            error.category = "create_invoice",
+                            error.operation = "generate_asset_hub_address",
+                            error.source = ?e,
+                            "Failed to generate payment address for new invoice",
+                        );
+                        // TODO: replace error
+                        DaoInvoiceError::DatabaseError
+                    })?;
+
+                to_base58_string(account_id.0, 0)
+            },
+            ChainType::Polygon => {
+                let derivation_params = vec![id.to_string()];
+
+                let address = self
+                    .keyring
+                    .generate_polygon_address(GenerateAddressData::from(
+                        derivation_params,
+                    ))
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(
+                            error.category = "create_invoice",
+                            error.operation = "generate_polygon_address",
+                            error.source = ?e,
+                            "Failed to generate Polygon payment address for new invoice",
+                        );
+                        // TODO: replace error
+                        DaoInvoiceError::DatabaseError
+                    })?;
+
+                // Return checksummed address
+                address.to_checksum(None)
+            },
+        };
+
+        // Validate the redirect URL.
+        let redirect_url = url_validation::validate(&params.redirect_url)
+            .await
+            .map_err(
+                |source| DaoInvoiceError::InvalidUrlParameter {
+                    description: "Invalid redirect URL",
+                    source,
+                },
+            )?;
+
+        // Validate cart item image URLs.
+        let cart = self
+            .convert_to_invoice_cart(params.cart)
+            .await?;
+
+        let valid_till = Utc::now()
+            + Duration::milliseconds(
+                self.payments_config
+                    .invoice_lifetime_millis as i64,
+            );
+
+        Ok(CreateInvoiceData {
+            id,
+            order_id: params.order_id,
+            amount: params.amount,
+            cart,
+            redirect_url,
+            asset_id,
+            asset_name,
+            chain,
+            payment_address,
+            valid_till,
+        })
+    }
+
+    // Converts `UpdateInvoiceData` from `UpdateInvoiceParams`.
+    //
+    // Validates cart item image/product URLs.
+    #[expect(clippy::arithmetic_side_effects, clippy::cast_possible_wrap)]
+    async fn update_invoice_params_to_data(
+        &self,
+        params: UpdateInvoiceParams,
+    ) -> Result<UpdateInvoiceData, DaoInvoiceError> {
+        // Validate cart item image URLs.
+        let cart = self
+            .convert_to_invoice_cart(params.cart)
+            .await?;
+
+        let valid_till = Utc::now()
+            + Duration::milliseconds(
+                self.payments_config
+                    .invoice_lifetime_millis as i64,
+            );
+
+        Ok(UpdateInvoiceData {
+            invoice_id: params.invoice_id,
+            amount: params.amount,
+            cart,
+            valid_till,
+        })
+    }
+
+    async fn convert_to_invoice_cart(
+        &self,
+        PublicInvoiceCart {
+            items,
+        }: PublicInvoiceCart,
+    ) -> Result<InvoiceCart, DaoInvoiceError> {
+        let mut ret_items = Vec::with_capacity(items.len());
+        for item in items {
+            // Validate image url
+            let image_url = if let Some(ref image_url) = item.image_url {
+                let url = url_validation::validate(image_url)
+                    .await
+                    .map_err(
+                        |source| DaoInvoiceError::InvalidUrlParameter {
+                            description: "Invalid cart item image URL",
+                            source,
+                        },
+                    )?;
+
+                Some(url)
+            } else {
+                None
+            };
+
+            // Validate product url
+            let product_url = if let Some(ref product_url) = item.product_url {
+                let url = url_validation::validate(product_url)
+                    .await
+                    .map_err(
+                        |source| DaoInvoiceError::InvalidUrlParameter {
+                            description: "Invalid cart item product URL",
+                            source,
+                        },
+                    )?;
+
+                Some(url)
+            } else {
+                None
+            };
+
+            // Instantiate cart item
+            let cart_item = InvoiceCartItem {
+                name: item.name,
+                quantity: item.quantity,
+                price: item.price,
+                tax: item.tax,
+                discount: item.discount,
+                image_url,
+                product_url,
+            };
+
+            ret_items.push(cart_item);
+        }
+
+        Ok(InvoiceCart {
+            items: ret_items,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -541,6 +652,7 @@ mod tests {
         InvoiceCart,
         default_invoice,
     };
+    use crate::utils::url_validation::ValidatedUrl;
 
     use super::*;
 
@@ -709,8 +821,8 @@ mod tests {
         let params = CreateInvoiceParams {
             order_id: "order123".to_string(),
             amount: Decimal::new(1000, 2), // 10.00
-            cart: InvoiceCart::empty(),
-            redirect_url: "https://redirect.url".to_string(),
+            cart: PublicInvoiceCart::empty(),
+            redirect_url: "https://1.1.1.1/redirect".to_string(),
             include_transactions: false,
         };
 
@@ -729,8 +841,8 @@ mod tests {
                 id: Uuid::new_v4(), // We can't predict this, so we'll match fields except ID
                 order_id: params.order_id.clone(),
                 amount: params.amount,
-                cart: params.cart.clone(),
-                redirect_url: params.redirect_url.clone(),
+                cart: InvoiceCart::empty(),
+                redirect_url: ValidatedUrl::new_unchecked(&params.redirect_url),
                 asset_id: 1337.to_string(),
                 asset_name: "USDC".to_string(),
                 chain: ChainType::PolkadotAssetHub,
@@ -806,8 +918,8 @@ mod tests {
         let params = CreateInvoiceParams {
             order_id: "order456".to_string(),
             amount: Decimal::new(5000, 2), // 50.00
-            cart: InvoiceCart::empty(),
-            redirect_url: "https://redirect.url".to_string(),
+            cart: PublicInvoiceCart::empty(),
+            redirect_url: "https://example.com/redirect".to_string(),
             include_transactions: false,
         };
 
@@ -845,8 +957,8 @@ mod tests {
         let params = CreateInvoiceParams {
             order_id: "order789".to_string(),
             amount: Decimal::new(7500, 2), // 75.00
-            cart: InvoiceCart::empty(),
-            redirect_url: "https://redirect.url".to_string(),
+            cart: PublicInvoiceCart::empty(),
+            redirect_url: "https://1.1.1.1/redirect".to_string(),
             include_transactions: false,
         };
 
@@ -855,8 +967,8 @@ mod tests {
                 id: Uuid::new_v4(), // We can't predict this, so we'll match fields except ID
                 order_id: params.order_id.clone(),
                 amount: params.amount,
-                cart: params.cart.clone(),
-                redirect_url: params.redirect_url.clone(),
+                cart: InvoiceCart::empty(),
+                redirect_url: ValidatedUrl::new_unchecked(&params.redirect_url),
                 asset_id: 1337.to_string(),
                 asset_name: "USDC".to_string(),
                 chain: ChainType::PolkadotAssetHub,

@@ -9,7 +9,6 @@ use tokio::task::JoinError;
 use tracing_subscriber::filter::ParseError;
 
 use crate::utils::task_tracker::TaskName;
-use crate::utils::url_validation::UrlValidationError;
 
 pub use pretty_cause::PrettyCause;
 
@@ -379,9 +378,6 @@ pub enum OrderError {
 
     #[error("order parameter invalid: {0:?}")]
     InvalidParameter(String),
-
-    #[error("invalid callback URL")]
-    InvalidCallback(#[from] UrlValidationError),
 
     #[error("internal error is occurred")]
     InternalError,

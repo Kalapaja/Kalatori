@@ -14,19 +14,24 @@ use sqlx::types::{
 };
 use uuid::Uuid;
 
+use crate::utils::url_validation::ValidatedUrl;
+
 use super::ChainType;
 
 // Re-export types from kalatori_client for consistency
 pub use kalatori_client::types::{
     Invoice as PublicInvoice,
-    InvoiceCart,
+    InvoiceCart as PublicInvoiceCart,
+    InvoiceCartItem as PublicInvoiceCartItem,
     InvoiceStatus,
 };
 
-// TODO: the main difference between Invoice and PublicInvoice (from
-// kalatori_client crate) is that Invoice doesn't have `payment_url` field. Need
-// to think how we can unify these types and make Invoice a subset of
-// PublicInvoice.
+// TODO: The differences between `Invoice` and `PublicInvoice` (from
+// kalatori_client crate) are:
+// - `Invoice`` doesn't have `payment_url` field
+// - `Invoice` stores only validated urls
+// Shall we unify?
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Invoice {
     pub id: Uuid,
@@ -39,7 +44,7 @@ pub struct Invoice {
     pub payment_address: String,
     pub status: InvoiceStatus,
     pub cart: InvoiceCart,
-    pub redirect_url: String,
+    pub redirect_url: ValidatedUrl,
     pub valid_till: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -82,8 +87,12 @@ impl InvoiceWithReceivedAmount {
                 payment_url_base.trim_end_matches('/'),
                 self.invoice.id
             ),
-            redirect_url: self.invoice.redirect_url,
-            cart: self.invoice.cart,
+            redirect_url: self
+                .invoice
+                .redirect_url
+                .into_inner()
+                .to_string(),
+            cart: self.invoice.cart.into(),
             valid_till: self.invoice.valid_till,
             created_at: self.invoice.created_at,
             updated_at: self.invoice.updated_at,
@@ -104,7 +113,7 @@ pub struct InvoiceRow {
     pub payment_address: String,
     pub status: InvoiceStatus,
     pub cart: Json<InvoiceCart>,
-    pub redirect_url: String,
+    pub redirect_url: ValidatedUrl,
     pub valid_till: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -140,7 +149,7 @@ pub struct CreateInvoiceData {
     pub amount: Decimal,
     pub payment_address: String,
     pub cart: InvoiceCart,
-    pub redirect_url: String,
+    pub redirect_url: ValidatedUrl,
     pub valid_till: DateTime<Utc>,
 }
 
@@ -166,12 +175,67 @@ impl From<CreateInvoiceData> for Invoice {
     }
 }
 
+// TODO [sab]: docs
 #[derive(Debug)]
 pub struct UpdateInvoiceData {
     pub invoice_id: Uuid, // Invoice ID to update
     pub amount: Decimal,
     pub cart: InvoiceCart,
     pub valid_till: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceCart {
+    pub items: Vec<InvoiceCartItem>,
+}
+
+impl InvoiceCart {
+    pub fn empty() -> Self {
+        Self {
+            items: vec![],
+        }
+    }
+}
+
+impl From<InvoiceCart> for PublicInvoiceCart {
+    fn from(cart: InvoiceCart) -> Self {
+        Self {
+            items: cart
+                .items
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<_>>(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceCartItem {
+    pub name: String,
+    pub quantity: u32,
+    pub price: Decimal, // Price per single item
+    pub product_url: Option<ValidatedUrl>,
+    pub image_url: Option<ValidatedUrl>,
+    pub tax: Option<Decimal>,
+    pub discount: Option<Decimal>,
+}
+
+impl From<InvoiceCartItem> for PublicInvoiceCartItem {
+    fn from(item: InvoiceCartItem) -> Self {
+        Self {
+            name: item.name,
+            quantity: item.quantity,
+            price: item.price,
+            product_url: item
+                .product_url
+                .map(|url| url.into_inner().to_string()),
+            image_url: item
+                .image_url
+                .map(|url| url.into_inner().to_string()),
+            tax: item.tax,
+            discount: item.discount,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -193,7 +257,7 @@ pub fn default_create_invoice_data() -> CreateInvoiceData {
         amount: Decimal::new(10000, 2),
         payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
         cart: InvoiceCart::empty(),
-        redirect_url: "http://localhost:8080/thankyou".to_string(),
+        redirect_url: ValidatedUrl::new_unchecked("http://localhost:8080/thankyou"),
         #[expect(clippy::arithmetic_side_effects)]
         valid_till: now + chrono::Duration::hours(24),
     }
