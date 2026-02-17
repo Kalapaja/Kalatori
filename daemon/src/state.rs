@@ -5,6 +5,7 @@ use chrono::{
     Utc,
 };
 use rust_decimal::Decimal;
+use url::Host;
 use uuid::Uuid;
 
 use kalatori_client::types::{
@@ -60,16 +61,21 @@ pub struct AppState<D: DaoInterface = DAO> {
     registry: InvoiceRegistry,
     asset_names_map: HashMap<String, String>,
     payments_config: PaymentsConfig,
+    allowed_redirect_domain: Host<String>,
+    allowed_image_domains: Vec<Host<String>>,
     shop_meta: ShopMetaConfig,
 }
 
 impl<D: DaoInterface> AppState<D> {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         keyring: KeyringClient,
         dao: D,
         registry: InvoiceRegistry,
         asset_names_map: HashMap<String, String>,
         payments_config: PaymentsConfig,
+        allowed_redirect_domain: Host<String>,
+        allowed_image_domains: Vec<Host<String>>,
         shop_meta: ShopMetaConfig,
     ) -> Self {
         Self {
@@ -78,6 +84,8 @@ impl<D: DaoInterface> AppState<D> {
             registry,
             asset_names_map,
             payments_config,
+            allowed_redirect_domain,
+            allowed_image_domains,
             shop_meta,
         }
     }
@@ -515,14 +523,17 @@ impl<D: DaoInterface> AppState<D> {
         };
 
         // Validate the redirect URL.
-        let redirect_url = url_validation::validate(&params.redirect_url)
-            .await
-            .map_err(
-                |source| DaoInvoiceError::InvalidUrlParameter {
-                    description: "Invalid redirect URL",
-                    source,
-                },
-            )?;
+        let redirect_url = url_validation::validate_with_allowed_base(
+            &params.redirect_url,
+            &self.allowed_redirect_domain,
+        )
+        .await
+        .map_err(
+            |source| DaoInvoiceError::InvalidUrlParameter {
+                description: "Invalid redirect URL",
+                source,
+            },
+        )?;
 
         // Validate cart item image URLs.
         let cart = self
@@ -586,14 +597,17 @@ impl<D: DaoInterface> AppState<D> {
         for item in items {
             // Validate image url
             let image_url = if let Some(ref image_url) = item.image_url {
-                let url = url_validation::validate(image_url)
-                    .await
-                    .map_err(
-                        |source| DaoInvoiceError::InvalidUrlParameter {
-                            description: "Invalid cart item image URL",
-                            source,
-                        },
-                    )?;
+                let url = url_validation::validate_with_allowed_base_many(
+                    image_url,
+                    &self.allowed_image_domains,
+                )
+                .await
+                .map_err(
+                    |source| DaoInvoiceError::InvalidUrlParameter {
+                        description: "Invalid cart item image URL",
+                        source,
+                    },
+                )?;
 
                 Some(url)
             } else {
@@ -693,6 +707,11 @@ mod tests {
             registry,
             asset_names_map,
             config,
+            Host::Domain("example.com".to_string()),
+            vec![
+                Host::Domain("example.com".to_string()),
+                Host::Domain("cdn.example.com".to_string()),
+            ],
             shop_meta,
         )
     }
@@ -802,6 +821,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ntest::timeout(20_000)]
     async fn test_create_invoice() {
         let mut app_state = setup_app_state();
 
@@ -822,7 +842,7 @@ mod tests {
             order_id: "order123".to_string(),
             amount: Decimal::new(1000, 2), // 10.00
             cart: PublicInvoiceCart::empty(),
-            redirect_url: "https://1.1.1.1/redirect".to_string(),
+            redirect_url: "https://example.com/redirect".to_string(),
             include_transactions: false,
         };
 
@@ -842,7 +862,9 @@ mod tests {
                 order_id: params.order_id.clone(),
                 amount: params.amount,
                 cart: InvoiceCart::empty(),
-                redirect_url: ValidatedUrl::new_unchecked(&params.redirect_url),
+                redirect_url: ValidatedUrl::new(&params.redirect_url)
+                    .await
+                    .unwrap(),
                 asset_id: 1337.to_string(),
                 asset_name: "USDC".to_string(),
                 chain: ChainType::PolkadotAssetHub,
@@ -958,7 +980,7 @@ mod tests {
             order_id: "order789".to_string(),
             amount: Decimal::new(7500, 2), // 75.00
             cart: PublicInvoiceCart::empty(),
-            redirect_url: "https://1.1.1.1/redirect".to_string(),
+            redirect_url: "https://example.com/redirect".to_string(),
             include_transactions: false,
         };
 
@@ -968,7 +990,9 @@ mod tests {
                 order_id: params.order_id.clone(),
                 amount: params.amount,
                 cart: InvoiceCart::empty(),
-                redirect_url: ValidatedUrl::new_unchecked(&params.redirect_url),
+                redirect_url: ValidatedUrl::new(&params.redirect_url)
+                    .await
+                    .unwrap(),
                 asset_id: 1337.to_string(),
                 asset_name: "USDC".to_string(),
                 chain: ChainType::PolkadotAssetHub,

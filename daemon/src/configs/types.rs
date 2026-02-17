@@ -9,9 +9,14 @@ use std::str::FromStr;
 use rand::prelude::*;
 use rust_decimal::Decimal;
 use secrecy::SecretString;
+use serde::de::Deserializer;
 use serde::{
     Deserialize,
     Serialize,
+};
+use url::{
+    Host,
+    Url,
 };
 
 use crate::chain::utils::to_base58_string;
@@ -334,13 +339,141 @@ pub struct ShopMetaConfig {
     pub reown_project_id: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Clone)]
 pub struct ShopConfig {
-    pub invoices_webhook_url: String,
-    #[serde(default = "default_signature_max_age_secs")]
+    pub invoices_webhook_url: Url,
     pub signature_max_age_secs: u64,
-    #[serde(flatten)]
+    pub allowed_base_redirect_url: Option<Host<String>>,
+    pub allowed_base_image_urls: Option<Vec<Host<String>>>,
     pub meta: ShopMetaConfig,
+}
+
+impl ShopConfig {
+    pub fn into_inner(
+        self
+    ) -> (
+        String,
+        u64,
+        Host<String>,
+        Vec<Host<String>>,
+        ShopMetaConfig,
+    ) {
+        let webhook_domain = self
+            .invoices_webhook_url
+            .domain()
+            .expect("shop config webhook URL must have host")
+            .to_owned();
+
+        let allowed_base_redirect_domain = self
+            .allowed_base_redirect_url
+            .unwrap_or_else(|| Host::Domain(webhook_domain.clone()));
+
+        let allowed_base_image_domains = self
+            .allowed_base_image_urls
+            .unwrap_or_else(|| vec![Host::Domain(webhook_domain.clone())]);
+
+        (
+            self.invoices_webhook_url.to_string(),
+            self.signature_max_age_secs,
+            allowed_base_redirect_domain,
+            allowed_base_image_domains,
+            self.meta,
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for ShopConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawShopConfig {
+            #[serde(alias = "invoice_webhook_url")]
+            invoices_webhook_url: Url,
+            #[serde(default = "default_signature_max_age_secs")]
+            signature_max_age_secs: u64,
+            #[serde(default)]
+            allowed_redirect_url: Option<Url>,
+            #[serde(default)]
+            allowed_image_urls: Option<Vec<Url>>,
+            #[serde(flatten)]
+            meta: ShopMetaConfig,
+        }
+
+        let raw = RawShopConfig::deserialize(deserializer)?;
+
+        // Validate url is of https protocol, port 443 (if has any) and has a domain
+        // host.
+        fn validate_https_443(url: &Url) -> Result<(), String> {
+            if url.scheme() != "https" {
+                return Err(format!(
+                    "URL must use https scheme: {url}"
+                ));
+            }
+
+            if let Some(port) = url.port()
+                && port != 443
+            {
+                return Err(format!(
+                    "URL port must be 443 when explicitly set: {url}"
+                ));
+            }
+
+            if url.domain().is_none() {
+                return Err(format!("URL has no host: {url}"));
+            }
+
+            Ok(())
+        }
+
+        // Validate invoices_webhook_url
+        validate_https_443(&raw.invoices_webhook_url).map_err(serde::de::Error::custom)?;
+
+        // Validate allowed_redirect_url
+        if let Some(ref redirect_url) = raw.allowed_redirect_url {
+            validate_https_443(redirect_url).map_err(serde::de::Error::custom)?;
+        }
+
+        // Validate allowed_image_urls
+        if let Some(ref image_urls) = raw.allowed_image_urls {
+            for image_url in image_urls {
+                validate_https_443(image_url).map_err(serde::de::Error::custom)?;
+            }
+        }
+
+        // Extract domain from URL.
+        // We only care about domain for allowlists, so we ignore scheme, port and path.
+        fn domain_from_url(url: Url) -> Result<Host<String>, String> {
+            url.domain()
+                .map(|host| Host::Domain(host.to_string()))
+                .ok_or_else(|| format!("URL has no host in shop config: {url}"))
+        }
+
+        let allowed_base_redirect_url = raw
+            .allowed_redirect_url
+            .map(domain_from_url)
+            .transpose()
+            .map_err(serde::de::Error::custom)?;
+
+        let allowed_base_image_urls = raw
+            .allowed_image_urls
+            .map(|urls| {
+                urls.into_iter()
+                    .map(domain_from_url)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(serde::de::Error::custom)?;
+
+        Ok(Self {
+            invoices_webhook_url: raw.invoices_webhook_url,
+            signature_max_age_secs: raw.signature_max_age_secs,
+            allowed_base_redirect_url,
+            allowed_base_image_urls,
+            meta: raw.meta,
+        })
+    }
 }
 
 fn default_log_directives() -> String {
@@ -355,13 +488,83 @@ pub struct LoggerConfig {
     pub loki_url: Option<String>,
 }
 
-fn default_etherscan_limit_per_second() -> NonZeroU32 {
-    DEFAULT_ETHERSCAN_LIMIT_PER_SECOND
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Deserialize, Clone, Debug)]
-pub struct EtherscanClientConfig {
-    #[serde(default = "default_etherscan_limit_per_second")]
-    pub requests_per_second: NonZeroU32,
-    pub api_key: String,
+    #[test]
+    fn shop_config_defaults_allowlists_from_webhook_domain() {
+        let config: ShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://payments.example.com/webhooks/invoices",
+            "signature_max_age_secs": 60,
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("shop config should deserialize");
+
+        let (_, _, redirect_domain, image_domains, _) = config.into_inner();
+
+        assert_eq!(
+            redirect_domain,
+            Host::Domain("payments.example.com".to_string())
+        );
+        assert_eq!(
+            image_domains,
+            vec![Host::Domain("payments.example.com".to_string())]
+        );
+    }
+
+    #[test]
+    fn shop_config_normalizes_provided_allowlists() {
+        let config: ShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://payments.example.com/webhooks/invoices",
+            "signature_max_age_secs": 60,
+            "allowed_redirect_url": "https://checkout.example.com/redirect",
+            "allowed_image_urls": [
+                "https://cdn.example.com/assets",
+                "https://images.example.com/path"
+            ],
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("shop config should deserialize");
+
+        let (_, _, redirect_domain, image_domains, _) = config.into_inner();
+
+        assert_eq!(
+            redirect_domain,
+            Host::Domain("checkout.example.com".to_string())
+        );
+        assert_eq!(
+            image_domains,
+            vec![
+                Host::Domain("cdn.example.com".to_string()),
+                Host::Domain("images.example.com".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn shop_config_rejects_non_https_allowlist_urls() {
+        let result: Result<ShopConfig, _> = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://payments.example.com/webhooks/invoices",
+            "allowed_redirect_url": "http://checkout.example.com/redirect",
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn shop_config_rejects_non_domain_allowlist_urls() {
+        let result: Result<ShopConfig, _> = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://payments.example.com/webhooks/invoices",
+            "allowed_redirect_url": "https://192.168.0.1/redirect",
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }));
+
+        assert!(result.is_err());
+    }
 }

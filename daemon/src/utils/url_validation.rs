@@ -12,7 +12,9 @@
 //! 3. **HTTPS-only** - Rejects `http://`, `file://`, `ftp://`, etc.
 //! 4. **Port restriction** - Only allows port 443 (HTTPS default)
 //! 5. **No credentials** - Rejects `user:password@host` in URL
-//! 6. **DNS resolution + IP validation** - Performs real-time DNS lookup and
+//! 6. **Base URL restriction** - Ensures the URL matches (is the same or a
+//!    subdomain of) the allowed base URL if provided
+//! 7. **DNS resolution + IP validation** - Performs real-time DNS lookup and
 //!    validates that resolved IP addresses are:
 //!    - Not loopback (`127.0.0.0/8`, `::1`)
 //!    - Not private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
@@ -45,6 +47,12 @@
 //! - In case of response body processing expected, **a maximum response size
 //!   limit** must be implemented to prevent memory exhaustion `DoS` attacks via
 //!   huge payloads.
+//!
+//! Also, validation of the URL host against the allowed domain is currently
+//! done only for domain hosts, not for IP hosts. If the provided URL's host is
+//! an IP address rather than a domain, the allowed domains check is skipped.
+//! This is correct because IP addresses cannot be subdomains of domains - you
+//! can't compare an IP address against a domain-based allow-list.
 
 use serde::{
     Deserialize,
@@ -64,21 +72,67 @@ use std::net::{
 };
 use thiserror::Error;
 use tokio::net as tokio_net;
-use url::Url;
+use url::{
+    Host,
+    Url,
+};
 
 /// Maximum allowed URL length.
 const MAX_URL_LENGTH: usize = 2048;
 
 /// Validates a URL for security concerns described in the
 /// [module](crate::utils::url_validation).
+pub async fn validate(url: &str) -> Result<ValidatedUrl, UrlValidationError> {
+    validate_with_allowed_base_impl(url, None).await
+}
+
+/// Validates a URL same as [`validate()`], but also checks that the URL host
+/// matches the allowed base domain provided in `allowed_base_domain` (exact
+/// match or subdomain).
+pub async fn validate_with_allowed_base(
+    url: &str,
+    allowed_base_domain: &Host<String>,
+) -> Result<ValidatedUrl, UrlValidationError> {
+    validate_with_allowed_base_impl(
+        url,
+        Some(EitherDomainsCollection::Domain(
+            allowed_base_domain,
+        )),
+    )
+    .await
+}
+
+/// Validates a URL same as [`validate()`], but also checks that the URL host
+/// matches at least one of the allowed base domains provided in
+/// `allowed_base_domains` (exact match or subdomain).
+pub async fn validate_with_allowed_base_many(
+    url: &str,
+    allowed_base_domains: &[Host<String>],
+) -> Result<ValidatedUrl, UrlValidationError> {
+    validate_with_allowed_base_impl(
+        url,
+        Some(EitherDomainsCollection::DomainCollection(allowed_base_domains)),
+    )
+    .await
+}
+
+/// Internal implementation of URL validation with optional allowed base domain
+/// check.
 ///
 /// Performs DNS resolution to verify that the URL endpoint does not target
 /// internal/private infrastructure.
-/// Host name in the returned `Url` is replaced with the resolved IP address to
-/// prevent DNS rebinding attacks.
+/// Host name in the returned `ValidatedUrl` is replaced with the resolved IP
+/// address to prevent DNS rebinding attacks.
 ///
 /// Returns the [`ValidatedUrl`] struct for the provided URL.
-pub async fn validate(url: &str) -> Result<ValidatedUrl, UrlValidationError> {
+///
+/// ### Note
+/// If provided url doesn't have a domain in a host part (so it's IP only), the
+/// allowed base domain check is skipped.
+async fn validate_with_allowed_base_impl(
+    url: &str,
+    allowed_base_domain: Option<EitherDomainsCollection<'_>>,
+) -> Result<ValidatedUrl, UrlValidationError> {
     // Length check
     if url.len() > MAX_URL_LENGTH {
         return Err(UrlValidationError::TooLong);
@@ -105,11 +159,20 @@ pub async fn validate(url: &str) -> Result<ValidatedUrl, UrlValidationError> {
         return Err(UrlValidationError::HasCredentials);
     }
 
+    // Validate against allowed base domain if provided
+    if let Some(allowed_base_domain) = allowed_base_domain {
+        let host = parsed
+            .host()
+            .expect("https URLs always have a host");
+        allowed_base_domain.validate(host)?;
+    }
+
     // DNS resolution + IP validation for SSRF prevention
     // First resolve hostname to addresses
     let host = parsed
         .host_str()
         .expect("https URLs always have a host");
+
     let resolved_addrs = tokio_net::lookup_host((host, port))
         .await
         .map_err(
@@ -148,7 +211,6 @@ pub async fn validate(url: &str) -> Result<ValidatedUrl, UrlValidationError> {
 
     Ok(ValidatedUrl(parsed))
 }
-
 /// Checks whether an IPv4 address is globally routable.
 ///
 /// Returns `Ok(())` if the IP is globally routable, or `Err(&'static str)` with
@@ -240,6 +302,12 @@ pub enum UrlValidationError {
         ip: String,
         reason: &'static str,
     },
+
+    #[error("URL host is empty")]
+    EmptyHost,
+
+    #[error("URL hostname {hostname:?} is not allowed")]
+    HostNotAllowed { hostname: String },
 }
 
 /// Wrapper around `Url` that has been validated for security concerns by
@@ -250,6 +318,11 @@ pub enum UrlValidationError {
 pub struct ValidatedUrl(Url);
 
 impl ValidatedUrl {
+    /// Creates a `ValidatedUrl` by applying full URL validation.
+    pub async fn new(url: &str) -> Result<Self, UrlValidationError> {
+        validate(url).await
+    }
+
     /// Consumes the `ValidatedUrl` and returns the inner `Url`.
     pub fn into_inner(self) -> Url {
         self.0
@@ -301,6 +374,72 @@ where
     }
 }
 
+// Helper enum to allow passing either a single allowed base domain or
+// a collection of allowed base domains to the validation function without
+// unnecessary allocations.
+enum EitherDomainsCollection<'a> {
+    Domain(&'a Host<String>),
+    DomainCollection(&'a [Host<String>]),
+}
+
+impl EitherDomainsCollection<'_> {
+    fn validate(
+        self,
+        checking_host: Host<&str>,
+    ) -> Result<(), UrlValidationError> {
+        match (self, checking_host) {
+            (
+                EitherDomainsCollection::Domain(Host::Domain(domain)),
+                Host::Domain(checking_host),
+            ) => {
+                if !is_same_or_subdomain(checking_host, domain) {
+                    return Err(UrlValidationError::HostNotAllowed {
+                        hostname: checking_host.to_string(),
+                    });
+                }
+            },
+            (EitherDomainsCollection::DomainCollection(domains), Host::Domain(checking_host)) => {
+                let mut has_allowed_domains = false;
+
+                let is_allowed = domains
+                    .iter()
+                    .filter_map(|host| match host {
+                        Host::Domain(domain) => Some(domain.as_str()),
+                        _ => None,
+                    })
+                    .inspect(|_| has_allowed_domains = true)
+                    .any(|domain| is_same_or_subdomain(checking_host, domain));
+
+                if has_allowed_domains && !is_allowed {
+                    return Err(UrlValidationError::HostNotAllowed {
+                        hostname: checking_host.to_string(),
+                    });
+                }
+            },
+            _ => {
+                // We do not check the situations when the host URL is an IP
+                // address as the config of the platform expects
+                // allowed base domains to be actual domains, not IPs.
+                //
+                // An IP check when one/both of values are IPs can be added in
+                // case the sub-domain checks are removed.
+            },
+        }
+
+        Ok(())
+    }
+}
+
+fn is_same_or_subdomain(
+    checking_host: &str,
+    allowed_domain: &str,
+) -> bool {
+    checking_host == allowed_domain
+        || checking_host
+            .strip_suffix(allowed_domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +458,23 @@ mod tests {
         for url in urls {
             assert!(validate(url).await.is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn validate_with_allowed_domains_rejects_disallowed_host() {
+        let error = validate_with_allowed_base_many(
+            "https://evil.com/webhook",
+            &[Host::Domain("example.com".to_string())],
+        )
+        .await
+        .expect_err("host must be rejected");
+
+        assert!(matches!(
+            error,
+            UrlValidationError::HostNotAllowed {
+                hostname
+            } if hostname == "evil.com"
+        ));
     }
 
     #[tokio::test]
@@ -598,5 +754,52 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn domain_collection_accepts_single_exact_match_of_three() {
+        let domains = [
+            Host::Domain("first.example.com".to_string()),
+            Host::Domain("match.example.com".to_string()),
+            Host::Domain("third.example.com".to_string()),
+        ];
+
+        let result = EitherDomainsCollection::DomainCollection(&domains)
+            .validate(Host::Domain("match.example.com"));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn domain_collection_accepts_single_subdomain_match_of_three() {
+        let domains = [
+            Host::Domain("first.example.com".to_string()),
+            Host::Domain("cdn.example.com".to_string()),
+            Host::Domain("third.example.com".to_string()),
+        ];
+
+        let result = EitherDomainsCollection::DomainCollection(&domains)
+            .validate(Host::Domain("img.cdn.example.com"));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn domain_collection_rejects_when_none_match() {
+        let domains = [
+            Host::Domain("first.example.com".to_string()),
+            Host::Domain("second.example.com".to_string()),
+            Host::Domain("third.example.com".to_string()),
+        ];
+
+        let result = EitherDomainsCollection::DomainCollection(&domains)
+            .validate(Host::Domain("example.com"));
+
+        assert!(matches!(
+            result,
+            Err(UrlValidationError::HostNotAllowed {
+                hostname
+            }) if hostname == "example.com"
+        ));
     }
 }

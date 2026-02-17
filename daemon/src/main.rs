@@ -208,15 +208,22 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let shop_config = shop_config_with_prefix(&configs_path, &env_prefix);
     let etherscan_client_config = etherscan_client_config_with_prefix(&configs_path, &env_prefix);
 
+    let (
+        invoices_webhook_url,
+        signature_max_age_secs,
+        allowed_redirect_domain,
+        allowed_image_domains,
+        shop_meta,
+    ) = shop_config.into_inner();
+
     let hmac_config = HmacConfig::new(
         secrets_config
             .api_secret_key
             .expose_secret()
             .as_bytes()
             .to_vec(),
-        shop_config.signature_max_age_secs,
+        signature_max_age_secs,
     );
-
     secrets_config.api_secret_key.zeroize();
 
     // Initialize DAO for SQLite database operations
@@ -363,7 +370,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let webhook_sender = webhook_sender::WebhookSender::new(
         dao.clone(),
-        shop_config.invoices_webhook_url,
+        invoices_webhook_url,
         hmac_config.clone(),
     );
 
@@ -375,7 +382,9 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         invoice_registry,
         asset_names_map,
         payments_config,
-        shop_config.meta,
+        allowed_redirect_domain,
+        allowed_image_domains,
+        shop_meta,
     );
 
     let api_handle = api::api_server(

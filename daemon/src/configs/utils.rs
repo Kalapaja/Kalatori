@@ -38,6 +38,7 @@ pub fn config_from_file_or_env<T: DeserializeOwned>(
                 .try_parsing(true)
                 // allow set ChainConfig.endpoints over env vars
                 .with_list_parse_key("endpoints")
+                .with_list_parse_key("allowed_image_urls")
                 .list_separator(","),
         )
         .build()
