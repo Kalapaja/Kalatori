@@ -71,15 +71,31 @@ build-release: # Build the daemon with --release flag
 	cargo build --release
 
 start-chopsticks: # Start chopsticks for Asset Hub in docker compose with port-forwarding
-	cd chopsticks; \
-	docker compose up -d
+	cd dev; \
+	docker compose up -d chopsticks-asset-hub chopsticks-asset-hub-2
 
 stop-chopsticks: # Stop chopsticks for Asset Hub in docker compose
-	cd chopsticks; \
-	docker compose down
+	cd dev; \
+	docker compose stop chopsticks-asset-hub chopsticks-asset-hub-2
+
+start-local-polygon-node: # Start local polygon node forked from mainnet
+	cd dev; \
+	docker compose up -d anvil
+
+stop-local-polygon-node: # Stop local polygon node
+	cd dev; \
+	docker compose stop anvil
+
+start-local-bundler: # Starts local pimlico
+	cd dev; \
+	docker compose up -d alto
+
+stop-local-bundler: # Stops local bundler
+	cd dev; \
+	docker compose stop alto
 
 # TODO: add some health check for chopsticks to avoid errors on connection while it's not initialized
-run: start-chopsticks # Ensure that chopsticks is started and run kalatori daemon locally
+run: start-chopsticks start-local-polygon-node start-local-bundler # Ensure that chopsticks and polygon infra is started and run kalatori daemon locally
 	cargo run
 
 run-release: # Run kalatori daemon with --release flag without starting chopsticks
