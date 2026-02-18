@@ -28,7 +28,7 @@ pub use kalatori_client::types::{
 
 // TODO: The differences between `Invoice` and `PublicInvoice` (from
 // kalatori_client crate) are:
-// - `Invoice`` doesn't have `payment_url` field
+// - `Invoice` doesn't have `payment_url` field
 // - `Invoice` stores only validated urls
 // Shall we unify?
 
@@ -175,7 +175,6 @@ impl From<CreateInvoiceData> for Invoice {
     }
 }
 
-// TODO [sab]: docs
 #[derive(Debug)]
 pub struct UpdateInvoiceData {
     pub invoice_id: Uuid, // Invoice ID to update
@@ -257,7 +256,7 @@ pub fn default_create_invoice_data() -> CreateInvoiceData {
         amount: Decimal::new(10000, 2),
         payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
         cart: InvoiceCart::empty(),
-        redirect_url: ValidatedUrl::new_unchecked("http://localhost:8080/thankyou"),
+        redirect_url: ValidatedUrl::new_unchecked("http://example.com/thankyou"),
         #[expect(clippy::arithmetic_side_effects)]
         valid_till: now + chrono::Duration::hours(24),
     }

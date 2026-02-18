@@ -389,7 +389,6 @@ impl<'de> Deserialize<'de> for ShopConfig {
     {
         #[derive(Deserialize)]
         struct RawShopConfig {
-            #[serde(alias = "invoice_webhook_url")]
             invoices_webhook_url: Url,
             #[serde(default = "default_signature_max_age_secs")]
             signature_max_age_secs: u64,

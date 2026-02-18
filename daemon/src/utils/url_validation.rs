@@ -24,11 +24,8 @@
 //!    - Not multicast, broadcast or reserved ranges
 //!
 //! ## DNS rebinding
-//! The attack is mitigated by the following techniques:
-//! - HTTPS requirement (certificate validation fails if DNS rebinds to
-//!   localhost);
-//! - Usage of the resolved IP address for the actual HTTP request (not just
-//!   hostname validation).
+//! The attack is mitigated by HTTPS requirement (certificate validation fails
+//! if DNS rebinds to localhost);
 //!
 //! ## Unpleasant characters
 //! The `url` crate rejects URLs containing CRLF characters (`\r`, `\n`),
@@ -47,12 +44,6 @@
 //! - In case of response body processing expected, **a maximum response size
 //!   limit** must be implemented to prevent memory exhaustion `DoS` attacks via
 //!   huge payloads.
-//!
-//! Also, validation of the URL host against the allowed domain is currently
-//! done only for domain hosts, not for IP hosts. If the provided URL's host is
-//! an IP address rather than a domain, the allowed domains check is skipped.
-//! This is correct because IP addresses cannot be subdomains of domains - you
-//! can't compare an IP address against a domain-based allow-list.
 
 use serde::{
     Deserialize,
@@ -66,10 +57,7 @@ use sqlx::{
     Encode,
     Type,
 };
-use std::net::{
-    IpAddr,
-    Ipv4Addr,
-};
+use std::net::IpAddr;
 use thiserror::Error;
 use tokio::net as tokio_net;
 use url::{
@@ -121,8 +109,6 @@ pub async fn validate_with_allowed_base_many(
 ///
 /// Performs DNS resolution to verify that the URL endpoint does not target
 /// internal/private infrastructure.
-/// Host name in the returned `ValidatedUrl` is replaced with the resolved IP
-/// address to prevent DNS rebinding attacks.
 ///
 /// Returns the [`ValidatedUrl`] struct for the provided URL.
 ///
@@ -139,7 +125,7 @@ async fn validate_with_allowed_base_impl(
     }
 
     // Parse URL (using WHATWG standard parser)
-    let mut parsed = Url::parse(url)?;
+    let parsed = Url::parse(url)?;
 
     // HTTPS only - blocks http://, file://, ftp://, data://, javascript:, etc.
     if parsed.scheme() != "https" {
@@ -159,20 +145,17 @@ async fn validate_with_allowed_base_impl(
         return Err(UrlValidationError::HasCredentials);
     }
 
+    let host = parsed
+        .domain()
+        .ok_or(UrlValidationError::UrlHostIsNotDomain)?;
+
     // Validate against allowed base domain if provided
     if let Some(allowed_base_domain) = allowed_base_domain {
-        let host = parsed
-            .host()
-            .expect("https URLs always have a host");
-        allowed_base_domain.validate(host)?;
+        allowed_base_domain.validate(Host::Domain(host))?;
     }
 
     // DNS resolution + IP validation for SSRF prevention
     // First resolve hostname to addresses
-    let host = parsed
-        .host_str()
-        .expect("https URLs always have a host");
-
     let resolved_addrs = tokio_net::lookup_host((host, port))
         .await
         .map_err(
@@ -183,94 +166,118 @@ async fn validate_with_allowed_base_impl(
         )?;
 
     // Then validate each resolved IP address
-    let mut maybe_ip = None;
     for ip in resolved_addrs.map(|socket_addr| socket_addr.ip()) {
-        let IpAddr::V4(ipv4) = ip else {
-            continue;
-        };
+        let check_result = check_ip_is_global(ip);
 
-        if let Err(reason) = check_ipv4_is_global(ipv4) {
+        if let Err(reason) = check_result {
             return Err(UrlValidationError::NonGlobalIp {
                 hostname: host.to_string(),
                 ip: ip.to_string(),
                 reason,
             });
         }
-
-        maybe_ip.get_or_insert(ip);
     }
-
-    // Update the URL host to the resolved IP address to prevent DNS rebinding
-    // attacks.
-    let ip = maybe_ip.ok_or(UrlValidationError::NoIpAddresses(
-        host.to_string(),
-    ))?;
-    parsed
-        .set_ip_host(ip)
-        .unwrap_or_else(|()| unreachable!("HTTPS URLs always support IP hosts"));
 
     Ok(ValidatedUrl(parsed))
 }
-/// Checks whether an IPv4 address is globally routable.
+
+/// Checks whether an IP address is globally routable.
 ///
 /// Returns `Ok(())` if the IP is globally routable, or `Err(&'static str)` with
 /// the reason if it's not.
-fn check_ipv4_is_global(ip: Ipv4Addr) -> Result<(), &'static str> {
-    // Use standard library methods where stable
-    if ip.is_private() {
-        return Err("private address (RFC 1918)");
-    }
-    if ip.is_loopback() {
-        return Err("loopback address (RFC 1122)");
-    }
-    if ip.is_link_local() {
-        return Err(
-            "link-local address (RFC 3927), blocks AWS/GCP/Azure metadata at 169.254.169.254",
-        );
-    }
-    if ip.is_documentation() {
-        return Err("documentation/test address (RFC 5737)");
-    }
-    if ip.is_multicast() {
-        return Err("multicast address (RFC 5771)");
-    }
-    if ip.is_broadcast() {
-        return Err("broadcast address (RFC 919)");
-    }
+fn check_ip_is_global(ip: IpAddr) -> Result<(), &'static str> {
+    match ip {
+        IpAddr::V4(ipv4) => {
+            if ipv4.is_private() {
+                return Err("private address (RFC 1918)");
+            }
+            if ipv4.is_loopback() {
+                return Err("loopback address (RFC 1122)");
+            }
+            if ipv4.is_link_local() {
+                return Err(
+                    "link-local address (RFC 3927), blocks AWS/GCP/Azure metadata at 169.254.169.254",
+                );
+            }
+            if ipv4.is_documentation() {
+                return Err("documentation/test address (RFC 5737)");
+            }
+            if ipv4.is_multicast() {
+                return Err("multicast address (RFC 5771)");
+            }
+            if ipv4.is_broadcast() {
+                return Err("broadcast address (RFC 919)");
+            }
 
-    let octets = ip.octets();
+            let octets = ipv4.octets();
 
-    // 0.0.0.0/8 - "This" network (RFC 791)
-    if octets[0] == 0 {
-        return Err("unspecified/this network (RFC 791)");
+            if octets[0] == 0 {
+                return Err("unspecified/this network (RFC 791)");
+            }
+            if octets[0] == 100 && (octets[1] & 0xC0) == 64 {
+                return Err("CGNAT/shared address space (RFC 6598), blocks Alibaba Cloud metadata");
+            }
+            if octets[0] == 192 && octets[1] == 0 && octets[2] == 0 {
+                return Err("IETF protocol assignments (RFC 6890)");
+            }
+            if octets[0] == 192 && octets[1] == 88 && octets[2] == 99 {
+                return Err("6to4 relay anycast (RFC 7526)");
+            }
+            if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
+                return Err("benchmarking address (RFC 2544)");
+            }
+            if octets[0] >= 240 {
+                return Err("reserved address (240.0.0.0/4)");
+            }
+
+            Ok(())
+        },
+        IpAddr::V6(ipv6) => {
+            if ipv6.is_unspecified() {
+                return Err("unspecified address (::)");
+            }
+            if ipv6.is_loopback() {
+                return Err("loopback address (::1)");
+            }
+            if ipv6.is_multicast() {
+                return Err("multicast address (ff00::/8)");
+            }
+            if ipv6.is_unique_local() {
+                return Err("unique local address (fc00::/7)");
+            }
+            if ipv6.is_unicast_link_local() {
+                return Err("link-local unicast address (fe80::/10)");
+            }
+
+            let octets = ipv6.octets();
+
+            // Manually check deprecated site-local unicast range fec0::/10.
+            // Prefix condition: first octet is 0xfe and top two bits of second octet are
+            // 0b11.
+            if octets[0] == 0xfe && (octets[1] & 0xc0) == 0xc0 {
+                return Err("site-local unicast address (fec0::/10)");
+            }
+
+            if octets[0] == 0x20 && octets[1] == 0x01 && octets[2] == 0x0d && octets[3] == 0xb8 {
+                return Err("documentation address (RFC 3849)");
+            }
+            if octets[..10]
+                .iter()
+                .all(|byte| *byte == 0)
+                && octets[10] == 0xff
+                && octets[11] == 0xff
+            {
+                return Err("IPv4-mapped IPv6 address (::ffff:0:0/96)");
+            }
+
+            if let Some(ipv4) = ipv6.to_ipv4() {
+                // Check if the embedded IPv4 address is global
+                return check_ip_is_global(IpAddr::V4(ipv4));
+            }
+
+            Ok(())
+        },
     }
-
-    // 100.64.0.0/10 - CGNAT / Shared address space (RFC 6598)
-    if octets[0] == 100 && (octets[1] & 0xC0) == 64 {
-        return Err("CGNAT/shared address space (RFC 6598), blocks Alibaba Cloud metadata");
-    }
-
-    // 192.0.0.0/24 - IETF Protocol Assignments (RFC 6890)
-    if octets[0] == 192 && octets[1] == 0 && octets[2] == 0 {
-        return Err("IETF protocol assignments (RFC 6890)");
-    }
-
-    // 192.88.99.0/24 - 6to4 Relay Anycast (RFC 7526, deprecated)
-    if octets[0] == 192 && octets[1] == 88 && octets[2] == 99 {
-        return Err("6to4 relay anycast (RFC 7526)");
-    }
-
-    // 198.18.0.0/15 - Benchmarking (RFC 2544)
-    if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
-        return Err("benchmarking address (RFC 2544)");
-    }
-
-    // 240.0.0.0/4 - Reserved for future use
-    if octets[0] >= 240 {
-        return Err("reserved address (240.0.0.0/4)");
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -293,9 +300,6 @@ pub enum UrlValidationError {
     #[error("DNS lookup failed for {hostname:?}: {error}")]
     DnsLookupFailed { hostname: String, error: String },
 
-    #[error("DNS lookup for {0:?} returned no IPv4 addresses")]
-    NoIpAddresses(String),
-
     #[error("URL hostname {hostname:?} resolves to non-global IP address {ip}: {reason}")]
     NonGlobalIp {
         hostname: String,
@@ -303,8 +307,8 @@ pub enum UrlValidationError {
         reason: &'static str,
     },
 
-    #[error("URL host is empty")]
-    EmptyHost,
+    #[error("Provided URL host is not a domain")]
+    UrlHostIsNotDomain,
 
     #[error("URL hostname {hostname:?} is not allowed")]
     HostNotAllowed { hostname: String },
@@ -362,6 +366,9 @@ where
     }
 }
 
+// Decode implementation doesn't re-validate the URL as we assume that all URLs
+// in the database have been validated before insertion. TODO: add validation if
+// DNS look-up is removed?
 impl<'r, DB> Decode<'r, DB> for ValidatedUrl
 where
     DB: Database,
@@ -387,18 +394,23 @@ impl EitherDomainsCollection<'_> {
         self,
         checking_host: Host<&str>,
     ) -> Result<(), UrlValidationError> {
-        match (self, checking_host) {
-            (
-                EitherDomainsCollection::Domain(Host::Domain(domain)),
-                Host::Domain(checking_host),
-            ) => {
+        let Host::Domain(checking_host) = checking_host else {
+            return Err(UrlValidationError::UrlHostIsNotDomain);
+        };
+
+        match self {
+            EitherDomainsCollection::Domain(domain) => {
+                let Host::Domain(domain) = domain else {
+                    unreachable!("Allowed base URLs must have domain host, not URL")
+                };
+
                 if !is_same_or_subdomain(checking_host, domain) {
                     return Err(UrlValidationError::HostNotAllowed {
                         hostname: checking_host.to_string(),
                     });
                 }
             },
-            (EitherDomainsCollection::DomainCollection(domains), Host::Domain(checking_host)) => {
+            EitherDomainsCollection::DomainCollection(domains) => {
                 let mut has_allowed_domains = false;
 
                 let is_allowed = domains
@@ -415,14 +427,6 @@ impl EitherDomainsCollection<'_> {
                         hostname: checking_host.to_string(),
                     });
                 }
-            },
-            _ => {
-                // We do not check the situations when the host URL is an IP
-                // address as the config of the platform expects
-                // allowed base domains to be actual domains, not IPs.
-                //
-                // An IP check when one/both of values are IPs can be added in
-                // case the sub-domain checks are removed.
             },
         }
 
@@ -442,6 +446,8 @@ fn is_same_or_subdomain(
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv6Addr;
+
     use super::*;
 
     #[tokio::test]
@@ -451,9 +457,6 @@ mod tests {
             "https://example.com/webhook",
             "https://example.com:443/path",
             "https://example.com/path?order=123&status=paid",
-            "https://8.8.8.8/webhook",
-            "https://1.1.1.1/webhook",
-            "https://93.184.216.34/webhook",
         ];
         for url in urls {
             assert!(validate(url).await.is_ok());
@@ -475,6 +478,62 @@ mod tests {
                 hostname
             } if hostname == "evil.com"
         ));
+    }
+
+    #[tokio::test]
+    async fn reject_non_domain_hosts() {
+        let urls = [
+            "https://8.8.8.8/webhook",
+            "https://1.1.1.1/webhook",
+            "https://93.184.216.34/webhook",
+            "https://[::1]/webhook",
+            "https://[2001:db8::1]/webhook",
+        ];
+
+        for url in urls {
+            let err = validate(url).await.unwrap_err();
+            assert!(matches!(
+                err,
+                UrlValidationError::UrlHostIsNotDomain
+            ));
+        }
+    }
+
+    #[test]
+    fn reject_non_global_ipv6_ranges() {
+        let ipv6 = [
+            "::",
+            "::1",
+            "ff02::1",
+            "fc00::1",
+            "fd12:3456:789a::1",
+            "fe80::1",
+            "fec0::1",
+            "2001:db8::1",
+            "::ffff:127.0.0.1",
+        ];
+
+        for value in ipv6 {
+            let ip: Ipv6Addr = value.parse().unwrap();
+            assert!(check_ip_is_global(IpAddr::V6(ip)).is_err());
+        }
+    }
+
+    #[test]
+    fn reject_ipv6_site_local_boundaries() {
+        let start: Ipv6Addr = "fec0::".parse().unwrap();
+        let end: Ipv6Addr = "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+            .parse()
+            .unwrap();
+
+        assert!(check_ip_is_global(IpAddr::V6(start)).is_err());
+        assert!(check_ip_is_global(IpAddr::V6(end)).is_err());
+    }
+
+    #[test]
+    fn accept_global_ipv6() {
+        let ip: Ipv6Addr = "2606:4700:4700::1111".parse().unwrap();
+        assert!(check_ip_is_global(IpAddr::V6(ip)).is_ok());
     }
 
     #[tokio::test]
@@ -523,186 +582,166 @@ mod tests {
 
     #[tokio::test]
     async fn reject_localhost_variants() {
-        let urls = ["https://localhost/webhook", "https://0.0.0.0/webhook"];
+        let localhost_err = validate("https://localhost/webhook")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            localhost_err,
+            UrlValidationError::NonGlobalIp { .. }
+        ));
 
-        for url in urls {
-            let err = validate(url).await.unwrap_err();
-            assert!(matches!(
-                err,
-                UrlValidationError::NonGlobalIp { .. }
-            ));
-        }
+        assert!(check_ip_is_global("0.0.0.0".parse().unwrap()).is_err());
     }
 
-    #[tokio::test]
-    async fn reject_local_and_internal_ips() {
-        let urls = [
-            "https://10.0.0.1/webhook",        // RFC 1918 private
-            "https://172.16.0.1/webhook",      // RFC 1918 private
-            "https://192.168.1.1/webhook",     // RFC 1918 private
-            "https://169.254.169.254/webhook", // Link-local (cloud metadata)
-            "https://127.0.0.1/webhook",       // Loopback
+    #[test]
+    fn reject_local_and_internal_ips() {
+        let ips: [IpAddr; 5] = [
+            "10.0.0.1".parse().unwrap(),        // RFC 1918 private
+            "172.16.0.1".parse().unwrap(),      // RFC 1918 private
+            "192.168.1.1".parse().unwrap(),     // RFC 1918 private
+            "169.254.169.254".parse().unwrap(), // Link-local (cloud metadata)
+            "127.0.0.1".parse().unwrap(),       // Loopback
         ];
 
-        for url in urls {
-            let err = validate(url).await.unwrap_err();
-            assert!(matches!(
-                err,
-                UrlValidationError::NonGlobalIp { .. }
-            ));
+        for ip in ips {
+            assert!(check_ip_is_global(ip).is_err());
         }
     }
 
-    #[tokio::test]
-    async fn reject_loopback() {
-        assert!(
-            validate("https://127.0.0.1/webhook")
-                .await
-                .is_err()
-        );
-        assert!(
-            validate("https://127.255.255.255/webhook")
-                .await
-                .is_err()
-        );
+    #[test]
+    fn reject_loopback() {
+        assert!(check_ip_is_global("127.0.0.1".parse().unwrap()).is_err());
+        assert!(check_ip_is_global("127.255.255.255".parse().unwrap()).is_err());
     }
 
-    #[tokio::test]
-    async fn reject_rfc1918_private() {
-        let urls = [
+    #[test]
+    fn reject_rfc1918_private() {
+        let ips: [IpAddr; 5] = [
             // 10.0.0.0/8
-            "https://10.0.0.1/webhook",
-            "https://10.255.255.255/webhook",
+            "10.0.0.1".parse().unwrap(),
+            "10.255.255.255".parse().unwrap(),
             // 172.16.0.0/12
-            "https://172.16.0.1/webhook",
-            "https://172.31.255.255/webhook",
+            "172.16.0.1".parse().unwrap(),
+            "172.31.255.255".parse().unwrap(),
             // 192.168.0.0/16
-            "https://192.168.1.1/webhook",
+            "192.168.1.1".parse().unwrap(),
         ];
 
-        for url in urls {
-            let err = validate(url).await.unwrap_err();
-            assert!(matches!(
-                err,
-                UrlValidationError::NonGlobalIp { .. }
-            ));
+        for ip in ips {
+            assert!(check_ip_is_global(ip).is_err());
         }
     }
 
-    #[tokio::test]
-    async fn reject_cgnat() {
+    #[test]
+    fn reject_cgnat() {
         // 100.64.0.0/10 - CGNAT (RFC 6598), also covers Alibaba Cloud metadata
         // 100.100.100.200
-        let urls = [
-            "https://100.64.0.1/webhook",
-            "https://100.100.100.200/webhook",
-            "https://100.127.255.255/webhook",
+        let ips: [IpAddr; 3] = [
+            "100.64.0.1".parse().unwrap(),
+            "100.100.100.200".parse().unwrap(),
+            "100.127.255.255".parse().unwrap(),
         ];
 
-        for url in urls {
-            let err = validate(url).await.unwrap_err();
-            assert!(matches!(
-                err,
-                UrlValidationError::NonGlobalIp { .. }
-            ));
+        for ip in ips {
+            assert!(check_ip_is_global(ip).is_err());
         }
     }
 
-    #[tokio::test]
-    async fn reject_link_local_and_cloud_metadata() {
+    #[test]
+    fn reject_link_local_and_cloud_metadata() {
         // 169.254.0.0/16 - covers AWS/GCP/Azure metadata at 169.254.169.254
-        let urls = [
-            "https://169.254.169.254/latest/meta-data/",
-            "https://169.254.0.1/webhook",
+        let ips: [IpAddr; 2] = [
+            "169.254.169.254".parse().unwrap(),
+            "169.254.0.1".parse().unwrap(),
         ];
 
-        for url in urls {
-            let err = validate(url).await.unwrap_err();
-            assert!(matches!(
-                err,
-                UrlValidationError::NonGlobalIp { .. }
-            ));
+        for ip in ips {
+            assert!(check_ip_is_global(ip).is_err());
         }
     }
 
-    #[tokio::test]
-    async fn reject_documentation_and_test_nets() {
-        let urls = [
+    #[test]
+    fn reject_documentation_and_test_nets() {
+        let ips: [IpAddr; 3] = [
             // 192.0.2.0/24 - TEST-NET-1
-            "https://192.0.2.1/webhook",
+            "192.0.2.1".parse().unwrap(),
             // 198.51.100.0/24 - TEST-NET-2
-            "https://198.51.100.1/webhook",
+            "198.51.100.1".parse().unwrap(),
             // 203.0.113.0/24 - TEST-NET-3
-            "https://203.0.113.1/webhook",
+            "203.0.113.1".parse().unwrap(),
         ];
 
-        for url in urls {
-            let err = validate(url).await.unwrap_err();
-            assert!(matches!(
-                err,
-                UrlValidationError::NonGlobalIp { .. }
-            ));
+        for ip in ips {
+            assert!(check_ip_is_global(ip).is_err());
         }
     }
 
-    #[tokio::test]
-    async fn reject_benchmarking() {
+    #[test]
+    fn reject_benchmarking() {
         // 198.18.0.0/15
-        let urls = [
-            "https://198.18.0.1/webhook",
-            "https://198.19.255.255/webhook",
+        let ips: [IpAddr; 2] = [
+            "198.18.0.1".parse().unwrap(),
+            "198.19.255.255".parse().unwrap(),
         ];
 
-        for url in urls {
-            let err = validate(url).await.unwrap_err();
-            assert!(matches!(
-                err,
-                UrlValidationError::NonGlobalIp { .. }
-            ));
+        for ip in ips {
+            assert!(check_ip_is_global(ip).is_err());
         }
     }
 
-    #[tokio::test]
-    async fn reject_ietf_and_6to4() {
-        let urls = ["https://192.0.0.1/webhook", "https://192.88.99.1/webhook"];
+    #[test]
+    fn reject_ietf_and_6to4() {
+        let ips: [IpAddr; 2] = ["192.0.0.1".parse().unwrap(), "192.88.99.1".parse().unwrap()];
 
-        for url in urls {
-            let err = validate(url).await.unwrap_err();
-            assert!(matches!(
-                err,
-                UrlValidationError::NonGlobalIp { .. }
-            ));
+        for ip in ips {
+            assert!(check_ip_is_global(ip).is_err());
         }
     }
 
-    #[tokio::test]
-    async fn reject_multicast_and_reserved() {
-        let urls = [
-            "https://224.0.0.1/webhook",
-            "https://239.255.255.255/webhook",
-            "https://240.0.0.1/webhook",
-            "https://255.255.255.255/webhook",
+    #[test]
+    fn reject_multicast_and_reserved() {
+        let ips: [IpAddr; 4] = [
+            "224.0.0.1".parse().unwrap(),
+            "239.255.255.255".parse().unwrap(),
+            "240.0.0.1".parse().unwrap(),
+            "255.255.255.255".parse().unwrap(),
         ];
 
-        for url in urls {
-            let err = validate(url).await.unwrap_err();
-            assert!(matches!(
-                err,
-                UrlValidationError::NonGlobalIp { .. }
-            ));
+        for ip in ips {
+            assert!(check_ip_is_global(ip).is_err());
         }
     }
 
     #[test]
     fn cgnat_boundary() {
         // 100.63.255.255 is just below CGNAT range - should be allowed
-        assert!(check_ipv4_is_global("100.63.255.255".parse().unwrap()).is_ok());
+        assert!(
+            check_ip_is_global(IpAddr::V4(
+                "100.63.255.255".parse().unwrap()
+            ))
+            .is_ok()
+        );
         // 100.64.0.0 is start of CGNAT - should be blocked
-        assert!(check_ipv4_is_global("100.64.0.0".parse().unwrap()).is_err());
+        assert!(
+            check_ip_is_global(IpAddr::V4(
+                "100.64.0.0".parse().unwrap()
+            ))
+            .is_err()
+        );
         // 100.127.255.255 is end of CGNAT - should be blocked
-        assert!(check_ipv4_is_global("100.127.255.255".parse().unwrap()).is_err());
+        assert!(
+            check_ip_is_global(IpAddr::V4(
+                "100.127.255.255".parse().unwrap()
+            ))
+            .is_err()
+        );
         // 100.128.0.0 is just above CGNAT range - should be allowed
-        assert!(check_ipv4_is_global("100.128.0.0".parse().unwrap()).is_ok());
+        assert!(
+            check_ip_is_global(IpAddr::V4(
+                "100.128.0.0".parse().unwrap()
+            ))
+            .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -800,6 +839,21 @@ mod tests {
             Err(UrlValidationError::HostNotAllowed {
                 hostname
             }) if hostname == "example.com"
+        ));
+    }
+
+    #[test]
+    fn domain_collection_rejects_prefix_without_dot_separator() {
+        let domains = [Host::Domain("example.com".to_string())];
+
+        let result = EitherDomainsCollection::DomainCollection(&domains)
+            .validate(Host::Domain("evilexample.com"));
+
+        assert!(matches!(
+            result,
+            Err(UrlValidationError::HostNotAllowed {
+                hostname
+            }) if hostname == "evilexample.com"
         ));
     }
 }

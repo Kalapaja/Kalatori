@@ -4,6 +4,7 @@ use chrono::{
     Duration,
     Utc,
 };
+use futures::future;
 use rust_decimal::Decimal;
 use url::Host;
 use uuid::Uuid;
@@ -593,59 +594,60 @@ impl<D: DaoInterface> AppState<D> {
             items,
         }: PublicInvoiceCart,
     ) -> Result<InvoiceCart, DaoInvoiceError> {
-        let mut ret_items = Vec::with_capacity(items.len());
-        for item in items {
-            // Validate image url
-            let image_url = if let Some(ref image_url) = item.image_url {
-                let url = url_validation::validate_with_allowed_base_many(
-                    image_url,
-                    &self.allowed_image_domains,
-                )
-                .await
-                .map_err(
-                    |source| DaoInvoiceError::InvalidUrlParameter {
-                        description: "Invalid cart item image URL",
-                        source,
-                    },
-                )?;
+        let allowed_image_domains = &self.allowed_image_domains;
 
-                Some(url)
-            } else {
-                None
-            };
+        let items = future::try_join_all(
+            items
+                .into_iter()
+                .map(|item| async move {
+                    let image_url = if let Some(image_url) = item.image_url.as_ref() {
+                        let url = url_validation::validate_with_allowed_base_many(
+                            image_url,
+                            allowed_image_domains,
+                        )
+                        .await
+                        .map_err(
+                            |source| DaoInvoiceError::InvalidUrlParameter {
+                                description: "Invalid cart item image URL",
+                                source,
+                            },
+                        )?;
 
-            // Validate product url
-            let product_url = if let Some(ref product_url) = item.product_url {
-                let url = url_validation::validate(product_url)
-                    .await
-                    .map_err(
-                        |source| DaoInvoiceError::InvalidUrlParameter {
-                            description: "Invalid cart item product URL",
-                            source,
-                        },
-                    )?;
+                        Some(url)
+                    } else {
+                        None
+                    };
 
-                Some(url)
-            } else {
-                None
-            };
+                    let product_url = if let Some(product_url) = item.product_url.as_ref() {
+                        let url = url_validation::validate(product_url)
+                            .await
+                            .map_err(
+                                |source| DaoInvoiceError::InvalidUrlParameter {
+                                    description: "Invalid cart item product URL",
+                                    source,
+                                },
+                            )?;
 
-            // Instantiate cart item
-            let cart_item = InvoiceCartItem {
-                name: item.name,
-                quantity: item.quantity,
-                price: item.price,
-                tax: item.tax,
-                discount: item.discount,
-                image_url,
-                product_url,
-            };
+                        Some(url)
+                    } else {
+                        None
+                    };
 
-            ret_items.push(cart_item);
-        }
+                    Ok::<InvoiceCartItem, DaoInvoiceError>(InvoiceCartItem {
+                        name: item.name,
+                        quantity: item.quantity,
+                        price: item.price,
+                        tax: item.tax,
+                        discount: item.discount,
+                        image_url,
+                        product_url,
+                    })
+                }),
+        )
+        .await?;
 
         Ok(InvoiceCart {
-            items: ret_items,
+            items,
         })
     }
 }
