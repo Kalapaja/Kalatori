@@ -25,7 +25,7 @@
 //!
 //! ## DNS rebinding
 //! The attack is mitigated by HTTPS requirement (certificate validation fails
-//! if DNS rebinds to localhost);
+//! if DNS rebinds to localhost).
 //!
 //! ## Unpleasant characters
 //! The `url` crate rejects URLs containing CRLF characters (`\r`, `\n`),
@@ -111,10 +111,6 @@ pub async fn validate_with_allowed_base_many(
 /// internal/private infrastructure.
 ///
 /// Returns the [`ValidatedUrl`] struct for the provided URL.
-///
-/// ### Note
-/// If provided url doesn't have a domain in a host part (so it's IP only), the
-/// allowed base domain check is skipped.
 async fn validate_with_allowed_base_impl(
     url: &str,
     allowed_base_domain: Option<EitherDomainsCollection<'_>>,
