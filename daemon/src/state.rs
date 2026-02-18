@@ -529,12 +529,7 @@ impl<D: DaoInterface> AppState<D> {
             &self.allowed_redirect_domain,
         )
         .await
-        .map_err(
-            |source| DaoInvoiceError::InvalidUrlParameter {
-                description: "Invalid redirect URL",
-                source,
-            },
-        )?;
+        .map_err(|err| DaoInvoiceError::from_url_validation_error("Invalid redirect URL", err))?;
 
         // Validate cart item image URLs.
         let cart = self
@@ -606,12 +601,12 @@ impl<D: DaoInterface> AppState<D> {
                             allowed_image_domains,
                         )
                         .await
-                        .map_err(
-                            |source| DaoInvoiceError::InvalidUrlParameter {
-                                description: "Invalid cart item image URL",
-                                source,
-                            },
-                        )?;
+                        .map_err(|err| {
+                            DaoInvoiceError::from_url_validation_error(
+                                "Invalid cart item image URL",
+                                err,
+                            )
+                        })?;
 
                         Some(url)
                     } else {
@@ -621,12 +616,12 @@ impl<D: DaoInterface> AppState<D> {
                     let product_url = if let Some(product_url) = item.product_url.as_ref() {
                         let url = url_validation::validate(product_url)
                             .await
-                            .map_err(
-                                |source| DaoInvoiceError::InvalidUrlParameter {
-                                    description: "Invalid cart item product URL",
-                                    source,
-                                },
-                            )?;
+                            .map_err(|err| {
+                                DaoInvoiceError::from_url_validation_error(
+                                    "Invalid cart item product URL",
+                                    err,
+                                )
+                            })?;
 
                         Some(url)
                     } else {

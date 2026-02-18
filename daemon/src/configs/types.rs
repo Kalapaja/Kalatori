@@ -420,7 +420,7 @@ impl<'de> Deserialize<'de> for ShopConfig {
             }
 
             if url.domain().is_none() {
-                return Err(format!("URL has no host: {url}"));
+                return Err(format!("URL host has no domain: {url}"));
             }
 
             Ok(())
@@ -436,6 +436,11 @@ impl<'de> Deserialize<'de> for ShopConfig {
 
         // Validate allowed_image_urls
         if let Some(ref image_urls) = raw.allowed_image_urls {
+            if image_urls.is_empty() {
+                return Err(serde::de::Error::custom(
+                    "allowed_image_urls must not be an empty list; omit this field to use default behavior",
+                ));
+            }
             for image_url in image_urls {
                 validate_https_443(image_url).map_err(serde::de::Error::custom)?;
             }
@@ -446,7 +451,7 @@ impl<'de> Deserialize<'de> for ShopConfig {
         fn domain_from_url(url: Url) -> Result<Host<String>, String> {
             url.domain()
                 .map(|host| Host::Domain(host.to_string()))
-                .ok_or_else(|| format!("URL has no host in shop config: {url}"))
+                .ok_or_else(|| format!("URL host has no domain in shop config: {url}"))
         }
 
         let allowed_base_redirect_url = raw

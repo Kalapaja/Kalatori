@@ -1,9 +1,10 @@
-//! URL validation for order's callback URL with SSRF attack prevention.
+//! URL validation for order's redirect/image URL with SSRF attack prevention.
 //!
 //! # Security Model
 //!
-//! This module validates callback URLs before the server makes outbound HTTP
-//! requests to prevent Server-Side Request Forgery (SSRF) and related attacks.
+//! This module validates redirect/image URLs before the server makes outbound
+//! HTTP requests to prevent Server-Side Request Forgery (SSRF) and related
+//! attacks.
 //!
 //! ## Validation Checks Performed
 //!
@@ -266,9 +267,16 @@ fn check_ip_is_global(ip: IpAddr) -> Result<(), &'static str> {
                 return Err("IPv4-mapped IPv6 address (::ffff:0:0/96)");
             }
 
-            if let Some(ipv4) = ipv6.to_ipv4() {
-                // Check if the embedded IPv4 address is global
-                return check_ip_is_global(IpAddr::V4(ipv4));
+            // Reject IPv4-compatible IPv6 addresses (::/96, excluding ::,
+            // which is already handled by `is_unspecified` above).
+            if octets[..12]
+                .iter()
+                .all(|byte| *byte == 0)
+                && octets[12..]
+                    .iter()
+                    .any(|byte| *byte != 0)
+            {
+                return Err("IPv4-compatible IPv6 address (::/96)");
             }
 
             Ok(())
