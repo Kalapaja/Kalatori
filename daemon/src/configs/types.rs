@@ -361,7 +361,7 @@ impl ShopConfig {
         let webhook_domain = self
             .invoices_webhook_url
             .domain()
-            .expect("shop config webhook URL must have host")
+            .expect("shop config webhook URL must have domain")
             .to_owned();
 
         let allowed_base_redirect_domain = self
@@ -370,7 +370,7 @@ impl ShopConfig {
 
         let allowed_base_image_domains = self
             .allowed_base_image_urls
-            .unwrap_or_else(|| vec![Host::Domain(webhook_domain.clone())]);
+            .unwrap_or_else(|| vec![Host::Domain(webhook_domain)]);
 
         (
             self.invoices_webhook_url.to_string(),
