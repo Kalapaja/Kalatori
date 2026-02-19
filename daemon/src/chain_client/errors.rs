@@ -31,6 +31,10 @@ pub enum ClientError {
     /// Principle 1)
     #[error("Unknown asset ID in configuration: {asset_id}")]
     UnknownAssetId { asset_id: u32 },
+
+    /// Current RPC endpoint is not available
+    #[error("RPC endpoint is not available: {endpoint_url}")]
+    EndpointUnavailable { endpoint_url: String }
 }
 
 // ============================================================================

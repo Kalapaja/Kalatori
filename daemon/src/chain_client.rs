@@ -2,6 +2,7 @@ mod asset_hub;
 mod errors;
 mod keyring;
 mod polygon;
+mod rotator;
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -44,6 +45,8 @@ pub use polygon::{
     PolygonChainConfig,
     PolygonClient,
 };
+
+pub use rotator::{RpcEndpointRotator, rpc_endpoints_health_check};
 
 pub type TransfersStream<T> =
     Pin<Box<dyn stream::Stream<Item = Result<Vec<ChainTransfer<T>>, SubscriptionError>> + Send>>;
@@ -224,7 +227,10 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
 
     fn asset_info_store(&self) -> &AssetInfoStore<T>;
 
-    async fn new(config: &crate::configs::ChainConfig) -> Result<Self, ClientError>
+    async fn new(
+        config: &crate::configs::ChainConfig,
+        rotator: Arc<RwLock<RpcEndpointRotator>>,
+    ) -> Result<Self, ClientError>
     where
         Self: Sized;
 
@@ -232,6 +238,7 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<T>,
+        rotator: Arc<RwLock<RpcEndpointRotator>>,
     ) -> Result<Self, ClientError>
     where
         Self: Sized;

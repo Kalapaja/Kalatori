@@ -12,12 +12,14 @@ mod webhook_sender;
 
 use std::collections::HashMap;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use kalatori_client::types::ChainType;
 use kalatori_client::utils::HmacConfig;
 use secrecy::ExposeSecret;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
+use tokio::sync::RwLock;
 use tracing::Level;
 use zeroize::Zeroize;
 
@@ -58,6 +60,7 @@ use utils::shutdown::{
 };
 use utils::task_tracker::TaskTracker;
 
+use crate::chain_client::{RpcEndpointRotator, rpc_endpoints_health_check};
 use crate::dao::DaoInterface;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
@@ -237,7 +240,14 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let asset_hub_client = AssetHubClient::new(asset_hub_chain_config)
+    let asset_hub_endpoints_rotator = Arc::new(
+        RwLock::new(
+            RpcEndpointRotator::new(asset_hub_chain_config.endpoints.clone())
+                .expect("Failed to init rpc endpoints rotator for Asset Hub")
+        )
+    );
+
+    let asset_hub_client = AssetHubClient::new(asset_hub_chain_config, asset_hub_endpoints_rotator.clone())
         .await
         .map_err(|_| {
             tracing::warn!("Failed to initialize Asset Hub client, continuing without it");
@@ -265,7 +275,14 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let polygon_client = PolygonClient::new(polygon_chain_config)
+    let polygon_endpoints_rotator = Arc::new(
+        RwLock::new(
+            RpcEndpointRotator::new(polygon_chain_config.endpoints.clone())
+                .expect("Failed to init rpc endpoints rotator for Polygon")
+        )
+    );
+
+    let polygon_client = PolygonClient::new(polygon_chain_config, polygon_endpoints_rotator.clone())
         .await
         .map_err(|e| {
             tracing::warn!(error = ?e, "Failed to initialize Polygon client, continuing without it");
@@ -368,6 +385,14 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     )
     .await;
 
+    let rotators = vec![asset_hub_endpoints_rotator, polygon_endpoints_rotator];
+    let rpc_endpoints_health_checker = tokio::task::spawn(
+        rpc_endpoints_health_check(
+            rotators,
+            shutdown_notification.token.clone()
+        )
+    );
+
     let shutdown_completed = CancellationToken::new();
     let mut shutdown_listener = tokio::spawn(shutdown::listener(
         shutdown_notification.token.clone(),
@@ -393,6 +418,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
                 _polygon_tracker_result,
                 _webhook_sender_result,
                 _api_server_result,
+                _rpc_endpoints_health_checker_result,
             ) = tokio::join!(
                 shutdown_listener,
                 keyring_handle,
@@ -402,6 +428,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
                 polygon_tracker_handle,
                 webhook_sender_handle,
                 api_handle,
+                rpc_endpoints_health_checker,
             );
 
             shutdown_result

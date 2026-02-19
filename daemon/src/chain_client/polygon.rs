@@ -7,6 +7,7 @@ mod consts;
 mod pimlico_client;
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use alloy::eips::BlockNumberOrTag;
 use alloy::eips::eip7702::Authorization;
@@ -42,8 +43,10 @@ use rust_decimal::prelude::{
     Decimal,
     ToPrimitive,
 };
+use tokio::sync::RwLock;
 use tracing::instrument;
 
+use crate::chain_client::rotator::RpcEndpointRotator;
 use crate::types::ChainType;
 use crate::utils::logging::category::CHAIN_CLIENT;
 
@@ -261,6 +264,7 @@ pub struct PolygonClient {
     asset_info_store: AssetInfoStore<PolygonChainConfig>,
     provider: PolygonProvider,
     pimlico_client: PimlicoClient,
+    endpoint_rotator: Arc<RwLock<RpcEndpointRotator>>,
 }
 
 impl PolygonClient {
@@ -269,12 +273,12 @@ impl PolygonClient {
     async fn from_config(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
+        endpoint_rotator: Arc<RwLock<RpcEndpointRotator>>,
     ) -> Result<Self, ClientError> {
-        let endpoint = config
-            .get_random_endpoint()
-            .ok_or(ClientError::InvalidConfiguration {
-                field: "endpoints".to_string(),
-            })?;
+        let endpoint = {
+            let lock = endpoint_rotator.read().await;
+            lock.get_endpoint_url()
+        };
 
         tracing::debug!(
             url = endpoint,
@@ -286,8 +290,47 @@ impl PolygonClient {
         let ws_connect = WsConnect::new(&endpoint);
         let provider = ProviderBuilder::new()
             .connect_ws(ws_connect)
-            .await
-            .inspect_err(|e| {
+            .await;
+
+        match provider {
+            Ok(provider) => {
+                    tracing::debug!(
+                    url = endpoint,
+                    chain = %Self::chain_type(),
+                    "Connection successful"
+                );
+
+                // Get chain ID for transaction signing
+                let chain_id = provider
+                    .get_chain_id()
+                    .await
+                    .inspect_err(|e| {
+                        tracing::debug!(
+                            error.category = CHAIN_CLIENT,
+                            error.source = ?e,
+                            "Failed to get chain ID"
+                        );
+                    })
+                    .map_err(|_| ClientError::MetadataFetchFailed)?;
+
+                tracing::info!(
+                    chain_id = chain_id,
+                    endpoint = %endpoint,
+                    "Connected to Polygon network"
+                );
+
+                Ok(Self {
+                    config: config.clone(),
+                    asset_info_store,
+                    provider,
+                    pimlico_client: PimlicoClient::new(),
+                    endpoint_rotator,
+                })
+            },
+            Err(e) => {
+                let mut lock = endpoint_rotator.write().await;
+                lock.mark_unhealthy(&endpoint);
+
                 tracing::debug!(
                     error.category = CHAIN_CLIENT,
                     error.operation = "connect_client",
@@ -296,40 +339,10 @@ impl PolygonClient {
                     chain = %Self::chain_type(),
                     "Failed to connect to Polygon RPC endpoint"
                 );
-            })
-            .map_err(|_| ClientError::AllEndpointsUnreachable)?;
 
-        tracing::debug!(
-            url = endpoint,
-            chain = %Self::chain_type(),
-            "Connection successful"
-        );
-
-        // Get chain ID for transaction signing
-        let chain_id = provider
-            .get_chain_id()
-            .await
-            .inspect_err(|e| {
-                tracing::debug!(
-                    error.category = CHAIN_CLIENT,
-                    error.source = ?e,
-                    "Failed to get chain ID"
-                );
-            })
-            .map_err(|_| ClientError::MetadataFetchFailed)?;
-
-        tracing::info!(
-            chain_id = chain_id,
-            endpoint = %endpoint,
-            "Connected to Polygon network"
-        );
-
-        Ok(Self {
-            config: config.clone(),
-            asset_info_store,
-            provider,
-            pimlico_client: PimlicoClient::new(),
-        })
+                Err(ClientError::EndpointUnavailable { endpoint_url: endpoint })
+            }
+        }
     }
 
     /// Convert a log entry to a ChainTransfer
@@ -580,16 +593,20 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
     }
 
     #[instrument(skip(config))]
-    async fn new(config: &crate::configs::ChainConfig) -> Result<Self, ClientError> {
-        Self::from_config(config, AssetInfoStore::new()).await
+    async fn new(
+        config: &crate::configs::ChainConfig,
+        rotator: Arc<RwLock<RpcEndpointRotator>>,
+    ) -> Result<Self, ClientError> {
+        Self::from_config(config, AssetInfoStore::new(), rotator).await
     }
 
     #[instrument(skip(config, asset_info_store))]
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
+        rotator: Arc<RwLock<RpcEndpointRotator>>,
     ) -> Result<Self, ClientError> {
-        Self::from_config(config, asset_info_store).await
+        Self::from_config(config, asset_info_store, rotator).await
     }
 
     #[instrument(skip(self))]
@@ -599,6 +616,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         Self::from_config(
             &self.config,
             self.asset_info_store.clone(),
+            self.endpoint_rotator.clone(),
         )
         .await
     }
