@@ -105,3 +105,10 @@ cargo-fmt: # Run cargo fmt checks
 
 cargo-deny: # Run cargo deny checks
 	cargo deny -L error check
+
+#############
+### Tools ###
+#############
+
+generate-hmac-test-vectors: # Generate HMAC test vectors for the webhook simulator
+	cargo run --example generate_hmac_test_vectors -p kalatori-client

@@ -10,6 +10,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::types::{
+    ChainType,
     GeneralTransactionId,
     Transaction,
     TransactionRow,
@@ -41,6 +42,13 @@ pub enum DaoTransactionError {
     StatusConstraintViolation {
         current_status: TransactionStatus,
         attempted_status: TransactionStatus,
+    },
+
+    /// Transaction with the same blockchain coordinates already exists
+    #[error("Duplicate transaction")]
+    DuplicateTransaction {
+        chain: ChainType,
+        general_transaction_id: GeneralTransactionId,
     },
 
     /// Database operation failed
@@ -116,6 +124,13 @@ pub trait DaoTransactionMethods: DaoExecutor + 'static {
                         if message.contains("FOREIGN KEY") {
                             return DaoTransactionError::InvoiceNotFound {
                                 invoice_id: transaction.invoice_id,
+                            };
+                        }
+
+                        if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation {
+                            return DaoTransactionError::DuplicateTransaction {
+                                chain: transaction.transfer_info.chain,
+                                general_transaction_id: transaction.transaction_id,
                             };
                         }
 
@@ -430,14 +445,18 @@ mod tests {
             .unwrap();
 
         // Create Incoming transaction
-        let incoming = Transaction {
+        let mut incoming = Transaction {
             transaction_type: TransactionType::Incoming,
             ..default_transaction(invoice.id)
         };
+        incoming.transaction_id.block_number = Some(100);
+        incoming.transaction_id.tx_hash = Some(Uuid::new_v4().to_string());
+
         let created_in = dao
             .create_transaction(incoming)
             .await
             .unwrap();
+
         assert_eq!(
             created_in.transaction_type,
             TransactionType::Incoming
@@ -528,6 +547,8 @@ mod tests {
         // Test Failed status
         let mut tx_failed = default_transaction(invoice.id);
         tx_failed.status = TransactionStatus::Failed;
+        tx_failed.transaction_id.block_number = Some(100);
+        tx_failed.transaction_id.tx_hash = Some(Uuid::new_v4().to_string());
         let failed = dao
             .create_transaction(tx_failed)
             .await
@@ -704,10 +725,15 @@ mod tests {
             internal_transfer_id: None,
         };
 
-        let tx_with_origin = Transaction {
+        let mut tx_with_origin = Transaction {
             origin: origin_with_refund.clone(),
             ..default_transaction(invoice.id)
         };
+
+        tx_with_origin
+            .transaction_id
+            .block_number = Some(100);
+        tx_with_origin.transaction_id.tx_hash = Some(Uuid::new_v4().to_string());
 
         let _created = dao
             .create_transaction(tx_with_origin)
@@ -748,7 +774,9 @@ mod tests {
             .unwrap();
 
         // Create 3 transactions at different times
-        let tx1 = default_transaction(invoice.id);
+        let mut tx1 = default_transaction(invoice.id);
+        tx1.transaction_id.block_number = Some(100);
+        tx1.transaction_id.tx_hash = Some(Uuid::new_v4().to_string());
         let id1 = tx1.id;
         dao.create_transaction(tx1)
             .await
@@ -756,7 +784,9 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let tx2 = default_transaction(invoice.id);
+        let mut tx2 = default_transaction(invoice.id);
+        tx2.transaction_id.block_number = Some(300);
+        tx2.transaction_id.tx_hash = Some(Uuid::new_v4().to_string());
         let id2 = tx2.id;
         dao.create_transaction(tx2)
             .await
@@ -887,7 +917,7 @@ mod tests {
         // Try to update to Completed again (idempotent - should succeed)
         // Trigger doesn't fire because NEW.status == OLD.status
         let result = dao
-            .update_transaction_successful(id1, chain_tx_id.clone(), Utc::now())
+            .update_transaction_successful(id1, chain_tx_id, Utc::now())
             .await;
 
         // Should succeed (idempotent update)
@@ -908,17 +938,25 @@ mod tests {
 
         // Scenario 2: Valid transition Waiting -> Completed (direct, for incoming
         // transactions)
-        let tx2 = Transaction {
+        let mut tx2 = Transaction {
             status: TransactionStatus::Waiting,
             ..default_transaction(invoice_id)
         };
+        tx2.transaction_id.block_number = None;
+        tx2.transaction_id.tx_hash = None;
         let id2 = tx2.id;
         dao.create_transaction(tx2)
             .await
             .unwrap();
 
+        let chain_tx_id1 = GeneralTransactionId {
+            block_number: Some(500),
+            position_in_block: Some(1),
+            tx_hash: Some("0x12345".to_string()),
+        };
+
         let updated = dao
-            .update_transaction_successful(id2, chain_tx_id, Utc::now())
+            .update_transaction_successful(id2, chain_tx_id1, Utc::now())
             .await
             .unwrap();
         assert_eq!(

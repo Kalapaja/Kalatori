@@ -86,6 +86,15 @@ pub fn logger_config_with_prefix(
     config_from_file_or_env(&config_path, &env_prefix)
 }
 
+pub fn etherscan_client_config_with_prefix(
+    config_dir_path: &str,
+    prefix: &str,
+) -> EtherscanClientConfig {
+    let config_path = format_config_path(config_dir_path, "etherscan_client.json");
+    let env_prefix = format_prefix(prefix, "ETHERSCAN_CLIENT");
+    config_from_file_or_env(&config_path, &env_prefix)
+}
+
 // #[cfg(test)]
 // mod tests {
 //     use super::*;

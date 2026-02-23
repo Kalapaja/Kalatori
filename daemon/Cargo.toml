@@ -105,12 +105,14 @@ hmac = "0.12"
 sha2 = "0.10"
 # Let's add some random and fun to financial operations :) (it's a joke, we don't really do anything like that)
 rand = "0.10"
+governor = "0.10"
 
 [dev-dependencies]
 mockall = "0.14"
 mockall_double = "0.3"
 indoc = "2"
 serial_test = "3.2"
+tracing-test = "0.2"
 
 [build-dependencies]
 # Don't forget to update me in `[dependencies]`!

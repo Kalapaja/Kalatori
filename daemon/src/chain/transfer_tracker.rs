@@ -1,17 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{
+    HashMap,
+    HashSet,
+};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use kalatori_client::types::{
-    InvoiceEventType,
-    KalatoriEventExt,
-};
 use rust_decimal::Decimal;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::chain::TransactionsRecorderError;
 use crate::chain_client::{
     BlockChainClient,
     ChainConfig,
@@ -20,19 +20,16 @@ use crate::chain_client::{
     SubscriptionError,
     TransfersStream,
 };
-use crate::configs::PaymentsConfig;
-use crate::dao::{
-    DaoInterface,
-    DaoTransactionInterface,
-};
+use crate::dao::DaoInterface;
 use crate::types::{
     ChainType,
     IncomingTransaction,
-    InvoiceStatus,
     InvoiceWithReceivedAmount,
-    Payout,
 };
 
+use super::TransactionsRecorder;
+
+// TODO: move it somewhere else
 #[derive(Clone)]
 pub struct InvoiceRegistry {
     invoices: Arc<RwLock<HashMap<Uuid, InvoiceWithReceivedAmount>>>,
@@ -72,18 +69,23 @@ impl InvoiceRegistry {
         invoices.remove(invoice_id)
     }
 
+    #[expect(dead_code)]
     pub async fn remove_invoices(
         &self,
         invoices_ids: &[Uuid],
-    ) {
+    ) -> Vec<InvoiceWithReceivedAmount> {
         let mut invoices = self.invoices.write().await;
+        let mut removed_invoices = Vec::with_capacity(invoices_ids.len());
 
         for invoice_id in invoices_ids {
-            invoices.remove(invoice_id);
+            if let Some(invoice) = invoices.remove(invoice_id) {
+                removed_invoices.push(invoice);
+            }
         }
+
+        removed_invoices
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     pub async fn get_invoice(
         &self,
         invoice_id: &Uuid,
@@ -98,6 +100,8 @@ impl InvoiceRegistry {
         chain: ChainType,
         asset_id: &str,
     ) -> Option<InvoiceWithReceivedAmount> {
+        // TODO: if we'll have large amount of invoices and incoming transfers
+        // it might be a problem and should be optimized
         let invoices = self.invoices.read().await;
 
         invoices
@@ -122,15 +126,15 @@ impl InvoiceRegistry {
         }
     }
 
-    pub async fn used_asset_ids(&self) -> HashMap<ChainType, Vec<String>> {
+    pub async fn used_asset_ids(&self) -> HashMap<ChainType, HashSet<String>> {
         let invoices = self.invoices.read().await;
-        let mut asset_ids_map: HashMap<ChainType, Vec<String>> = HashMap::new();
+        let mut asset_ids_map: HashMap<_, HashSet<_>> = HashMap::new();
 
         for record in invoices.values() {
             asset_ids_map
                 .entry(record.invoice.chain)
                 .or_default()
-                .push(record.invoice.asset_id.clone());
+                .insert(record.invoice.asset_id.clone());
         }
 
         asset_ids_map
@@ -143,21 +147,14 @@ impl InvoiceRegistry {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-enum ChainTransferTrackerError {
-    #[error("DAO transaction error")]
-    DaoTransactionError,
-}
-
 pub struct TransfersTracker<
     T: ChainConfig,
     C: BlockChainClient<T> + 'static,
     D: DaoInterface + 'static,
 > {
     client: C,
-    dao: D,
     registry: InvoiceRegistry,
-    config: PaymentsConfig,
+    transactions_recorder: TransactionsRecorder<D>,
     phantom: std::marker::PhantomData<T>,
 }
 
@@ -166,15 +163,13 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
 {
     pub fn new(
         client: C,
-        dao: D,
         registry: InvoiceRegistry,
-        config: PaymentsConfig,
+        transactions_recorder: TransactionsRecorder<D>,
     ) -> Self {
         TransfersTracker {
             client,
-            dao,
             registry,
-            config,
+            transactions_recorder,
             phantom: std::marker::PhantomData,
         }
     }
@@ -202,90 +197,12 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
             .ok()
     }
 
-    async fn store_transaction(
-        &self,
-        transaction: IncomingTransaction,
-        invoice_status: InvoiceStatus,
-        total_received_amount: Decimal,
-    ) -> Result<(), ChainTransferTrackerError> {
-        let dao_transaction = self
-            .dao
-            .begin_transaction()
-            .await
-            .map_err(|_e| ChainTransferTrackerError::DaoTransactionError)?;
-
-        let invoice_id = transaction.invoice_id;
-        let chain = transaction.transfer_info.chain;
-
-        dao_transaction
-            .create_transaction(transaction.into())
-            .await
-            .map_err(|_e| ChainTransferTrackerError::DaoTransactionError)?;
-
-        let invoice = dao_transaction
-            .update_invoice_status(invoice_id, invoice_status)
-            .await
-            .map_err(|_e| ChainTransferTrackerError::DaoTransactionError)?;
-
-        let public_invoice = invoice
-            .clone()
-            .with_amount(total_received_amount)
-            .into_public_invoice(&self.config.payment_url_base);
-
-        if invoice_status == InvoiceStatus::Paid {
-            let payout = Payout::from_invoice(
-                invoice,
-                self.config
-                    .recipient
-                    .get(&chain)
-                    .unwrap()
-                    .clone(),
-            );
-
-            dao_transaction
-                .create_payout(payout)
-                .await
-                .map_err(|_e| ChainTransferTrackerError::DaoTransactionError)?;
-
-            let event = public_invoice
-                .build_event(InvoiceEventType::Paid)
-                .into();
-
-            dao_transaction
-                .create_webhook_event(event)
-                .await
-                .map_err(|_e| ChainTransferTrackerError::DaoTransactionError)?;
-        } else if invoice_status == InvoiceStatus::PartiallyPaid {
-            let event = public_invoice
-                .build_event(InvoiceEventType::PartiallyPaid)
-                .into();
-
-            dao_transaction
-                .create_webhook_event(event)
-                .await
-                .map_err(|_e| ChainTransferTrackerError::DaoTransactionError)?;
-        }
-
-        // TODO: handle overpayments
-
-        dao_transaction
-            .commit()
-            .await
-            .map_err(|_e| ChainTransferTrackerError::DaoTransactionError)?;
-
-        Ok(())
-    }
-
-    #[expect(clippy::arithmetic_side_effects)]
     #[tracing::instrument(skip(self))]
     async fn process_transfer(
         &self,
         transfer: GeneralChainTransfer,
     ) {
-        if let Some(InvoiceWithReceivedAmount {
-            invoice,
-            mut total_received_amount,
-        }) = self
+        if let Some(mut invoice) = self
             .registry
             .find_invoice_by_address(
                 &transfer.recipient,
@@ -294,86 +211,38 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
             )
             .await
         {
+            let invoice_id = invoice.invoice.id;
+
             tracing::info!(
-                invoice_id = %invoice.id,
+                %invoice_id,
                 "Processing incoming transfer for invoice"
             );
 
-            let transaction = IncomingTransaction::from_chain_transfer(invoice.id, transfer);
-            total_received_amount += transaction.transfer_info.amount;
-
-            let underpayment_tolerance = self
-                .config
-                .get_asset_underpayment_tolerance(invoice.chain, &invoice.asset_id);
-            let min_paid_amount = invoice.amount - underpayment_tolerance;
-
-            // TODO: handle overpayments
-            let updated_status = if total_received_amount >= min_paid_amount {
-                InvoiceStatus::Paid
-            } else {
-                InvoiceStatus::PartiallyPaid
-            };
+            let transaction = IncomingTransaction::from_chain_transfer(invoice_id, transfer);
 
             match self
-                .store_transaction(
-                    transaction,
-                    updated_status,
-                    total_received_amount,
-                )
+                .transactions_recorder
+                .process_invoice_transaction(&mut invoice, transaction)
                 .await
             {
-                Ok(()) if updated_status == InvoiceStatus::Paid => {
-                    tracing::info!(
-                        invoice_id = %invoice.id,
-                        filled_amount = %total_received_amount,
-                        min_fill_amount = %min_paid_amount,
-                        "Invoice has been paid, removing from registry, stop monitoring"
-                    );
-
-                    self.registry
-                        .remove_invoice(&invoice.id)
-                        .await;
-                },
-                Ok(()) if updated_status == InvoiceStatus::PartiallyPaid => {
-                    tracing::info!(
-                        invoice_id = %invoice.id,
-                        filled_amount = %total_received_amount,
-                        min_fill_amount = %min_paid_amount,
-                        "Invoice has been partially paid, updating filled amount in registry"
-                    );
-
-                    self.registry
-                        .update_filled_amount(&invoice.id, total_received_amount)
-                        .await;
-                },
-                Ok(()) => {
-                    // This should not happen
-                    tracing::error!(
-                        invoice_id = %invoice.id,
-                        error.category = "transfer_tracker",
-                        error.operation = "process_transfer",
-                        "Unexpected invoice status after storing transaction"
-                    );
-
-                    self.registry
-                        .update_filled_amount(&invoice.id, total_received_amount)
-                        .await;
-                },
-                // TODO: handle different errors separately. Behavior may differ based on the error
-                Err(e) => {
-                    tracing::error!(
-                        invoice_id = %invoice.id,
-                        error.category = "transfer_tracker",
-                        error.operation = "process_transfer",
-                        error.source = ?e,
-                        "Error storing transaction for invoice"
-                    );
-
-                    self.registry
-                        .update_filled_amount(&invoice.id, total_received_amount)
-                        .await;
-                },
-            }
+                Ok(()) => tracing::info!(
+                    %invoice_id,
+                    invoice_status = %invoice.invoice.status,
+                    total_received_amount = %invoice.total_received_amount,
+                    "Transfer has been stored in database successfully, invoice has been updated"
+                ),
+                Err(TransactionsRecorderError::TransactionDuplication {
+                    ..
+                }) => tracing::info!(
+                    %invoice_id,
+                    "Transfer is already presented in database, invoice hasn't been updated"
+                ),
+                Err(e) => tracing::warn!(
+                    %invoice_id,
+                    error = ?e,
+                    "Error while trying to store transfer in database, invoice hasn't been updated"
+                ),
+            };
         }
     }
 
@@ -438,6 +307,9 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                             "Recreated blockchain client for {} with new RPC endpoint",
                             self.client.chain_name()
                         );
+
+                        // Retry subscription immediately with the new client
+                        continue;
                     },
                     Err(e) => {
                         tracing::error!(
@@ -446,6 +318,17 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                             error.source = ?e,
                             "Error recreating blockchain client"
                         );
+                    },
+                }
+
+                // All endpoints failed — wait before retrying, but respect cancellation
+                tokio::select! {
+                    () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+                    () = token.cancelled() => {
+                        tracing::info!(
+                            "Transfers tracker received cancellation signal, shutting down"
+                        );
+                        break;
                     },
                 }
 
@@ -476,7 +359,19 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
         // TODO: handle invalid asset IDs, though they shouldn't happen in practice
         let assets = assets
             .iter()
-            .filter_map(|asset_id| T::AssetId::from_str(asset_id).ok())
+            .filter_map(|asset_id| T::AssetId::from_str(asset_id)
+                .inspect_err(|_e| {
+                    tracing::error!(
+                        // TODO: add error, it should implement either debug or display
+                        chain = %T::CHAIN_TYPE,
+                        %asset_id,
+                        "Error while trying to parse asset id `{}` for {} chain tracker, it will be skipped",
+                        asset_id,
+                        T::CHAIN_TYPE
+                    )
+                })
+                .ok()
+            )
             .collect();
 
         tokio::spawn(async move {

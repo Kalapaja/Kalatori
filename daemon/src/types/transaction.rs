@@ -351,3 +351,28 @@ impl From<IncomingTransaction> for Transaction {
         }
     }
 }
+
+#[cfg(test)]
+pub fn default_incoming_transaction(invoice_id: Uuid) -> IncomingTransaction {
+    let transfer_info = TransferInfo {
+        asset_id: 1984.to_string(),
+        asset_name: "USDT".to_string(),
+        chain: ChainType::PolkadotAssetHub,
+        amount: rust_decimal::Decimal::new(10000, 2),
+        source_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
+        destination_address: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+    };
+
+    let transaction_id = GeneralTransactionId {
+        block_number: Some(1000),
+        position_in_block: Some(2),
+        tx_hash: Some("0x1234567890abcdef".to_string()),
+    };
+
+    IncomingTransaction {
+        id: Uuid::new_v4(),
+        invoice_id,
+        transfer_info,
+        transaction_id,
+    }
+}

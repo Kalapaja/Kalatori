@@ -2,6 +2,7 @@ use std::net::{
     IpAddr,
     Ipv4Addr,
 };
+use std::num::NonZeroU32;
 
 use kalatori_client::types::ChainType;
 
@@ -37,3 +38,6 @@ pub const DEFAULT_DATABASE_DIR: &str = "./database";
 pub const DEFAULT_SIGNATURE_MAX_AGE_SECS: u64 = 300; // 5 minutes
 
 pub const DEFAULT_LOG_DIRECTIVES: &str = "kalatori=trace,info";
+
+// Default limit for free account
+pub const DEFAULT_ETHERSCAN_LIMIT_PER_SECOND: NonZeroU32 = NonZeroU32::new(3).unwrap();

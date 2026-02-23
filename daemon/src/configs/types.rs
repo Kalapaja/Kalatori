@@ -1,8 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{
+    HashMap,
+    HashSet,
+};
 use std::net::IpAddr;
+use std::num::NonZeroU32;
 use std::str::FromStr;
 
-use rand::prelude::*;
 use rust_decimal::Decimal;
 use secrecy::SecretString;
 use serde::{
@@ -18,6 +21,7 @@ use super::consts::{
     DEFAULT_ASSET_HUB_ASSET_ID,
     DEFAULT_CHAIN,
     DEFAULT_DATABASE_DIR,
+    DEFAULT_ETHERSCAN_LIMIT_PER_SECOND,
     DEFAULT_HOST,
     DEFAULT_INVOICE_LIFETIME_MILLIS,
     DEFAULT_LOG_DIRECTIVES,
@@ -96,7 +100,7 @@ impl ChainsConfig {
     /// database
     pub fn add_restored_asset_ids(
         &mut self,
-        restored_asset_ids: HashMap<ChainType, Vec<String>>,
+        restored_asset_ids: HashMap<ChainType, HashSet<String>>,
     ) {
         for (chain_type, asset_ids) in restored_asset_ids {
             let chain_config = self
@@ -341,4 +345,15 @@ pub struct LoggerConfig {
     pub directives: String,
     #[serde(default)]
     pub loki_url: Option<String>,
+}
+
+fn default_etherscan_limit_per_second() -> NonZeroU32 {
+    DEFAULT_ETHERSCAN_LIMIT_PER_SECOND
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct EtherscanClientConfig {
+    #[serde(default = "default_etherscan_limit_per_second")]
+    pub requests_per_second: NonZeroU32,
+    pub api_key: String,
 }

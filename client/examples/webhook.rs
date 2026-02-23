@@ -58,7 +58,7 @@ async fn main() {
     // Create an invoice to trigger the webhook
     let payload = CreateInvoiceParams {
         order_id: Uuid::new_v4().to_string(),
-        amount: Decimal::new(1, 1), // 0.10
+        amount: Decimal::new(5, 1), // 0.10
         cart: InvoiceCart::empty(),
         redirect_url: "http://example.com/thank-you".to_string(),
         include_transactions: false,

@@ -1,20 +1,8 @@
 target
-tests/kalatori-api-test-suite/node_modules/
-*.db
-*.sqlite
-*.txt
 database/
+
+# front-end
 static/
-kalatori.toml
-
-# IDE
-
-.vscode
-.idea
-
-# dev
-substrate-parser
-substrate-constructor
 
 # `cargo install` files
 /.crates.toml
@@ -26,4 +14,5 @@ substrate-constructor
 # asset hub node metadata required for subxt compilation
 /metadata.scale
 
+# locally used configs
 /configs/*.json
