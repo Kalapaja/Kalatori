@@ -115,7 +115,10 @@ impl RpcEndpointRotator {
         url: &str,
     ) {
         match self.endpoints.get_mut(url) {
-            Some(endpoint) => endpoint.increment_retry(),
+            Some(endpoint) => {
+                endpoint.increment_retry();
+                tracing::warn!("Marked endpoint {url} as unhealthy");
+            },
             None => tracing::warn!("Failed to increment retry. Endpoint {url} not found"),
         }
     }
@@ -123,8 +126,16 @@ impl RpcEndpointRotator {
     pub fn heal_endpoints(&mut self) {
         self.endpoints
             .values_mut()
-            .filter(|endpoint| endpoint.is_get_healthy())
-            .for_each(|endpoint| endpoint.mark_healthy());
+            .filter(|endpoint| {
+                matches!(
+                    endpoint.status,
+                    RpcEndpointStatus::Unhealthy
+                ) && endpoint.is_get_healthy()
+            })
+            .for_each(|endpoint| {
+                endpoint.mark_healthy();
+                tracing::debug!("Endpoint {} got healthy", endpoint.url);
+            });
     }
 }
 
@@ -132,6 +143,7 @@ pub async fn rpc_endpoints_health_check(
     rotators: Vec<Arc<RwLock<RpcEndpointRotator>>>,
     cancellation_token: tokio_util::sync::CancellationToken,
 ) {
+    tracing::info!("Starting rpc endpoints health checker");
     let mut interval = tokio::time::interval(HEALTH_CHECK_DELAY);
 
     loop {
