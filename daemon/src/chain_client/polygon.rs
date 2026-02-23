@@ -294,7 +294,7 @@ impl PolygonClient {
 
         match provider {
             Ok(provider) => {
-                    tracing::debug!(
+                tracing::debug!(
                     url = endpoint,
                     chain = %Self::chain_type(),
                     "Connection successful"
@@ -340,8 +340,10 @@ impl PolygonClient {
                     "Failed to connect to Polygon RPC endpoint"
                 );
 
-                Err(ClientError::EndpointUnavailable { endpoint_url: endpoint })
-            }
+                Err(ClientError::EndpointUnavailable {
+                    endpoint_url: endpoint,
+                })
+            },
         }
     }
 

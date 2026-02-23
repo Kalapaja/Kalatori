@@ -46,7 +46,10 @@ pub use polygon::{
     PolygonClient,
 };
 
-pub use rotator::{RpcEndpointRotator, rpc_endpoints_health_check};
+pub use rotator::{
+    RpcEndpointRotator,
+    rpc_endpoints_health_check,
+};
 
 pub type TransfersStream<T> =
     Pin<Box<dyn stream::Stream<Item = Result<Vec<ChainTransfer<T>>, SubscriptionError>> + Send>>;

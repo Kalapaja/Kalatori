@@ -1,6 +1,11 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{
+    DateTime,
+    Utc,
+};
 use tokio::sync::RwLock;
 
 use crate::chain_client::ClientError;
@@ -11,17 +16,17 @@ const HEALTH_CHECK_DELAY: Duration = Duration::from_secs(60);
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub enum RpcEndpointStatus {
-	Healthy,
-	Unhealthy
+    Healthy,
+    Unhealthy,
 }
 
 #[derive(Debug)]
 pub struct RpcEndpoint {
-	url: String,
-	status: RpcEndpointStatus,
+    url: String,
+    status: RpcEndpointStatus,
     attempts: u32,
-	last_attempt_at: Option<DateTime<Utc>>,
-	next_retry_at: Option<DateTime<Utc>>,
+    last_attempt_at: Option<DateTime<Utc>>,
+    next_retry_at: Option<DateTime<Utc>>,
 }
 
 impl RpcEndpoint {
@@ -54,16 +59,18 @@ impl RpcEndpoint {
 
 #[derive(Debug)]
 pub struct RpcEndpointRotator {
-	endpoints: HashMap<String, RpcEndpoint>,
+    endpoints: HashMap<String, RpcEndpoint>,
 }
 
 impl RpcEndpointRotator {
-	pub fn new(endpoints: Vec<String>) -> Result<RpcEndpointRotator, ClientError> {
+    pub fn new(endpoints: Vec<String>) -> Result<RpcEndpointRotator, ClientError> {
         if endpoints.is_empty() {
-            return Err(ClientError::InvalidConfiguration { field: "Endpoints cannot be empty".to_string() })
+            return Err(ClientError::InvalidConfiguration {
+                field: "Endpoints cannot be empty".to_string(),
+            })
         }
 
-		let endpoints = endpoints
+        let endpoints = endpoints
             .into_iter()
             .map(|url| {
                 let endpoint = RpcEndpoint {
@@ -81,9 +88,9 @@ impl RpcEndpointRotator {
         Ok(Self {
             endpoints,
         })
-	}
-	
-	pub fn get_endpoint_url(&self) -> String {
+    }
+
+    pub fn get_endpoint_url(&self) -> String {
         for (url, endpoint) in &self.endpoints {
             if matches!(
                 endpoint.status,
@@ -101,12 +108,15 @@ impl RpcEndpointRotator {
             .unwrap()
             .url
             .clone()
-	}
+    }
 
-    pub fn mark_unhealthy(&mut self, url: &str) {
+    pub fn mark_unhealthy(
+        &mut self,
+        url: &str,
+    ) {
         match self.endpoints.get_mut(url) {
             Some(endpoint) => endpoint.increment_retry(),
-            None => tracing::warn!("Failed to increment retry. Endpoint {url} not found")
+            None => tracing::warn!("Failed to increment retry. Endpoint {url} not found"),
         }
     }
 
@@ -152,7 +162,7 @@ mod test {
             status: RpcEndpointStatus::Healthy,
             attempts: 0,
             last_attempt_at: None,
-            next_retry_at: None
+            next_retry_at: None,
         }
     }
 
@@ -193,14 +203,20 @@ mod test {
         let mut endpoint = rpc_endpoint();
         endpoint.increment_retry();
 
-        assert_eq!(endpoint.status, RpcEndpointStatus::Unhealthy);
+        assert_eq!(
+            endpoint.status,
+            RpcEndpointStatus::Unhealthy
+        );
         assert_eq!(endpoint.attempts, 1);
         assert!(endpoint.last_attempt_at.is_some());
         assert!(endpoint.next_retry_at.is_some());
 
         endpoint.mark_healthy();
 
-        assert_eq!(endpoint.status, RpcEndpointStatus::Healthy);
+        assert_eq!(
+            endpoint.status,
+            RpcEndpointStatus::Healthy
+        );
         assert_eq!(endpoint.attempts, 0);
         assert!(endpoint.last_attempt_at.is_none());
         assert!(endpoint.next_retry_at.is_none());

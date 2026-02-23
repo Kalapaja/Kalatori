@@ -24,12 +24,12 @@ use subxt::{
     Config,
     SubstrateConfig,
 };
+use tokio::sync::RwLock;
 use tracing::{
     debug,
     instrument,
     warn,
 };
-use tokio::sync::RwLock;
 
 use crate::chain_client::rotator::RpcEndpointRotator;
 use crate::types::ChainType;
@@ -207,8 +207,10 @@ impl AssetHubClient {
                     "Failed to connect to Asset Hub RPC endpoint"
                 );
 
-                Err(ClientError::EndpointUnavailable { endpoint_url: endpoint })
-            }
+                Err(ClientError::EndpointUnavailable {
+                    endpoint_url: endpoint,
+                })
+            },
         }
     }
 

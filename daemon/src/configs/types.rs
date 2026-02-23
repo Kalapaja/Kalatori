@@ -59,13 +59,6 @@ pub struct ChainConfig {
     pub allow_insecure_endpoints: bool,
 }
 
-impl ChainConfig {
-    pub fn get_random_endpoint(&self) -> Option<String> {
-        let mut rng = rand::rng();
-        self.endpoints.choose(&mut rng).cloned()
-    }
-}
-
 #[derive(Deserialize, Clone, Debug)]
 pub struct ChainsConfig {
     /// Configuration per supported chain. See `ChainConfig` for details.

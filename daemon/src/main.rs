@@ -18,8 +18,8 @@ use kalatori_client::types::ChainType;
 use kalatori_client::utils::HmacConfig;
 use secrecy::ExposeSecret;
 use tokio::runtime::Runtime;
-use tokio_util::sync::CancellationToken;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::Level;
 use zeroize::Zeroize;
 
@@ -60,7 +60,10 @@ use utils::shutdown::{
 };
 use utils::task_tracker::TaskTracker;
 
-use crate::chain_client::{RpcEndpointRotator, rpc_endpoints_health_check};
+use crate::chain_client::{
+    RpcEndpointRotator,
+    rpc_endpoints_health_check,
+};
 use crate::dao::DaoInterface;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
@@ -240,19 +243,20 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let asset_hub_endpoints_rotator = Arc::new(
-        RwLock::new(
-            RpcEndpointRotator::new(asset_hub_chain_config.endpoints.clone())
-                .expect("Failed to init rpc endpoints rotator for Asset Hub")
-        )
-    );
+    let asset_hub_endpoints_rotator = Arc::new(RwLock::new(
+        RpcEndpointRotator::new(asset_hub_chain_config.endpoints.clone())
+            .expect("Failed to init rpc endpoints rotator for Asset Hub"),
+    ));
 
-    let asset_hub_client = AssetHubClient::new(asset_hub_chain_config, asset_hub_endpoints_rotator.clone())
-        .await
-        .map_err(|_| {
-            tracing::warn!("Failed to initialize Asset Hub client, continuing without it");
-            Error::Fatal
-        })?;
+    let asset_hub_client = AssetHubClient::new(
+        asset_hub_chain_config,
+        asset_hub_endpoints_rotator.clone(),
+    )
+    .await
+    .map_err(|_| {
+        tracing::warn!("Failed to initialize Asset Hub client, continuing without it");
+        Error::Fatal
+    })?;
 
     asset_hub_client
         .init_asset_info(asset_hub_assets)
@@ -275,19 +279,20 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let polygon_endpoints_rotator = Arc::new(
-        RwLock::new(
-            RpcEndpointRotator::new(polygon_chain_config.endpoints.clone())
-                .expect("Failed to init rpc endpoints rotator for Polygon")
-        )
-    );
+    let polygon_endpoints_rotator = Arc::new(RwLock::new(
+        RpcEndpointRotator::new(polygon_chain_config.endpoints.clone())
+            .expect("Failed to init rpc endpoints rotator for Polygon"),
+    ));
 
-    let polygon_client = PolygonClient::new(polygon_chain_config, polygon_endpoints_rotator.clone())
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = ?e, "Failed to initialize Polygon client, continuing without it");
-            Error::Fatal
-        })?;
+    let polygon_client = PolygonClient::new(
+        polygon_chain_config,
+        polygon_endpoints_rotator.clone(),
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(error = ?e, "Failed to initialize Polygon client, continuing without it");
+        Error::Fatal
+    })?;
 
     polygon_client
         .init_asset_info(polygon_assets)
@@ -386,12 +391,10 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     .await;
 
     let rotators = vec![asset_hub_endpoints_rotator, polygon_endpoints_rotator];
-    let rpc_endpoints_health_checker = tokio::task::spawn(
-        rpc_endpoints_health_check(
-            rotators,
-            shutdown_notification.token.clone()
-        )
-    );
+    let rpc_endpoints_health_checker = tokio::task::spawn(rpc_endpoints_health_check(
+        rotators,
+        shutdown_notification.token.clone(),
+    ));
 
     let shutdown_completed = CancellationToken::new();
     let mut shutdown_listener = tokio::spawn(shutdown::listener(
