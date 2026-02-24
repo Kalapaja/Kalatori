@@ -7,7 +7,6 @@ mod consts;
 mod pimlico_client;
 
 use std::str::FromStr;
-use std::sync::Arc;
 
 use alloy::eips::BlockNumberOrTag;
 use alloy::eips::eip7702::Authorization;
@@ -263,7 +262,7 @@ pub struct PolygonClient {
     asset_info_store: AssetInfoStore<PolygonChainConfig>,
     provider: PolygonProvider,
     pimlico_client: PimlicoClient,
-    endpoint_rotator: Arc<RpcEndpointRotator>,
+    endpoint_rotator: RpcEndpointRotator,
 }
 
 impl PolygonClient {
@@ -272,10 +271,10 @@ impl PolygonClient {
     async fn from_config(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
-        endpoint_rotator: Arc<RpcEndpointRotator>,
+        endpoint_rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
         let endpoint = endpoint_rotator
-            .get_endpoint_url()
+            .get_endpoint_url(Self::chain_type())
             .await;
 
         tracing::debug!(
@@ -327,7 +326,7 @@ impl PolygonClient {
             },
             Err(e) => {
                 endpoint_rotator
-                    .mark_unhealthy(&endpoint)
+                    .mark_unhealthy(&endpoint, Self::chain_type())
                     .await;
 
                 tracing::debug!(
@@ -596,7 +595,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
     #[instrument(skip(config))]
     async fn new(
         config: &crate::configs::ChainConfig,
-        rotator: Arc<RpcEndpointRotator>,
+        rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
         Self::from_config(config, AssetInfoStore::new(), rotator).await
     }
@@ -605,7 +604,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
-        rotator: Arc<RpcEndpointRotator>,
+        rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
         Self::from_config(config, asset_info_store, rotator).await
     }

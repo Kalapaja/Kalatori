@@ -16,7 +16,6 @@ use std::collections::{
     HashSet,
 };
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use kalatori_client::types::ChainType;
 use kalatori_client::utils::HmacConfig;
@@ -42,6 +41,7 @@ use configs::{
     PaymentsConfig,
     chains_config_with_prefix,
     database_config_with_prefix,
+    etherscan_client_config_with_prefix,
     logger_config_with_prefix,
     payments_config_with_prefix,
     secrets_config_with_prefix,
@@ -65,11 +65,7 @@ use utils::shutdown::{
 use utils::task_tracker::TaskTracker;
 
 use crate::chain::TransactionsRecorder;
-use crate::chain_client::{
-    RpcEndpointRotator,
-    rpc_endpoints_health_check,
-};
-use crate::configs::etherscan_client_config_with_prefix;
+use crate::chain_client::RpcEndpointRotator;
 use crate::dao::DaoInterface;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
@@ -250,14 +246,14 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let asset_hub_endpoints_rotator = Arc::new(
-        RpcEndpointRotator::new(asset_hub_chain_config.endpoints.clone())
-            .expect("Failed to init rpc endpoints rotator for Asset Hub"),
-    );
+    let endpoints_rotator = RpcEndpointRotator::new(&chains_config).map_err(|_| {
+        tracing::warn!("Failed to initialize Rpc Endpoint Rotator");
+        Error::Fatal
+    })?;
 
     let asset_hub_client = AssetHubClient::new(
         asset_hub_chain_config,
-        asset_hub_endpoints_rotator.clone(),
+        endpoints_rotator.clone(),
     )
     .await
     .map_err(|_| {
@@ -286,14 +282,9 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let polygon_endpoints_rotator = Arc::new(
-        RpcEndpointRotator::new(polygon_chain_config.endpoints.clone())
-            .expect("Failed to init rpc endpoints rotator for Polygon"),
-    );
-
     let polygon_client = PolygonClient::new(
         polygon_chain_config,
-        polygon_endpoints_rotator.clone(),
+        endpoints_rotator.clone(),
     )
     .await
     .map_err(|e| {
@@ -407,11 +398,9 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     )
     .await;
 
-    let rotators = vec![asset_hub_endpoints_rotator, polygon_endpoints_rotator];
-    let rpc_endpoints_health_checker = tokio::task::spawn(rpc_endpoints_health_check(
-        rotators,
-        shutdown_notification.token.clone(),
-    ));
+    let rpc_endpoints_health_checker = endpoints_rotator
+        .periodic_health_check(shutdown_notification.token.clone())
+        .await;
 
     let shutdown_completed = CancellationToken::new();
     let mut shutdown_listener = tokio::spawn(shutdown::listener(

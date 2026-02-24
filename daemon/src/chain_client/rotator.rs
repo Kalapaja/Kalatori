@@ -5,12 +5,50 @@ use chrono::{
     DateTime,
     Utc,
 };
+use kalatori_client::types::ChainType;
 use tokio::sync::RwLock;
 
 use crate::chain_client::ClientError;
+use crate::configs::ChainsConfig;
 
 const TIMEOUT: u64 = 60; // 1 minute
 const HEALTH_CHECK_DELAY: Duration = Duration::from_secs(60);
+
+fn init_chain_endpoints(
+    chains_config: &ChainsConfig,
+    chain_type: ChainType,
+) -> Result<Vec<RpcEndpoint>, ClientError> {
+    let config = chains_config
+        .chains
+        .get(&chain_type)
+        .expect(&format!(
+            "Failed to get {:?} config",
+            chain_type
+        ));
+
+    if config.endpoints.is_empty() {
+        return Err(ClientError::InvalidConfiguration {
+            field: format!(
+                "{:?} endpoints cannot be empty",
+                chain_type
+            ),
+        })
+    }
+
+    let endpoints = config
+        .endpoints
+        .iter()
+        .map(|url| RpcEndpoint {
+            url: url.clone(),
+            attempts: 0,
+            status: RpcEndpointStatus::Healthy,
+            last_attempt_at: None,
+            next_retry_at: None,
+        })
+        .collect();
+
+    Ok(endpoints)
+}
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -56,37 +94,45 @@ impl RpcEndpoint {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RpcEndpointRotator {
-    endpoints: RwLock<Vec<RpcEndpoint>>,
+    asset_hub_endpoints: Arc<RwLock<Vec<RpcEndpoint>>>,
+    polygon_endpoints: Arc<RwLock<Vec<RpcEndpoint>>>,
 }
 
 impl RpcEndpointRotator {
-    pub fn new(endpoints: Vec<String>) -> Result<RpcEndpointRotator, ClientError> {
-        if endpoints.is_empty() {
-            return Err(ClientError::InvalidConfiguration {
-                field: "Endpoints cannot be empty".to_string(),
-            })
-        }
+    pub fn new(chains_config: &ChainsConfig) -> Result<RpcEndpointRotator, ClientError> {
+        let asset_hub = init_chain_endpoints(
+            &chains_config,
+            ChainType::PolkadotAssetHub,
+        )
+        .expect("Asset Hub failure");
 
-        let endpoints = endpoints
-            .into_iter()
-            .map(|url| RpcEndpoint {
-                url: url.clone(),
-                attempts: 0,
-                status: RpcEndpointStatus::Healthy,
-                last_attempt_at: None,
-                next_retry_at: None,
-            })
-            .collect();
+        let polygon =
+            init_chain_endpoints(&chains_config, ChainType::Polygon).expect("Polygon failure");
 
         Ok(Self {
-            endpoints: RwLock::new(endpoints),
+            asset_hub_endpoints: Arc::new(RwLock::new(asset_hub)),
+            polygon_endpoints: Arc::new(RwLock::new(polygon)),
         })
     }
 
-    pub async fn get_endpoint_url(&self) -> String {
-        let lock = self.endpoints.read().await;
+    fn get_chain_endpoints(
+        &self,
+        chain_type: ChainType,
+    ) -> Arc<RwLock<Vec<RpcEndpoint>>> {
+        match chain_type {
+            ChainType::PolkadotAssetHub => self.asset_hub_endpoints.clone(),
+            ChainType::Polygon => self.polygon_endpoints.clone(),
+        }
+    }
+
+    pub async fn get_endpoint_url(
+        &self,
+        chain_type: ChainType,
+    ) -> String {
+        let endpoints = self.get_chain_endpoints(chain_type);
+        let lock = endpoints.read().await;
 
         for endpoint in lock.iter() {
             if matches!(
@@ -109,8 +155,10 @@ impl RpcEndpointRotator {
     pub async fn mark_unhealthy(
         &self,
         url: &str,
+        chain_type: ChainType,
     ) {
-        let mut lock = self.endpoints.write().await;
+        let endpoints = self.get_chain_endpoints(chain_type);
+        let mut lock = endpoints.write().await;
 
         match lock
             .iter_mut()
@@ -124,8 +172,12 @@ impl RpcEndpointRotator {
         }
     }
 
-    pub async fn heal_endpoints(&self) {
-        let mut lock = self.endpoints.write().await;
+    async fn heal_chain_endpoints(
+        &self,
+        chain_type: ChainType,
+    ) {
+        let endpoints = self.get_chain_endpoints(chain_type);
+        let mut lock = endpoints.write().await;
 
         lock.iter_mut()
             .filter(|endpoint| {
@@ -139,34 +191,48 @@ impl RpcEndpointRotator {
                 tracing::debug!("Endpoint {} got healthy", endpoint.url);
             });
     }
-}
 
-pub async fn rpc_endpoints_health_check(
-    rotators: Vec<Arc<RpcEndpointRotator>>,
-    cancellation_token: tokio_util::sync::CancellationToken,
-) {
-    tracing::info!("Starting rpc endpoints health checker");
-    let mut interval = tokio::time::interval(HEALTH_CHECK_DELAY);
-
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                for rotator in &rotators {
-                    rotator.heal_endpoints().await;
-                }
-            },
-            () = cancellation_token.cancelled() => {
-                tracing::info!(
-                    "Rpc endpoints health checker received cancellation signal, shutting down"
-                );
-                break;
-            },
+    async fn heal_all_endpoints(&self) {
+        for chain_type in ChainType::iter() {
+            self.heal_chain_endpoints(chain_type)
+                .await
         }
+    }
+
+    async fn perform(
+        self,
+        cancellation_token: tokio_util::sync::CancellationToken,
+    ) {
+        tracing::info!("Starting rpc endpoints health checker");
+        let mut interval = tokio::time::interval(HEALTH_CHECK_DELAY);
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => self.heal_all_endpoints().await,
+                () = cancellation_token.cancelled() => {
+                    tracing::info!(
+                        "Rpc endpoints health checker received cancellation signal, shutting down"
+                    );
+                    break;
+                },
+            }
+        }
+    }
+
+    pub async fn periodic_health_check(
+        self,
+        cancellation_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::task::spawn(async move { self.perform(cancellation_token).await })
     }
 }
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
+    use crate::configs::ChainConfig;
+
     use super::*;
 
     fn rpc_endpoint() -> RpcEndpoint {
@@ -237,16 +303,37 @@ mod test {
 
     #[tokio::test]
     async fn test_get_endpoint_url() {
-        // Test case: first endpoint is not healthy, but others are
         let endpoint1 = "http://test1.com".to_string();
         let endpoint2 = "http://test2.com".to_string();
         let endpoint3 = "http://test3.com".to_string();
 
         let endpoints = vec![endpoint1.clone(), endpoint2.clone(), endpoint3.clone()];
-        let mut rotator = RpcEndpointRotator::new(endpoints).unwrap();
-        rotator.mark_unhealthy(&endpoint1).await;
 
-        let result = rotator.get_endpoint_url().await;
+        let chain_config = ChainConfig {
+            endpoints,
+            assets: Vec::new(),
+            allow_insecure_endpoints: true,
+        };
+
+        let chains_config = ChainsConfig {
+            chains: HashMap::from([
+                (ChainType::Polygon, chain_config.clone()),
+                (
+                    ChainType::PolkadotAssetHub,
+                    chain_config,
+                ),
+            ]),
+        };
+
+        // Test case: first endpoint is not healthy, but others are
+        let mut rotator = RpcEndpointRotator::new(&chains_config).unwrap();
+        rotator
+            .mark_unhealthy(&endpoint1, ChainType::Polygon)
+            .await;
+
+        let result = rotator
+            .get_endpoint_url(ChainType::Polygon)
+            .await;
         // HashMap is not sorted, so any healthy endpoint may be returned
         assert!(result == endpoint2 || result == endpoint3);
 
@@ -273,9 +360,11 @@ mod test {
         };
 
         let endpoints = vec![endpoint1, endpoint2, endpoint3];
-        rotator.endpoints = RwLock::new(endpoints);
+        rotator.polygon_endpoints = Arc::new(RwLock::new(endpoints));
 
-        let result = rotator.get_endpoint_url().await;
+        let result = rotator
+            .get_endpoint_url(ChainType::Polygon)
+            .await;
         assert_eq!("http://test3.com", &result);
 
         // Test case: check that expected endpoints are returned
@@ -302,10 +391,12 @@ mod test {
         };
 
         let endpoints = vec![endpoint1, endpoint2, endpoint3];
-        rotator.endpoints = RwLock::new(endpoints);
-        rotator.heal_endpoints().await;
+        rotator.polygon_endpoints = Arc::new(RwLock::new(endpoints));
+        rotator.heal_all_endpoints().await;
 
-        let result = rotator.get_endpoint_url().await;
+        let result = rotator
+            .get_endpoint_url(ChainType::Polygon)
+            .await;
         assert_eq!("http://test1.com", &result);
     }
 }

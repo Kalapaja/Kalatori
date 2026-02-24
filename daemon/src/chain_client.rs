@@ -46,10 +46,7 @@ pub use polygon::{
     PolygonClient,
 };
 
-pub use rotator::{
-    RpcEndpointRotator,
-    rpc_endpoints_health_check,
-};
+pub use rotator::RpcEndpointRotator;
 
 pub type TransfersStream<T> =
     Pin<Box<dyn stream::Stream<Item = Result<Vec<ChainTransfer<T>>, SubscriptionError>> + Send>>;
@@ -232,7 +229,7 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
 
     async fn new(
         config: &crate::configs::ChainConfig,
-        rotator: Arc<RpcEndpointRotator>,
+        rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError>
     where
         Self: Sized;
@@ -241,7 +238,7 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<T>,
-        rotator: Arc<RpcEndpointRotator>,
+        rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError>
     where
         Self: Sized;

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use futures::{
     StreamExt,
@@ -159,7 +158,7 @@ pub struct AssetHubClient {
     config: crate::configs::ChainConfig,
     client: SubxtAssetHubClient,
     asset_info_store: AssetInfoStore<AssetHubChainConfig>,
-    endpoint_rotator: Arc<RpcEndpointRotator>,
+    endpoint_rotator: RpcEndpointRotator,
 }
 
 impl AssetHubClient {
@@ -167,10 +166,10 @@ impl AssetHubClient {
     async fn from_config(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<AssetHubChainConfig>,
-        endpoint_rotator: Arc<RpcEndpointRotator>,
+        endpoint_rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
         let endpoint = endpoint_rotator
-            .get_endpoint_url()
+            .get_endpoint_url(Self::chain_type())
             .await;
 
         tracing::debug!(
@@ -194,7 +193,7 @@ impl AssetHubClient {
             }),
             Err(e) => {
                 endpoint_rotator
-                    .mark_unhealthy(&endpoint)
+                    .mark_unhealthy(&endpoint, Self::chain_type())
                     .await;
 
                 tracing::debug!(
@@ -369,7 +368,7 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
     #[instrument(skip(config))]
     async fn new(
         config: &crate::configs::ChainConfig,
-        rotator: Arc<RpcEndpointRotator>,
+        rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
         AssetHubClient::from_config(config, AssetInfoStore::new(), rotator).await
     }
@@ -378,7 +377,7 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<AssetHubChainConfig>,
-        rotator: Arc<RpcEndpointRotator>,
+        rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
         AssetHubClient::from_config(config, asset_info_store, rotator).await
     }
