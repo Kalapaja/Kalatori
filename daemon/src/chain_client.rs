@@ -232,7 +232,7 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
 
     async fn new(
         config: &crate::configs::ChainConfig,
-        rotator: Arc<RwLock<RpcEndpointRotator>>,
+        rotator: Arc<RpcEndpointRotator>,
     ) -> Result<Self, ClientError>
     where
         Self: Sized;
@@ -241,7 +241,7 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<T>,
-        rotator: Arc<RwLock<RpcEndpointRotator>>,
+        rotator: Arc<RpcEndpointRotator>,
     ) -> Result<Self, ClientError>
     where
         Self: Sized;

@@ -24,7 +24,6 @@ use subxt::{
     Config,
     SubstrateConfig,
 };
-use tokio::sync::RwLock;
 use tracing::{
     debug,
     instrument,
@@ -160,7 +159,7 @@ pub struct AssetHubClient {
     config: crate::configs::ChainConfig,
     client: SubxtAssetHubClient,
     asset_info_store: AssetInfoStore<AssetHubChainConfig>,
-    endpoint_rotator: Arc<RwLock<RpcEndpointRotator>>,
+    endpoint_rotator: Arc<RpcEndpointRotator>,
 }
 
 impl AssetHubClient {
@@ -168,12 +167,11 @@ impl AssetHubClient {
     async fn from_config(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<AssetHubChainConfig>,
-        endpoint_rotator: Arc<RwLock<RpcEndpointRotator>>,
+        endpoint_rotator: Arc<RpcEndpointRotator>,
     ) -> Result<Self, ClientError> {
-        let endpoint = {
-            let lock = endpoint_rotator.read().await;
-            lock.get_endpoint_url()
-        };
+        let endpoint = endpoint_rotator
+            .get_endpoint_url()
+            .await;
 
         tracing::debug!(
             url = endpoint,
@@ -195,8 +193,9 @@ impl AssetHubClient {
                 endpoint_rotator,
             }),
             Err(e) => {
-                let mut lock = endpoint_rotator.write().await;
-                lock.mark_unhealthy(&endpoint);
+                endpoint_rotator
+                    .mark_unhealthy(&endpoint)
+                    .await;
 
                 tracing::debug!(
                     error.category = crate::utils::logging::category::CHAIN_CLIENT,
@@ -370,7 +369,7 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
     #[instrument(skip(config))]
     async fn new(
         config: &crate::configs::ChainConfig,
-        rotator: Arc<RwLock<RpcEndpointRotator>>,
+        rotator: Arc<RpcEndpointRotator>,
     ) -> Result<Self, ClientError> {
         AssetHubClient::from_config(config, AssetInfoStore::new(), rotator).await
     }
@@ -379,7 +378,7 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<AssetHubChainConfig>,
-        rotator: Arc<RwLock<RpcEndpointRotator>>,
+        rotator: Arc<RpcEndpointRotator>,
     ) -> Result<Self, ClientError> {
         AssetHubClient::from_config(config, asset_info_store, rotator).await
     }

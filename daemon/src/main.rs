@@ -22,7 +22,6 @@ use kalatori_client::types::ChainType;
 use kalatori_client::utils::HmacConfig;
 use secrecy::ExposeSecret;
 use tokio::runtime::Runtime;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
 use zeroize::Zeroize;
@@ -251,10 +250,10 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let asset_hub_endpoints_rotator = Arc::new(RwLock::new(
+    let asset_hub_endpoints_rotator = Arc::new(
         RpcEndpointRotator::new(asset_hub_chain_config.endpoints.clone())
             .expect("Failed to init rpc endpoints rotator for Asset Hub"),
-    ));
+    );
 
     let asset_hub_client = AssetHubClient::new(
         asset_hub_chain_config,
@@ -287,10 +286,10 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let polygon_endpoints_rotator = Arc::new(RwLock::new(
+    let polygon_endpoints_rotator = Arc::new(
         RpcEndpointRotator::new(polygon_chain_config.endpoints.clone())
             .expect("Failed to init rpc endpoints rotator for Polygon"),
-    ));
+    );
 
     let polygon_client = PolygonClient::new(
         polygon_chain_config,

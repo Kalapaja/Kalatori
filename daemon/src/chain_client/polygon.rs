@@ -43,7 +43,6 @@ use rust_decimal::prelude::{
     Decimal,
     ToPrimitive,
 };
-use tokio::sync::RwLock;
 use tracing::instrument;
 
 use crate::chain_client::rotator::RpcEndpointRotator;
@@ -264,7 +263,7 @@ pub struct PolygonClient {
     asset_info_store: AssetInfoStore<PolygonChainConfig>,
     provider: PolygonProvider,
     pimlico_client: PimlicoClient,
-    endpoint_rotator: Arc<RwLock<RpcEndpointRotator>>,
+    endpoint_rotator: Arc<RpcEndpointRotator>,
 }
 
 impl PolygonClient {
@@ -273,12 +272,11 @@ impl PolygonClient {
     async fn from_config(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
-        endpoint_rotator: Arc<RwLock<RpcEndpointRotator>>,
+        endpoint_rotator: Arc<RpcEndpointRotator>,
     ) -> Result<Self, ClientError> {
-        let endpoint = {
-            let lock = endpoint_rotator.read().await;
-            lock.get_endpoint_url()
-        };
+        let endpoint = endpoint_rotator
+            .get_endpoint_url()
+            .await;
 
         tracing::debug!(
             url = endpoint,
@@ -328,8 +326,9 @@ impl PolygonClient {
                 })
             },
             Err(e) => {
-                let mut lock = endpoint_rotator.write().await;
-                lock.mark_unhealthy(&endpoint);
+                endpoint_rotator
+                    .mark_unhealthy(&endpoint)
+                    .await;
 
                 tracing::debug!(
                     error.category = CHAIN_CLIENT,
@@ -597,7 +596,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
     #[instrument(skip(config))]
     async fn new(
         config: &crate::configs::ChainConfig,
-        rotator: Arc<RwLock<RpcEndpointRotator>>,
+        rotator: Arc<RpcEndpointRotator>,
     ) -> Result<Self, ClientError> {
         Self::from_config(config, AssetInfoStore::new(), rotator).await
     }
@@ -606,7 +605,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
-        rotator: Arc<RwLock<RpcEndpointRotator>>,
+        rotator: Arc<RpcEndpointRotator>,
     ) -> Result<Self, ClientError> {
         Self::from_config(config, asset_info_store, rotator).await
     }

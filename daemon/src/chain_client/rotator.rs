@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -59,7 +58,7 @@ impl RpcEndpoint {
 
 #[derive(Debug)]
 pub struct RpcEndpointRotator {
-    endpoints: HashMap<String, RpcEndpoint>,
+    endpoints: RwLock<Vec<RpcEndpoint>>,
 }
 
 impl RpcEndpointRotator {
@@ -72,49 +71,51 @@ impl RpcEndpointRotator {
 
         let endpoints = endpoints
             .into_iter()
-            .map(|url| {
-                let endpoint = RpcEndpoint {
-                    url: url.clone(),
-                    attempts: 0,
-                    status: RpcEndpointStatus::Healthy,
-                    last_attempt_at: None,
-                    next_retry_at: None,
-                };
-
-                (url, endpoint)
+            .map(|url| RpcEndpoint {
+                url: url.clone(),
+                attempts: 0,
+                status: RpcEndpointStatus::Healthy,
+                last_attempt_at: None,
+                next_retry_at: None,
             })
             .collect();
 
         Ok(Self {
-            endpoints,
+            endpoints: RwLock::new(endpoints),
         })
     }
 
-    pub fn get_endpoint_url(&self) -> String {
-        for (url, endpoint) in &self.endpoints {
+    pub async fn get_endpoint_url(&self) -> String {
+        let lock = self.endpoints.read().await;
+
+        for endpoint in lock.iter() {
             if matches!(
                 endpoint.status,
                 RpcEndpointStatus::Healthy
             ) {
-                return url.clone()
+                return endpoint.url.clone()
             }
         }
 
         // we checked that endpoints are not empty during initialization
         // so it's safe to unwrap here
-        self.endpoints
-            .values()
+        lock.iter()
             .min_by_key(|endpoint| endpoint.next_retry_at)
             .unwrap()
             .url
             .clone()
     }
 
-    pub fn mark_unhealthy(
-        &mut self,
+    pub async fn mark_unhealthy(
+        &self,
         url: &str,
     ) {
-        match self.endpoints.get_mut(url) {
+        let mut lock = self.endpoints.write().await;
+
+        match lock
+            .iter_mut()
+            .find(|endpoint| endpoint.url == url)
+        {
             Some(endpoint) => {
                 endpoint.increment_retry();
                 tracing::warn!("Marked endpoint {url} as unhealthy");
@@ -123,9 +124,10 @@ impl RpcEndpointRotator {
         }
     }
 
-    pub fn heal_endpoints(&mut self) {
-        self.endpoints
-            .values_mut()
+    pub async fn heal_endpoints(&self) {
+        let mut lock = self.endpoints.write().await;
+
+        lock.iter_mut()
             .filter(|endpoint| {
                 matches!(
                     endpoint.status,
@@ -140,7 +142,7 @@ impl RpcEndpointRotator {
 }
 
 pub async fn rpc_endpoints_health_check(
-    rotators: Vec<Arc<RwLock<RpcEndpointRotator>>>,
+    rotators: Vec<Arc<RpcEndpointRotator>>,
     cancellation_token: tokio_util::sync::CancellationToken,
 ) {
     tracing::info!("Starting rpc endpoints health checker");
@@ -150,8 +152,7 @@ pub async fn rpc_endpoints_health_check(
         tokio::select! {
             _ = interval.tick() => {
                 for rotator in &rotators {
-                    let mut lock = rotator.write().await;
-                    lock.heal_endpoints();
+                    rotator.heal_endpoints().await;
                 }
             },
             () = cancellation_token.cancelled() => {
@@ -234,8 +235,8 @@ mod test {
         assert!(endpoint.next_retry_at.is_none());
     }
 
-    #[test]
-    fn test_get_endpoint_url() {
+    #[tokio::test]
+    async fn test_get_endpoint_url() {
         // Test case: first endpoint is not healthy, but others are
         let endpoint1 = "http://test1.com".to_string();
         let endpoint2 = "http://test2.com".to_string();
@@ -243,9 +244,9 @@ mod test {
 
         let endpoints = vec![endpoint1.clone(), endpoint2.clone(), endpoint3.clone()];
         let mut rotator = RpcEndpointRotator::new(endpoints).unwrap();
-        rotator.mark_unhealthy(&endpoint1);
+        rotator.mark_unhealthy(&endpoint1).await;
 
-        let result = rotator.get_endpoint_url();
+        let result = rotator.get_endpoint_url().await;
         // HashMap is not sorted, so any healthy endpoint may be returned
         assert!(result == endpoint2 || result == endpoint3);
 
@@ -271,13 +272,10 @@ mod test {
             ..rpc_endpoint()
         };
 
-        let endpoints = vec![endpoint1, endpoint2, endpoint3]
-            .into_iter()
-            .map(|item| (item.url.clone(), item))
-            .collect();
-        rotator.endpoints = endpoints;
+        let endpoints = vec![endpoint1, endpoint2, endpoint3];
+        rotator.endpoints = RwLock::new(endpoints);
 
-        let result = rotator.get_endpoint_url();
+        let result = rotator.get_endpoint_url().await;
         assert_eq!("http://test3.com", &result);
 
         // Test case: check that expected endpoints are returned
@@ -303,14 +301,11 @@ mod test {
             ..rpc_endpoint()
         };
 
-        let endpoints = vec![endpoint1, endpoint2, endpoint3]
-            .into_iter()
-            .map(|item| (item.url.clone(), item))
-            .collect();
-        rotator.endpoints = endpoints;
-        rotator.heal_endpoints();
+        let endpoints = vec![endpoint1, endpoint2, endpoint3];
+        rotator.endpoints = RwLock::new(endpoints);
+        rotator.heal_endpoints().await;
 
-        let result = rotator.get_endpoint_url();
+        let result = rotator.get_endpoint_url().await;
         assert_eq!("http://test1.com", &result);
     }
 }
