@@ -21,15 +21,14 @@ fn init_chain_endpoints(
     let config = chains_config
         .chains
         .get(&chain_type)
-        .expect(&format!(
-            "Failed to get {:?} config",
-            chain_type
-        ));
+        .ok_or(ClientError::InvalidConfiguration {
+            field: format!("Failed to get {} config", chain_type),
+        })?;
 
     if config.endpoints.is_empty() {
         return Err(ClientError::InvalidConfiguration {
             field: format!(
-                "{:?} endpoints cannot be empty",
+                "{} endpoints cannot be empty",
                 chain_type
             ),
         })
@@ -103,13 +102,11 @@ pub struct RpcEndpointRotator {
 impl RpcEndpointRotator {
     pub fn new(chains_config: &ChainsConfig) -> Result<RpcEndpointRotator, ClientError> {
         let asset_hub = init_chain_endpoints(
-            &chains_config,
+            chains_config,
             ChainType::PolkadotAssetHub,
-        )
-        .expect("Asset Hub failure");
+        )?;
 
-        let polygon =
-            init_chain_endpoints(&chains_config, ChainType::Polygon).expect("Polygon failure");
+        let polygon = init_chain_endpoints(chains_config, ChainType::Polygon)?;
 
         Ok(Self {
             asset_hub_endpoints: Arc::new(RwLock::new(asset_hub)),
