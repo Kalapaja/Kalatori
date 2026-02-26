@@ -288,45 +288,8 @@ impl PolygonClient {
         let ws_connect = WsConnect::new(&endpoint);
         let provider = ProviderBuilder::new()
             .connect_ws(ws_connect)
-            .await;
-
-        match provider {
-            Ok(provider) => {
-                tracing::debug!(
-                    url = endpoint,
-                    chain = %Self::chain_type(),
-                    "Connection successful"
-                );
-
-                // Get chain ID for transaction signing
-                let chain_id = provider
-                    .get_chain_id()
-                    .await
-                    .inspect_err(|e| {
-                        tracing::debug!(
-                            error.category = CHAIN_CLIENT,
-                            error.source = ?e,
-                            "Failed to get chain ID"
-                        );
-                    })
-                    .map_err(|_| ClientError::MetadataFetchFailed)?;
-
-                tracing::info!(
-                    chain_id = chain_id,
-                    endpoint = %endpoint,
-                    "Connected to Polygon network"
-                );
-
-                Ok(Self {
-                    config: config.clone(),
-                    asset_info_store,
-                    provider,
-                    pimlico_client: PimlicoClient::new(),
-                    endpoint_rotator,
-                    current_endpoint: endpoint,
-                })
-            },
-            Err(e) => {
+            .await
+            .inspect_err(|e| {
                 tracing::debug!(
                     error.category = CHAIN_CLIENT,
                     error.operation = "connect_client",
@@ -335,12 +298,44 @@ impl PolygonClient {
                     chain = %Self::chain_type(),
                     "Failed to connect to Polygon RPC endpoint"
                 );
+            })
+            .map_err(|_| ClientError::EndpointUnavailable {
+                endpoint_url: endpoint.clone(),
+            })?;
 
-                Err(ClientError::EndpointUnavailable {
-                    endpoint_url: endpoint,
-                })
-            },
-        }
+        tracing::debug!(
+            url = endpoint,
+            chain = %Self::chain_type(),
+            "Connection successful"
+        );
+
+        // Get chain ID for transaction signing
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .inspect_err(|e| {
+                tracing::debug!(
+                    error.category = CHAIN_CLIENT,
+                    error.source = ?e,
+                    "Failed to get chain ID"
+                );
+            })
+            .map_err(|_| ClientError::MetadataFetchFailed)?;
+
+        tracing::info!(
+            chain_id = chain_id,
+            endpoint = %endpoint,
+            "Connected to Polygon network"
+        );
+
+        Ok(Self {
+            config: config.clone(),
+            asset_info_store,
+            provider,
+            pimlico_client: PimlicoClient::new(),
+            endpoint_rotator,
+            current_endpoint: endpoint,
+        })
     }
 
     /// Convert a log entry to a ChainTransfer

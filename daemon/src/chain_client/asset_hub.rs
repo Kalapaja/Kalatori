@@ -183,31 +183,28 @@ impl AssetHubClient {
             SubxtAssetHubClient::from_insecure_url(&endpoint).await
         } else {
             SubxtAssetHubClient::from_url(&endpoint).await
-        };
-
-        match client {
-            Ok(client) => Ok(AssetHubClient {
-                config: config.clone(),
-                client,
-                asset_info_store,
-                endpoint_rotator,
-                current_endpoint: endpoint,
-            }),
-            Err(e) => {
-                tracing::debug!(
-                    error.category = crate::utils::logging::category::CHAIN_CLIENT,
-                    error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
-                    error.source = ?e,
-                    chain = %Self::chain_type(),
-                    endpoint = %endpoint,
-                    "Failed to connect to Asset Hub RPC endpoint"
-                );
-
-                Err(ClientError::EndpointUnavailable {
-                    endpoint_url: endpoint,
-                })
-            },
         }
+        .inspect_err(|e| {
+            tracing::debug!(
+                error.category = crate::utils::logging::category::CHAIN_CLIENT,
+                error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
+                error.source = ?e,
+                chain = %Self::chain_type(),
+                endpoint = %endpoint,
+                "Failed to connect to Asset Hub RPC endpoint"
+            );
+        })
+        .map_err(|_| ClientError::EndpointUnavailable {
+            endpoint_url: endpoint.clone(),
+        })?;
+
+        Ok(AssetHubClient {
+            config: config.clone(),
+            client,
+            asset_info_store,
+            endpoint_rotator,
+            current_endpoint: endpoint,
+        })
     }
 
     #[instrument(skip(self))]
