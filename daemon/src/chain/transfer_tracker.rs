@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::chain::TransactionsRecorderError;
 use crate::chain_client::{
     BlockChainClient,
+    BlockChainClientExt,
     ChainConfig,
     ChainTransfer,
     GeneralChainTransfer,
@@ -149,7 +150,7 @@ impl InvoiceRegistry {
 
 pub struct TransfersTracker<
     T: ChainConfig,
-    C: BlockChainClient<T> + 'static,
+    C: BlockChainClientExt<T> + 'static,
     D: DaoInterface + 'static,
 > {
     client: C,

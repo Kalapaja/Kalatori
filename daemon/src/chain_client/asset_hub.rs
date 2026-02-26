@@ -159,6 +159,7 @@ pub struct AssetHubClient {
     client: SubxtAssetHubClient,
     asset_info_store: AssetInfoStore<AssetHubChainConfig>,
     endpoint_rotator: RpcEndpointRotator,
+    current_endpoint: String,
 }
 
 impl AssetHubClient {
@@ -190,12 +191,9 @@ impl AssetHubClient {
                 client,
                 asset_info_store,
                 endpoint_rotator,
+                current_endpoint: endpoint,
             }),
             Err(e) => {
-                endpoint_rotator
-                    .mark_unhealthy(&endpoint, Self::chain_type())
-                    .await;
-
                 tracing::debug!(
                     error.category = crate::utils::logging::category::CHAIN_CLIENT,
                     error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
@@ -361,6 +359,18 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
         "statemint"
     }
 
+    fn current_endpoint(&self) -> &str {
+        &self.current_endpoint
+    }
+
+    fn endpoint_rotator(&self) -> RpcEndpointRotator {
+        self.endpoint_rotator.clone()
+    }
+
+    fn chain_config(&self) -> &crate::configs::ChainConfig {
+        &self.config
+    }
+
     fn asset_info_store(&self) -> &AssetInfoStore<AssetHubChainConfig> {
         &self.asset_info_store
     }
@@ -380,16 +390,6 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
         rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
         AssetHubClient::from_config(config, asset_info_store, rotator).await
-    }
-
-    #[instrument(skip(self))]
-    async fn recreate(&self) -> Result<Self, ClientError> {
-        Self::from_config(
-            &self.config,
-            self.asset_info_store.clone(),
-            self.endpoint_rotator.clone(),
-        )
-        .await
     }
 
     #[instrument(skip(self))]

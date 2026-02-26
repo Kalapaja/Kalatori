@@ -263,6 +263,7 @@ pub struct PolygonClient {
     provider: PolygonProvider,
     pimlico_client: PimlicoClient,
     endpoint_rotator: RpcEndpointRotator,
+    current_endpoint: String,
 }
 
 impl PolygonClient {
@@ -322,13 +323,10 @@ impl PolygonClient {
                     provider,
                     pimlico_client: PimlicoClient::new(),
                     endpoint_rotator,
+                    current_endpoint: endpoint,
                 })
             },
             Err(e) => {
-                endpoint_rotator
-                    .mark_unhealthy(&endpoint, Self::chain_type())
-                    .await;
-
                 tracing::debug!(
                     error.category = CHAIN_CLIENT,
                     error.operation = "connect_client",
@@ -588,6 +586,18 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         "polygon"
     }
 
+    fn current_endpoint(&self) -> &str {
+        &self.current_endpoint
+    }
+
+    fn endpoint_rotator(&self) -> RpcEndpointRotator {
+        self.endpoint_rotator.clone()
+    }
+
+    fn chain_config(&self) -> &crate::configs::ChainConfig {
+        &self.config
+    }
+
     fn asset_info_store(&self) -> &AssetInfoStore<PolygonChainConfig> {
         &self.asset_info_store
     }
@@ -607,18 +617,6 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
         Self::from_config(config, asset_info_store, rotator).await
-    }
-
-    #[instrument(skip(self))]
-    async fn recreate(&self) -> Result<Self, ClientError> {
-        // For now, just return a clone
-        // TODO: Implement proper reconnection logic
-        Self::from_config(
-            &self.config,
-            self.asset_info_store.clone(),
-            self.endpoint_rotator.clone(),
-        )
-        .await
     }
 
     #[instrument(skip(self))]

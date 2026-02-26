@@ -227,6 +227,12 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
 
     fn asset_info_store(&self) -> &AssetInfoStore<T>;
 
+    fn current_endpoint(&self) -> &str;
+
+    fn endpoint_rotator(&self) -> RpcEndpointRotator;
+
+    fn chain_config(&self) -> &crate::configs::ChainConfig;
+
     async fn new(
         config: &crate::configs::ChainConfig,
         rotator: RpcEndpointRotator,
@@ -234,16 +240,11 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
     where
         Self: Sized;
 
-    #[expect(dead_code)]
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<T>,
         rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError>
-    where
-        Self: Sized;
-
-    async fn recreate(&self) -> Result<Self, ClientError>
     where
         Self: Sized;
 
@@ -330,6 +331,23 @@ pub trait BlockChainClientExt<T: ChainConfig>: BlockChainClient<T> {
         info!(message = "Asset info initialized successfully");
 
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn recreate(&self) -> Result<Self, ClientError>
+    where
+        Self: Sized,
+    {
+        self.endpoint_rotator()
+            .mark_unhealthy(self.current_endpoint(), T::CHAIN_TYPE)
+            .await;
+
+        Self::new_with_store(
+            self.chain_config(),
+            self.asset_info_store().clone(),
+            self.endpoint_rotator(),
+        )
+        .await
     }
 }
 
