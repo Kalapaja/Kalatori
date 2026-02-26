@@ -71,7 +71,7 @@ impl RpcEndpoint {
         TIMEOUT * 2u64.pow(self.attempts)
     }
 
-    fn is_get_healthy(&self) -> bool {
+    fn has_recovered(&self) -> bool {
         match self.next_retry_at {
             Some(retry_at) => retry_at < Utc::now(),
             None => true,
@@ -184,7 +184,7 @@ impl RpcEndpointRotator {
                 matches!(
                     endpoint.status,
                     RpcEndpointStatus::Unhealthy
-                ) && endpoint.is_get_healthy()
+                ) && endpoint.has_recovered()
             })
             .for_each(|endpoint| {
                 endpoint.mark_healthy();
@@ -268,13 +268,13 @@ mod test {
     #[test]
     fn test_is_get_healthy() {
         let mut endpoint = rpc_endpoint();
-        assert!(endpoint.is_get_healthy());
+        assert!(endpoint.has_recovered());
 
         endpoint.next_retry_at = Some(Utc::now() + Duration::from_hours(1));
-        assert!(!endpoint.is_get_healthy());
+        assert!(!endpoint.has_recovered());
 
         endpoint.next_retry_at = Some(Utc::now() - Duration::from_hours(1));
-        assert!(endpoint.is_get_healthy());
+        assert!(endpoint.has_recovered());
     }
 
     #[test]
