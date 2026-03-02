@@ -1,0 +1,20 @@
+name: Cargo fmt
+
+on:
+  workflow_call:
+
+jobs:
+  fmt:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Install nightly toolchain with rustfmt
+        run: |
+          rustup toolchain install nightly --profile minimal --component rustfmt
+          rustup override set nightly
+
+      - name: Check formatting
+        run: make cargo-fmt

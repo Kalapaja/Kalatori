@@ -1,17 +1,8 @@
-use std::collections::{
-    HashMap,
-    HashSet,
-};
 use std::str::FromStr;
-use std::sync::Arc;
 
 use futures::StreamExt;
-use rust_decimal::Decimal;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
-use crate::chain::TransactionsRecorderError;
 use crate::chain_client::{
     BlockChainClient,
     BlockChainClientExt,
@@ -22,131 +13,13 @@ use crate::chain_client::{
     TransfersStream,
 };
 use crate::dao::DaoInterface;
-use crate::types::{
-    ChainType,
-    IncomingTransaction,
-    InvoiceWithReceivedAmount,
+use crate::types::IncomingTransaction;
+
+use super::{
+    InvoiceRegistry,
+    TransactionsRecorder,
+    TransactionsRecorderError,
 };
-
-use super::TransactionsRecorder;
-
-// TODO: move it somewhere else
-#[derive(Clone)]
-pub struct InvoiceRegistry {
-    invoices: Arc<RwLock<HashMap<Uuid, InvoiceWithReceivedAmount>>>,
-}
-
-impl InvoiceRegistry {
-    pub fn new() -> Self {
-        InvoiceRegistry {
-            invoices: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    pub async fn add_invoice(
-        &self,
-        record: InvoiceWithReceivedAmount,
-    ) {
-        let mut invoices = self.invoices.write().await;
-        invoices.insert(record.invoice.id, record);
-    }
-
-    pub async fn add_invoices(
-        &self,
-        records: Vec<InvoiceWithReceivedAmount>,
-    ) {
-        let mut invoices_map = self.invoices.write().await;
-
-        for record in records {
-            invoices_map.insert(record.invoice.id, record);
-        }
-    }
-
-    pub async fn remove_invoice(
-        &self,
-        invoice_id: &Uuid,
-    ) -> Option<InvoiceWithReceivedAmount> {
-        let mut invoices = self.invoices.write().await;
-        invoices.remove(invoice_id)
-    }
-
-    #[expect(dead_code)]
-    pub async fn remove_invoices(
-        &self,
-        invoices_ids: &[Uuid],
-    ) -> Vec<InvoiceWithReceivedAmount> {
-        let mut invoices = self.invoices.write().await;
-        let mut removed_invoices = Vec::with_capacity(invoices_ids.len());
-
-        for invoice_id in invoices_ids {
-            if let Some(invoice) = invoices.remove(invoice_id) {
-                removed_invoices.push(invoice);
-            }
-        }
-
-        removed_invoices
-    }
-
-    pub async fn get_invoice(
-        &self,
-        invoice_id: &Uuid,
-    ) -> Option<InvoiceWithReceivedAmount> {
-        let invoices = self.invoices.read().await;
-        invoices.get(invoice_id).cloned()
-    }
-
-    pub async fn find_invoice_by_address(
-        &self,
-        address: &str,
-        chain: ChainType,
-        asset_id: &str,
-    ) -> Option<InvoiceWithReceivedAmount> {
-        // TODO: if we'll have large amount of invoices and incoming transfers
-        // it might be a problem and should be optimized
-        let invoices = self.invoices.read().await;
-
-        invoices
-            .values()
-            .find(|inv| {
-                inv.invoice.chain == chain
-                    && inv.invoice.payment_address == address
-                    && inv.invoice.asset_id == asset_id
-            })
-            .cloned()
-    }
-
-    pub async fn update_filled_amount(
-        &self,
-        invoice_id: &Uuid,
-        new_filled_amount: Decimal,
-    ) {
-        let mut invoices = self.invoices.write().await;
-
-        if let Some(record) = invoices.get_mut(invoice_id) {
-            record.total_received_amount = new_filled_amount;
-        }
-    }
-
-    pub async fn used_asset_ids(&self) -> HashMap<ChainType, HashSet<String>> {
-        let invoices = self.invoices.read().await;
-        let mut asset_ids_map: HashMap<_, HashSet<_>> = HashMap::new();
-
-        for record in invoices.values() {
-            asset_ids_map
-                .entry(record.invoice.chain)
-                .or_default()
-                .insert(record.invoice.asset_id.clone());
-        }
-
-        asset_ids_map
-    }
-
-    #[cfg_attr(not(test), expect(dead_code))]
-    pub async fn invoices_count(&self) -> usize {
-        let invoices = self.invoices.read().await;
-        invoices.len()
-    }
-}
 
 pub struct TransfersTracker<
     T: ChainConfig,
@@ -378,5 +251,245 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
         tokio::spawn(async move {
             self.perform(assets, token).await;
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mockall::predicate::eq;
+    use rust_decimal::Decimal;
+
+    use crate::chain_client::{
+        AssetHubChainConfig,
+        MockBlockChainClient,
+        PolygonChainConfig,
+        default_general_chain_transfer,
+    };
+    use crate::dao::DAO;
+    use crate::types::{
+        ChainType,
+        Invoice,
+        default_invoice,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_process_transfer() {
+        // As long as this function doesn't return any result,
+        // we can check log records to ensure the code is following
+        // expected flows
+        let chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        let registry = InvoiceRegistry::new();
+        let recorder = TransactionsRecorder::<DAO>::default();
+        let mut tracker = TransfersTracker::new(chain_client, registry.clone(), recorder);
+
+        // Test case 1:
+        // - No invoices with related address
+        // - Expectations:
+        //   - No recorder calls
+        let transfer = default_general_chain_transfer();
+
+        tracker.process_transfer(transfer).await;
+        tracker
+            .transactions_recorder
+            .checkpoint();
+        assert!(!logs_contain(
+            "Transfer has been stored in database successfully, invoice has been updated"
+        ));
+        assert!(!logs_contain(
+            "Transfer is already presented in database, invoice hasn't been updated"
+        ));
+        assert!(!logs_contain(
+            "Error while trying to store transfer in database, invoice hasn't been updated"
+        ));
+
+        // Test case 2:
+        // - Successful flow
+        // - Invoice with related address exists in registry
+        // - Expectations:
+        //   - Recorded called and respond success
+        //   - Respective log record
+        let invoice = default_invoice().with_amount(Decimal::ZERO);
+        let invoice_id = invoice.invoice.id;
+        registry
+            .add_invoice(invoice.clone())
+            .await;
+
+        let transfer = GeneralChainTransfer {
+            recipient: invoice.invoice.payment_address.clone(),
+            ..default_general_chain_transfer()
+        };
+
+        let expected_transaction =
+            IncomingTransaction::from_chain_transfer(invoice_id, transfer.clone());
+
+        tracker
+            .transactions_recorder
+            .expect_process_invoice_transaction()
+            .with(
+                eq(invoice.clone()),
+                eq(expected_transaction.clone()),
+            )
+            .once()
+            .returning(|_, _| Ok(()));
+
+        tracker
+            .process_transfer(transfer.clone())
+            .await;
+        tracker
+            .transactions_recorder
+            .checkpoint();
+        assert!(logs_contain(
+            "Transfer has been stored in database successfully, invoice has been updated"
+        ));
+        assert!(!logs_contain(
+            "Transfer is already presented in database, invoice hasn't been updated"
+        ));
+        assert!(!logs_contain(
+            "Error while trying to store transfer in database, invoice hasn't been updated"
+        ));
+
+        // Test case 3:
+        // - Duplicated transaction error
+        // - Invoice with related address exists in registry
+        // - Expectations:
+        //   - Recorded called and respond duplication error
+        //   - Respective log record
+        tracker
+            .transactions_recorder
+            .expect_process_invoice_transaction()
+            .with(
+                eq(invoice.clone()),
+                eq(expected_transaction.clone()),
+            )
+            .once()
+            .returning(|_invoice, transaction| {
+                Err(
+                    TransactionsRecorderError::TransactionDuplication {
+                        chain: transaction.transfer_info.chain,
+                        general_transaction_id: transaction.transaction_id,
+                    },
+                )
+            });
+
+        tracker
+            .process_transfer(transfer.clone())
+            .await;
+        tracker
+            .transactions_recorder
+            .checkpoint();
+        assert!(logs_contain(
+            "Transfer is already presented in database, invoice hasn't been updated"
+        ));
+        assert!(!logs_contain(
+            "Error while trying to store transfer in database, invoice hasn't been updated"
+        ));
+
+        // Test case 4:
+        // - Database error
+        // - Invoice with related address exists in registry
+        // - Expectations:
+        //   - Recorded called and respond duplication error
+        //   - Respective log record
+        tracker
+            .transactions_recorder
+            .expect_process_invoice_transaction()
+            .with(
+                eq(invoice),
+                eq(expected_transaction.clone()),
+            )
+            .once()
+            .returning(|_, _| Err(TransactionsRecorderError::DaoTransactionError));
+
+        tracker.process_transfer(transfer).await;
+        tracker
+            .transactions_recorder
+            .checkpoint();
+        assert!(logs_contain(
+            "Error while trying to store transfer in database, invoice hasn't been updated"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_subscription_event() {
+        let chain_client = MockBlockChainClient::<AssetHubChainConfig>::default();
+        let registry = InvoiceRegistry::new();
+        let recorder = TransactionsRecorder::<DAO>::default();
+        let mut tracker = TransfersTracker::new(chain_client, registry.clone(), recorder);
+
+        // Test case 1:
+        // - Successful case
+        // - Vec with transactions input
+        // - Expectations:
+        //   - Transfers input
+        //   - Ok result
+        let transfer = ChainTransfer::<AssetHubChainConfig> {
+            asset_id: 1984,
+            asset_name: "USDt".to_string(),
+            amount: Decimal::TEN,
+            sender: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
+                .parse()
+                .unwrap(),
+            recipient: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+                .parse()
+                .unwrap(),
+            transaction_id: (1000, 2),
+            timestamp: 1000,
+        };
+
+        let transfers = vec![transfer.clone(), transfer.clone(), transfer.clone()];
+
+        let invoice = Invoice {
+            payment_address: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+            chain: ChainType::PolkadotAssetHub,
+            asset_id: 1984.to_string(),
+            ..default_invoice()
+        }
+        .with_amount(Decimal::ZERO);
+
+        registry.add_invoice(invoice).await;
+
+        tracker
+            .transactions_recorder
+            .expect_process_invoice_transaction()
+            .times(transfers.len())
+            .returning(|_, _| Ok(()));
+
+        let result = tracker
+            .handle_subscription_event(Some(Ok(transfers)))
+            .await;
+        assert_eq!(result, Ok(()));
+
+        // Test case 2:
+        // - Unsuccessful case
+        // - None input
+        // - Expectations:
+        //   - Err result
+        //   - StreamClosed error
+        let result = tracker
+            .handle_subscription_event(None)
+            .await;
+        assert_eq!(
+            result,
+            Err(SubscriptionError::StreamClosed)
+        );
+
+        // Test case 3:
+        // - Unsuccessful case
+        // - Error input
+        // - Expectations:
+        //   - Err result
+        //   - Provided error returned
+        let result = tracker
+            .handle_subscription_event(Some(Err(
+                SubscriptionError::SubscriptionFailed,
+            )))
+            .await;
+        assert_eq!(
+            result,
+            Err(SubscriptionError::SubscriptionFailed)
+        );
     }
 }

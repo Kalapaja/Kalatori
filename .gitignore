@@ -16,3 +16,6 @@ static/
 
 # locally used configs
 /configs/*.json
+
+# mutants output files
+mutants.out*

@@ -1,11 +1,7 @@
-name: Check cargo deny
+name: Cargo deny
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
-      - stable
+  workflow_call:
 
 jobs:
   cargo-deny:
@@ -18,8 +14,9 @@ jobs:
           - bans licenses sources
     continue-on-error: ${{ matrix.checks == 'advisories' }}
     steps:
-      - name: Checkout Sources
-        uses: actions/checkout@v5
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
         with:

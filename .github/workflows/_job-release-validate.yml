@@ -1,0 +1,73 @@
+name: Validate release
+
+on:
+  workflow_call:
+
+jobs:
+  validate:
+    name: Validate release PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags origin
+
+      - name: Validate source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [[ "$HEAD_REF" != "develop" && "$HEAD_REF" != "dev" && ! "$HEAD_REF" =~ ^hotfix- ]]; then
+            echo "::error::Only 'develop', 'dev', or 'hotfix-*' branches can target main. Got: '$HEAD_REF'"
+            exit 1
+          fi
+
+      - name: Extract and validate version
+        id: version
+        run: |
+          VERSION=$(grep '^version' daemon/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Version '$VERSION' is not valid semver"
+            exit 1
+          fi
+
+          echo "Extracted version: $VERSION"
+
+      - name: Check tag does not already exist
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag v${VERSION} already exists. Bump the version in daemon/Cargo.toml."
+            exit 1
+          fi
+
+      - name: Check version increments over latest tag
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1 || true)
+          if [ -n "$LATEST_TAG" ]; then
+            LATEST_VERSION="${LATEST_TAG#v}"
+            echo "Latest tag: $LATEST_TAG (version: $LATEST_VERSION)"
+            echo "New version: $VERSION"
+
+            HIGHER=$(printf '%s\n%s' "$LATEST_VERSION" "$VERSION" | sort -V | tail -1)
+            if [ "$HIGHER" = "$LATEST_VERSION" ]; then
+              echo "::error::Version $VERSION does not increment over latest tag $LATEST_TAG"
+              exit 1
+            fi
+          else
+            echo "No existing tags found, skipping increment check"
+          fi
+
+      - name: Validate changelog entry
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if ! grep -qE "^## \[${VERSION}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing a '## [${VERSION}]' heading"
+            exit 1
+          fi

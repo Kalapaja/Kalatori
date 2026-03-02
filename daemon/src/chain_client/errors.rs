@@ -59,7 +59,7 @@ pub enum QueryError {
 // ============================================================================
 
 /// Errors for block subscription and streaming operations
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum SubscriptionError {
     /// Asset info for the asset is not presented in local asset info store
     #[error("Asset info not found for asset id {asset_id}")]

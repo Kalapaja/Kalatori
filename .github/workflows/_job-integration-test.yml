@@ -1,0 +1,33 @@
+name: Integration test
+
+on:
+  workflow_call:
+
+jobs:
+  integration-test:
+    name: Run integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Setup SQLite
+        uses: ./.github/actions/setup-sqlite
+
+      - name: Setup Rust build environment
+        uses: ./.github/actions/setup-rust-build-env
+
+      - name: Create configs
+        run: make copy-configs
+
+      - name: Create database directory
+        run: mkdir database
+
+      - name: Run daemon and chopsticks in background
+        run: make run &
+
+      - name: Wait for daemon to start
+        run: sleep 300
+
+      - name: Run integration tests
+        run: make run-test-examples

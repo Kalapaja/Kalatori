@@ -9,6 +9,12 @@ subxt_cli_version := 0.44.0
 # Keep in sync with sqlx version in Cargo.toml
 sqlx_cli_version := 0.8.6
 
+nextest_version := 0.9.129
+
+llvm_cov_version := 0.8.4
+
+mutants_version := 26.2.0
+
 # Front end release version compatible with current daemon version
 front_end_version := 0.0.4
 
@@ -24,6 +30,15 @@ install-subxt-cli: # Install subxt-cli into the project directory
 
 install-sqlx-cli: # Install sqlx-cli into the project directory
 	cargo install --root $(mkfile_path) --version $(sqlx_cli_version) --locked sqlx-cli --no-default-features --features sqlite,completions
+
+install-nextest: # Install cargo-nextest into the project directory
+	cargo install --root $(mkfile_path) --version $(nextest_version) --locked cargo-nextest
+
+install-llvm-cov: # Install llvm-cov into the project directory
+	cargo install --root $(mkfile_path) --version $(llvm_cov_version) --locked cargo-llvm-cov
+
+install-mutants: # Install cargo-mutants into the project directory
+	cargo install --root $(mkfile_path) --version $(mutants_version) --locked cargo-mutants
 
 # TODO: read URL from json config and/or env var instead of hardcode
 download-node-metadata: # Download metadata of configured Asset Hub node. Required for subxt compilation. By default use ws://localhost:9000 url.
@@ -53,6 +68,9 @@ download-front-end: # Download front-end release and unpack it into static folde
 
 setup: install-subxt-cli download-node-metadata copy-configs # Sets up the project for local run
 	echo "Make sure you have SQLite installed. Check README.md for the instructions"
+
+setup-utils: install-nextest install-llvm-cov install-mutants # Sets up different utilities for running tests, coverage etc which are not required for the project run
+	echo "Installed nextest, llvm-cov and cargo-mutants"
 
 #####################
 ### Build and run ###
@@ -93,6 +111,9 @@ run-test-examples:
 ### Checks ###
 ##############
 
+cargo-test: # Run cargo tests using nextest
+	PATH="${PWD}/bin:${PATH}" cargo nextest run
+
 cargo-check: # Run cargo check for all targets
 	cargo check --all-targets --all-features
 
@@ -106,9 +127,21 @@ cargo-fmt: # Run cargo fmt checks
 cargo-deny: # Run cargo deny checks
 	cargo deny -L error check
 
+cargo-mutants-for-diff: # Run cargo mutants for git diff
+	git diff | PATH="${PWD}/bin:${PATH}" cargo mutants --test-tool=nextest --in-diff /dev/stdin
+
 #############
 ### Tools ###
 #############
 
+cargo-fmt-apply: # Apply cargo fmt style changes
+	cargo +nightly fmt --all
+
 generate-hmac-test-vectors: # Generate HMAC test vectors for the webhook simulator
 	cargo run --example generate_hmac_test_vectors -p kalatori-client
+
+generate-coverage-report: # Generate test coverage report as lcov.info
+	PATH="${PWD}/bin:${PATH}" cargo llvm-cov nextest -p kalatori --lcov --output-path lcov.info
+
+open-coverage-report: # Generate and open test coverage report
+	PATH="${PWD}/bin:${PATH}" cargo llvm-cov nextest -p kalatori --open

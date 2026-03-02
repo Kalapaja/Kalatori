@@ -1,0 +1,67 @@
+name: Setup SQLite
+description: Build and install SQLite 3.51.0 from source with required features for sqlx
+
+runs:
+  using: composite
+  steps:
+    - name: Cache SQLite installation
+      id: cache-sqlite
+      uses: actions/cache@v5
+      with:
+        path: ~/.local/sqlite-3.51.0
+        key: sqlite-3.51.0
+
+    - name: Build SQLite 3.51.0 from source
+      if: steps.cache-sqlite.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cd /tmp
+        curl -LO https://www.sqlite.org/2025/sqlite-autoconf-3510000.tar.gz
+        tar xzf sqlite-autoconf-3510000.tar.gz
+        cd sqlite-autoconf-3510000
+        CFLAGS="-DSQLITE_ENABLE_UNLOCK_NOTIFY=1 -DSQLITE_ENABLE_COLUMN_METADATA=1 -DSQLITE_ENABLE_DBSTAT_VTAB=1 -DSQLITE_ENABLE_FTS3=1 -DSQLITE_ENABLE_FTS3_PARENTHESIS=1 -DSQLITE_ENABLE_FTS5=1 -DSQLITE_ENABLE_JSON1=1 -DSQLITE_ENABLE_RTREE=1 -DSQLITE_ENABLE_STAT4=1" \
+          ./configure --prefix="$HOME/.local/sqlite-3.51.0" --enable-shared --enable-static
+        make -j$(nproc)
+        make install
+        rm -rf /tmp/sqlite-autoconf*
+
+    - name: Install SQLite into system paths
+      shell: bash
+      run: |
+        sudo cp -a ~/.local/sqlite-3.51.0/bin/* /usr/local/bin/
+        sudo cp -a ~/.local/sqlite-3.51.0/lib/* /usr/local/lib/
+        sudo cp -a ~/.local/sqlite-3.51.0/include/* /usr/local/include/
+        sudo ldconfig
+
+    - name: Create pkg-config file for SQLite
+      shell: bash
+      run: |
+        sudo mkdir -p /usr/local/lib/pkgconfig
+        sudo tee /usr/local/lib/pkgconfig/sqlite3.pc > /dev/null << 'EOF'
+        prefix=/usr/local
+        exec_prefix=${prefix}
+        libdir=${exec_prefix}/lib
+        includedir=${prefix}/include
+
+        Name: SQLite
+        Description: SQL database engine
+        Version: 3.51.0
+        Libs: -L${libdir} -lsqlite3
+        Libs.private: -lm -ldl -lpthread
+        Cflags: -I${includedir}
+        EOF
+
+    - name: Verify SQLite installation
+      shell: bash
+      run: |
+        sqlite3 --version
+        pkg-config --modversion sqlite3
+        pkg-config --libs sqlite3
+
+    - name: Export SQLite environment variables
+      shell: bash
+      run: |
+        echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=/usr/local/lib" >> "$GITHUB_ENV"
+        echo "SQLITE3_LIB_DIR=/usr/local/lib" >> "$GITHUB_ENV"
+        echo "SQLITE3_INCLUDE_DIR=/usr/local/include" >> "$GITHUB_ENV"

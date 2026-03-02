@@ -110,6 +110,7 @@ governor = "0.10"
 [dev-dependencies]
 mockall = "0.14"
 mockall_double = "0.3"
+httpmock = "0.8"
 indoc = "2"
 serial_test = "3.2"
 tracing-test = "0.2"

@@ -56,25 +56,35 @@ ENV SQLITE3_INCLUDE_DIR=/usr/local/include
 
 WORKDIR /usr/src/kalatori
 
-# Copy actual source code
-COPY . .
+# Install subxt-cli
+COPY Makefile Makefile
+RUN make install-subxt-cli
 
-# Create dummy source to cache dependencies
+# Create source and examples directories
+RUN mkdir -p daemon/src
+RUN mkdir -p client/src
+RUN mkdir -p client/examples
+
+# Copy required Cargo.toml files
+COPY Cargo.toml Cargo.toml
+COPY daemon/Cargo.toml daemon/Cargo.toml
+COPY client/Cargo.toml client/Cargo.toml
+COPY Cargo.lock Cargo.lock
+
+# Create dummy source and examples to cache dependencies
 RUN echo "fn main() {}" > daemon/src/main.rs
 RUN echo "fn lib() {}" > client/src/lib.rs
+RUN echo "fn main() {}" > client/examples/crud.rs
+RUN echo "fn main() {}" > client/examples/webhook.rs
+RUN echo "fn main() {}" > client/examples/generate_hmac_test_vectors.rs
 
 # Build dependencies only
 RUN cargo build --release --all-features
 
-# Copy real main functions back
-COPY daemon/src/main.rs daemon/src/main.rs
-COPY client/src/lib.rs client/src/lib.rs
-
 # RUN cargo build --release -p kalatori-client --all-features
 
-# Install subxt-cli
-COPY Makefile ./
-RUN make install-subxt-cli
+# Copy actual source code
+COPY . .
 
 # Download metadata
 RUN make download-node-metadata-ci
@@ -104,10 +114,10 @@ RUN cd /usr/local/lib && ln -s libsqlite3.so.0 libsqlite3.so && ldconfig
 COPY --from=builder /usr/src/kalatori/target/release/kalatori /app/kalatori
 COPY --from=builder /usr/src/kalatori/static /app/static
 
-# RUN useradd --no-create-home --system --uid 1000 kalatori \
-#     && chown kalatori:kalatori /app
+RUN useradd --no-create-home --system --uid 1000 kalatori \
+    && chown kalatori:kalatori /app
 
-# USER kalatori
+USER kalatori
 
 # Expose the default port
 EXPOSE 8080

@@ -1,0 +1,44 @@
+name: Prepare release
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: The release version extracted from the tag
+        value: ${{ jobs.prepare.outputs.version }}
+      changelog_body:
+        description: The changelog section for this release
+        value: ${{ jobs.prepare.outputs.changelog_body }}
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changelog_body: ${{ steps.changelog.outputs.body }}
+    steps:
+      - name: Extract version from tag
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION"
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          BODY=$(sed -n "/^## \\[${VERSION}\\]/,/^## \\[/{/^## \\[${VERSION}\\]/d;/^## \\[/d;p;}" CHANGELOG.md)
+
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$BODY"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"

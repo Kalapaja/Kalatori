@@ -1,20 +1,13 @@
 name: Semantic PR
 
 on:
-  pull_request:
-    types:
-      - opened
-      - edited
-      - synchronize
+  workflow_call:
 
 jobs:
-  main:
-    # By default, these PR titles are allowed:
-    # https://github.com/commitizen/conventional-commit-types
+  semantic-pr:
     name: Validate PR title
     runs-on: ubuntu-latest
     steps:
-      # Documentation: https://github.com/amannn/action-semantic-pull-request
       - uses: amannn/action-semantic-pull-request@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

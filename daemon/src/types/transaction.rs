@@ -321,11 +321,12 @@ impl IncomingTransaction {
         invoice_id: Uuid,
         transfer: GeneralChainTransfer,
     ) -> Self {
+        let id = transfer.id;
         let transaction_id = transfer.general_transaction_id();
         let transfer_info = transfer.into_transfer_info();
 
         Self {
-            id: Uuid::new_v4(),
+            id,
             invoice_id,
             transfer_info,
             transaction_id,

@@ -1,0 +1,43 @@
+name: GitHub release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The release version (without v prefix)
+        required: true
+        type: string
+      changelog_body:
+        description: The changelog section for this release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lowercase repository owner
+        id: repo
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: v${{ inputs.version }}
+          body: |
+            ${{ inputs.changelog_body }}
+
+            ---
+            **Docker Image:**
+            ```
+            docker pull ghcr.io/${{ steps.repo.outputs.owner }}/kalatori:${{ inputs.version }}
+            ```
+          draft: false
+          prerelease: false
