@@ -23,7 +23,7 @@ use super::{
 
 pub struct TransfersTracker<
     T: ChainConfig,
-    C: BlockChainClientExt<T> + 'static,
+    C: BlockChainClient<T> + 'static,
     D: DaoInterface + 'static,
 > {
     client: C,
