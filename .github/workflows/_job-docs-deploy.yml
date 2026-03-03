@@ -1,0 +1,62 @@
+name: Deploy docs
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Documentation version to deploy (e.g., '0.5', 'dev')"
+        required: true
+        type: string
+      alias:
+        description: "Version alias (e.g., 'latest', 'dev')"
+        required: false
+        type: string
+      set_default:
+        description: "Set this version as the default landing page"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # for mike to push to gh-pages
+
+jobs:
+  docs-deploy:
+    name: Deploy docs (${{ inputs.version }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install mkdocs-materialx mike
+
+      - name: Configure git user
+        # Using the official GitHub Actions bot identity (user ID 41898282).
+        # This shows the bot avatar on gh-pages commits.
+        # See: https://api.github.com/users/github-actions%5Bbot%5D
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch gh-pages branch
+        run: git fetch origin gh-pages --depth=1 || true
+
+      - name: Deploy docs
+        run: |
+          if [ -n "${{ inputs.alias }}" ] && [ "${{ inputs.alias }}" != "${{ inputs.version }}" ]; then
+            mike deploy --push --update-aliases ${{ inputs.version }} ${{ inputs.alias }}
+          else
+            mike deploy --push ${{ inputs.version }}
+          fi
+
+      - name: Set default version
+        if: inputs.set_default
+        run: mike set-default --push ${{ inputs.alias || inputs.version }}

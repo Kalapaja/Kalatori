@@ -145,3 +145,17 @@ generate-coverage-report: # Generate test coverage report as lcov.info
 
 open-coverage-report: # Generate and open test coverage report
 	PATH="${PWD}/bin:${PATH}" cargo llvm-cov nextest -p kalatori --open
+
+######################
+### Documentation  ###
+######################
+
+install-mkdocs: # Install mkdocs with material theme and mike into local .venv
+	python3 -m venv .venv
+	.venv/bin/pip install mkdocs-materialx mike
+
+docs-serve: # Serve documentation locally with live reload
+	.venv/bin/mkdocs serve --livereload -o
+
+docs-build: # Build documentation locally
+	.venv/bin/mkdocs build

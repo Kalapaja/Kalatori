@@ -1,6 +1,7 @@
 .git
 .github
 .gitignore
+.venv
 
 chopsticks
 docs

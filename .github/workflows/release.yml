@@ -39,3 +39,13 @@ jobs:
       changelog_body: ${{ needs.prepare.outputs.changelog_body }}
     permissions:
       contents: write
+
+  docs-deploy:
+    needs: [prepare]
+    uses: ./.github/workflows/_job-docs-deploy.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      alias: latest
+      set_default: true
+    permissions:
+      contents: write

@@ -1,0 +1,48 @@
+site_name: Kalatori Docs
+site_description: Documentation for the Kalatori payment gateway
+repo_url: https://github.com/Kalapaja/Kalatori
+repo_name: Kalapaja/Kalatori
+
+theme:
+  name: materialx
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - search.suggest
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - toc:
+      permalink: true
+
+extra:
+  version:
+    provider: mike
+
+nav:
+  - Home: index.md
+  - Configuration: configuration.md
+  - Policies:
+      - Release: policies/release.md
+      - Git: policies/git.md
+      - CI: policies/ci.md
+      - Flows: policies/flows.md
