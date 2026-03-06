@@ -15,14 +15,10 @@ use std::collections::{
     HashMap,
     HashSet,
 };
-use std::process::ExitCode;
-
 use kalatori_client::types::ChainType;
 use kalatori_client::utils::HmacConfig;
 use secrecy::ExposeSecret;
-use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
-use tracing::Level;
 use zeroize::Zeroize;
 
 use chain::{
@@ -48,10 +44,7 @@ use configs::{
     web_server_config_with_prefix,
 };
 use dao::DAO;
-use error::{
-    Error,
-    PrettyCause,
-};
+use error::Error;
 use etherscan_client::EtherscanClient;
 use expiration_detector::ExpirationDetector;
 use state::AppState;
@@ -59,9 +52,7 @@ use utils::logger;
 use utils::shutdown::{
     self,
     ShutdownNotification,
-    ShutdownOutcome,
 };
-use utils::task_tracker::TaskTracker;
 
 use crate::chain::TransactionsRecorder;
 use crate::configs::etherscan_client_config_with_prefix;
@@ -69,70 +60,59 @@ use crate::dao::DaoInterface;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
 
-fn main() -> ExitCode {
-    let shutdown_notification = ShutdownNotification::new();
+// fn main() -> ExitCode {
+//     let shutdown_notification = ShutdownNotification::new();
 
-    // Sets the panic hook to print directly to the standard error because the
-    // logger isn't initialized yet.
-    shutdown::set_panic_hook(
-        |panic| eprintln!("{panic}"),
-        shutdown_notification.clone(),
-    );
+//     // Sets the panic hook to print directly to the standard error because the
+//     // logger isn't initialized yet.
+//     shutdown::set_panic_hook(
+//         |panic| eprintln!("{panic}"),
+//         shutdown_notification.clone(),
+//     );
 
-    let result = try_main(shutdown_notification.clone());
+//     let result = try_main(shutdown_notification.clone());
 
-    if let Err(error) = result {
-        // TODO: https://github.com/rust-lang/rust/issues/92698
-        // An equilibristic to conditionally print an error message without storing it
-        // as `String` on the heap.
-        let print = |message| {
-            if tracing::event_enabled!(Level::ERROR) {
-                tracing::error!("{message}");
-            } else {
-                eprintln!("{message}");
-            }
-        };
+//     if let Err(error) = result {
+//         // TODO: https://github.com/rust-lang/rust/issues/92698
+//         // An equilibristic to conditionally print an error message without storing it
+//         // as `String` on the heap.
+//         let print = |message| {
+//             if tracing::event_enabled!(Level::ERROR) {
+//                 tracing::error!("{message}");
+//             } else {
+//                 eprintln!("{message}");
+//             }
+//         };
 
-        print(format_args!(
-            "Badbye! The daemon's got an error during the initialization:{}",
-            error.pretty_cause()
-        ));
+//         print(format_args!(
+//             "Badbye! The daemon's got an error during the initialization:{}",
+//             error.pretty_cause()
+//         ));
 
-        ExitCode::FAILURE
-    } else {
-        match *shutdown_notification
-            .outcome
-            .read_blocking()
-        {
-            ShutdownOutcome::UserRequested => {
-                tracing::info!("Goodbye!");
+//         ExitCode::FAILURE
+//     } else {
+//         match *shutdown_notification
+//             .outcome
+//             .read_blocking()
+//         {
+//             ShutdownOutcome::UserRequested => {
+//                 tracing::info!("Goodbye!");
 
-                ExitCode::SUCCESS
-            },
-            ShutdownOutcome::UnrecoverableError {
-                panic,
-            } => {
-                tracing::error!(
-                    "Badbye! The daemon's shut down with errors{}.",
-                    if panic { " due to internal bugs" } else { "" }
-                );
+//                 ExitCode::SUCCESS
+//             },
+//             ShutdownOutcome::UnrecoverableError {
+//                 panic,
+//             } => {
+//                 tracing::error!(
+//                     "Badbye! The daemon's shut down with errors{}.",
+//                     if panic { " due to internal bugs" } else { "" }
+//                 );
 
-                ExitCode::FAILURE
-            },
-        }
-    }
-}
-
-fn try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
-    shutdown::set_panic_hook(
-        |panic| eprintln!("{panic}"),
-        shutdown_notification.clone(),
-    );
-
-    Runtime::new()
-        .map_err(Error::Runtime)?
-        .block_on(async_try_main(shutdown_notification))
-}
+//                 ExitCode::FAILURE
+//             },
+//         }
+//     }
+// }
 
 async fn init_invoice_registry(dao: &impl DaoInterface) -> Result<InvoiceRegistry, Error> {
     let invoice_registry = InvoiceRegistry::new();
@@ -176,8 +156,10 @@ fn validate_and_extend_configs(
     Ok(())
 }
 
-#[expect(clippy::too_many_lines)]
-async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
+#[tokio::main]
+async fn main() {
+    let shutdown_notification = ShutdownNotification::new();
+
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .unwrap();
@@ -188,7 +170,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let configs_path = std::env::var(format!("{env_prefix}_CONFIG_DIR_PATH")).unwrap_or_default();
 
     let logger_config = logger_config_with_prefix(&configs_path, &env_prefix);
-    let loki_controller = logger::initialize(&logger_config)?;
+    let loki_controller = logger::initialize(&logger_config).expect("Fatal");
 
     shutdown::set_panic_hook(
         |panic| tracing::error!("{panic}"),
@@ -222,15 +204,15 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     // Initialize DAO for SQLite database operations
     let dao = DAO::new(database_config.clone())
         .await
-        .map_err(error::DaoError::Sqlx)?;
+        .expect("Failed to init DAO");
 
-    let invoice_registry = init_invoice_registry(&dao).await?;
+    let invoice_registry = init_invoice_registry(&dao).await.expect("Failed to init invoice registry");
 
     validate_and_extend_configs(
         &mut chains_config,
         &mut payments_config,
         invoice_registry.used_asset_ids().await,
-    )?;
+    ).expect("Config validation failed");
 
     // Initialize Asset Hub client
     let asset_hub_chain_config = chains_config
@@ -247,18 +229,12 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let asset_hub_client = AssetHubClient::new(asset_hub_chain_config)
         .await
-        .map_err(|_| {
-            tracing::warn!("Failed to initialize Asset Hub client, continuing without it");
-            Error::Fatal
-        })?;
+        .expect("Failed to initialize Asset Hub client");
 
     asset_hub_client
         .init_asset_info(asset_hub_assets)
         .await
-        .map_err(|_| {
-            tracing::warn!("Failed to initialize Asset Hub asset info");
-            Error::Fatal
-        })?;
+        .expect("Failed to initialize Asset Hub asset info");
 
     // Initialize Polygon client
     let polygon_chain_config = chains_config
@@ -275,18 +251,12 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let polygon_client = PolygonClient::new(polygon_chain_config)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = ?e, "Failed to initialize Polygon client, continuing without it");
-            Error::Fatal
-        })?;
+        .expect("Failed to initialize Polygon client");
 
     polygon_client
         .init_asset_info(polygon_assets)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = ?e, "Failed to initialize Polygon asset info");
-            Error::Fatal
-        })?;
+        .expect("Failed to initialize Polygon asset info");
 
     // Collect asset names from both chains
     let mut asset_names_map = asset_hub_client
@@ -387,52 +357,29 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     .await;
 
     let shutdown_completed = CancellationToken::new();
-    let mut shutdown_listener = tokio::spawn(shutdown::listener(
+    let shutdown_listener = tokio::spawn(shutdown::listener(
         shutdown_notification.token.clone(),
         shutdown_completed.clone(),
     ));
 
     tracing::info!("The initialization has been completed.");
-    let (task_tracker, error_rx) = TaskTracker::new();
 
     // Start the main loop and wait for it to gracefully end or the early
     // termination signal.
-    let result = tokio::select! {
-        biased;
-        () = task_tracker.wait_and_shutdown(error_rx, shutdown_notification) => {
-            shutdown_completed.cancel();
-
-            let (
-                shutdown_result,
-                _keyring_result,
-                _transfer_executor_result,
-                _expiration_detector_result,
-                _asset_hub_tracker_result,
-                _polygon_tracker_result,
-                _webhook_sender_result,
-                _api_server_result,
-            ) = tokio::join!(
-                shutdown_listener,
-                keyring_handle,
-                transfer_executor_handle,
-                expiration_detector_handle,
-                asset_hub_tracker_handle,
-                polygon_tracker_handle,
-                webhook_sender_handle,
-                api_handle,
-            );
-
-            shutdown_result
-        }
-        shutdown_listener_result = &mut shutdown_listener => shutdown_listener_result
-    }
-    .expect("shutdown listener shouldn't panic");
+    let _result = tokio::join!(
+        shutdown_listener,
+        keyring_handle,
+        transfer_executor_handle,
+        expiration_detector_handle,
+        asset_hub_tracker_handle,
+        polygon_tracker_handle,
+        webhook_sender_handle,
+        api_handle,
+    );
 
     // Flush remaining logs to Loki after all components have stopped, so no
     // log records are lost.
     if let Some(controller) = loki_controller {
         controller.shutdown().await;
     }
-
-    result
 }
