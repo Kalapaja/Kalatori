@@ -463,6 +463,17 @@ pub struct LoggerConfig {
     pub loki_url: Option<String>,
 }
 
+fn default_etherscan_limit_per_second() -> NonZeroU32 {
+    DEFAULT_ETHERSCAN_LIMIT_PER_SECOND
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct EtherscanClientConfig {
+    #[serde(default = "default_etherscan_limit_per_second")]
+    pub requests_per_second: NonZeroU32,
+    pub api_key: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::consts::DEFAULT_SIGNATURE_MAX_AGE_SECS;

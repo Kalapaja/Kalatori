@@ -389,7 +389,7 @@ mod tests {
 
         let sender = WebhookSender::new(
             dao,
-            "http://webhook.example.com".to_string(),
+            Url::parse("http://webhook.example.com").unwrap(),
             hmac_config,
         );
 
@@ -443,7 +443,7 @@ mod tests {
 
         let mut sender = WebhookSender::new(
             dao,
-            "http://webhook.example.com".to_string(),
+            Url::parse("http://webhook.example.com").unwrap(),
             hmac_config,
         );
 
@@ -600,7 +600,7 @@ mod tests {
 
         let mut sender = WebhookSender::new(
             dao,
-            "http://webhook.example.com".to_string(),
+            Url::parse("http://webhook.example.com").unwrap(),
             hmac_config,
         );
 
