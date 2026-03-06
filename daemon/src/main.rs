@@ -11,14 +11,13 @@ mod types;
 mod utils;
 mod webhook_sender;
 
+use kalatori_client::types::ChainType;
+use kalatori_client::utils::HmacConfig;
+use secrecy::ExposeSecret;
 use std::collections::{
     HashMap,
     HashSet,
 };
-use kalatori_client::types::ChainType;
-use kalatori_client::utils::HmacConfig;
-use secrecy::ExposeSecret;
-use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
 use chain::{
@@ -49,70 +48,13 @@ use etherscan_client::EtherscanClient;
 use expiration_detector::ExpirationDetector;
 use state::AppState;
 use utils::logger;
-use utils::shutdown::{
-    self,
-    ShutdownNotification,
-};
+use utils::shutdown::Shutdown;
 
 use crate::chain::TransactionsRecorder;
 use crate::configs::etherscan_client_config_with_prefix;
 use crate::dao::DaoInterface;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
-
-// fn main() -> ExitCode {
-//     let shutdown_notification = ShutdownNotification::new();
-
-//     // Sets the panic hook to print directly to the standard error because the
-//     // logger isn't initialized yet.
-//     shutdown::set_panic_hook(
-//         |panic| eprintln!("{panic}"),
-//         shutdown_notification.clone(),
-//     );
-
-//     let result = try_main(shutdown_notification.clone());
-
-//     if let Err(error) = result {
-//         // TODO: https://github.com/rust-lang/rust/issues/92698
-//         // An equilibristic to conditionally print an error message without storing it
-//         // as `String` on the heap.
-//         let print = |message| {
-//             if tracing::event_enabled!(Level::ERROR) {
-//                 tracing::error!("{message}");
-//             } else {
-//                 eprintln!("{message}");
-//             }
-//         };
-
-//         print(format_args!(
-//             "Badbye! The daemon's got an error during the initialization:{}",
-//             error.pretty_cause()
-//         ));
-
-//         ExitCode::FAILURE
-//     } else {
-//         match *shutdown_notification
-//             .outcome
-//             .read_blocking()
-//         {
-//             ShutdownOutcome::UserRequested => {
-//                 tracing::info!("Goodbye!");
-
-//                 ExitCode::SUCCESS
-//             },
-//             ShutdownOutcome::UnrecoverableError {
-//                 panic,
-//             } => {
-//                 tracing::error!(
-//                     "Badbye! The daemon's shut down with errors{}.",
-//                     if panic { " due to internal bugs" } else { "" }
-//                 );
-
-//                 ExitCode::FAILURE
-//             },
-//         }
-//     }
-// }
 
 async fn init_invoice_registry(dao: &impl DaoInterface) -> Result<InvoiceRegistry, Error> {
     let invoice_registry = InvoiceRegistry::new();
@@ -158,8 +100,6 @@ fn validate_and_extend_configs(
 
 #[tokio::main]
 async fn main() {
-    let shutdown_notification = ShutdownNotification::new();
-
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .unwrap();
@@ -170,17 +110,16 @@ async fn main() {
     let configs_path = std::env::var(format!("{env_prefix}_CONFIG_DIR_PATH")).unwrap_or_default();
 
     let logger_config = logger_config_with_prefix(&configs_path, &env_prefix);
-    let loki_controller = logger::initialize(&logger_config).expect("Fatal");
-
-    shutdown::set_panic_hook(
-        |panic| tracing::error!("{panic}"),
-        shutdown_notification.clone(),
-    );
+    let loki_controller = logger::initialize(&logger_config).expect("Failed to initialize loki");
 
     tracing::info!(
         "Kalatori {} is starting...",
         env!("CARGO_PKG_VERSION")
     );
+
+    let shutdown = Shutdown::new();
+    shutdown.install_panic_hook();
+    tracing::info!("Set up panic hook");
 
     let mut secrets_config = secrets_config_with_prefix(&configs_path, &env_prefix);
     let mut chains_config = chains_config_with_prefix(&configs_path, &env_prefix);
@@ -206,13 +145,16 @@ async fn main() {
         .await
         .expect("Failed to init DAO");
 
-    let invoice_registry = init_invoice_registry(&dao).await.expect("Failed to init invoice registry");
+    let invoice_registry = init_invoice_registry(&dao)
+        .await
+        .expect("Failed to init invoice registry");
 
     validate_and_extend_configs(
         &mut chains_config,
         &mut payments_config,
         invoice_registry.used_asset_ids().await,
-    ).expect("Config validation failed");
+    )
+    .expect("Config validation failed");
 
     // Initialize Asset Hub client
     let asset_hub_chain_config = chains_config
@@ -294,8 +236,7 @@ async fn main() {
         transactions_recorder.clone(),
     );
 
-    let expiration_detector_handle =
-        expiration_detector.ignite(shutdown_notification.token.clone());
+    let expiration_detector_handle = expiration_detector.ignite(shutdown.token());
 
     // Start Asset Hub transfers tracker
     let asset_hub_tracker = TransfersTracker::new(
@@ -304,10 +245,7 @@ async fn main() {
         transactions_recorder.clone(),
     );
 
-    let asset_hub_tracker_handle = asset_hub_tracker.ignite(
-        asset_hub_assets,
-        shutdown_notification.token.clone(),
-    );
+    let asset_hub_tracker_handle = asset_hub_tracker.ignite(asset_hub_assets, shutdown.token());
 
     // Start Polygon transfers tracker
     let polygon_tracker = TransfersTracker::new(
@@ -316,10 +254,7 @@ async fn main() {
         transactions_recorder,
     );
 
-    let polygon_tracker_handle = polygon_tracker.ignite(
-        polygon_assets,
-        shutdown_notification.token.clone(),
-    );
+    let polygon_tracker_handle = polygon_tracker.ignite(polygon_assets, shutdown.token());
 
     // Single executor handles both chains
     let transfer_executor = TransfersExecutor::new(
@@ -329,7 +264,7 @@ async fn main() {
         keyring_client.clone(),
     );
 
-    let transfer_executor_handle = transfer_executor.ignite(shutdown_notification.token.clone());
+    let transfer_executor_handle = transfer_executor.ignite(shutdown.token());
 
     let webhook_sender = webhook_sender::WebhookSender::new(
         dao.clone(),
@@ -337,7 +272,7 @@ async fn main() {
         hmac_config.clone(),
     );
 
-    let webhook_sender_handle = webhook_sender.ignite(shutdown_notification.token.clone());
+    let webhook_sender_handle = webhook_sender.ignite(shutdown.token());
 
     let app_state = AppState::new(
         keyring_client,
@@ -352,22 +287,16 @@ async fn main() {
         web_server_config,
         hmac_config,
         app_state,
-        shutdown_notification.token.clone(),
+        shutdown.token(),
     )
     .await;
 
-    let shutdown_completed = CancellationToken::new();
-    let shutdown_listener = tokio::spawn(shutdown::listener(
-        shutdown_notification.token.clone(),
-        shutdown_completed.clone(),
-    ));
+    let shutdown_handle = tokio::spawn(shutdown.run());
 
     tracing::info!("The initialization has been completed.");
 
-    // Start the main loop and wait for it to gracefully end or the early
-    // termination signal.
-    let _result = tokio::join!(
-        shutdown_listener,
+    let _join_results = tokio::join!(
+        shutdown_handle,
         keyring_handle,
         transfer_executor_handle,
         expiration_detector_handle,
@@ -381,5 +310,6 @@ async fn main() {
     // log records are lost.
     if let Some(controller) = loki_controller {
         controller.shutdown().await;
+        tracing::info!("Loki controller has been shut down.")
     }
 }

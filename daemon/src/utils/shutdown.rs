@@ -1,200 +1,70 @@
 //! The shutdown module.
 //!
-//! Handles a graceful shutdown with an asynchronous runtime with respect of
-//! panics (by incorporating a custom panic handler) & unrecoverable errors from
-//! another modules.
+//! Provides a single entry point for managing graceful shutdown, including:
+//! - OS signal listening (SIGINT)
+//! - Panic hook installation
+//! - [`CancellationToken`] distribution to components
 
-use std::fmt::{
-    Display,
-    Formatter,
-    Result as FmtResult,
-};
-use std::io::Result as IoResult;
 use std::panic::{
     self,
     PanicHookInfo,
 };
-use std::sync::Arc;
-use std::time::Duration;
 
-use async_lock::{
-    RwLock,
-    RwLockUpgradableReadGuard,
-};
-use tokio::{
-    signal,
-    time,
-};
+use tokio::signal;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 
-const TIP_FUSE_SECS: u64 = 15;
+fn format_panic_message(info: &PanicHookInfo<'_>) -> String {
+    let location = info.location().map_or_else(
+        || "unknown location".to_string(),
+        |location| location.to_string(),
+    );
 
-#[derive(Clone)]
-#[expect(clippy::module_name_repetitions)]
-pub struct ShutdownNotification {
-    pub token: CancellationToken,
-    pub outcome: Arc<RwLock<ShutdownOutcome>>,
+    let message = info
+        .payload_as_str()
+        .unwrap_or("no message");
+
+    format!("Panicked at {location}: {message}")
 }
 
-impl ShutdownNotification {
+pub struct Shutdown {
+    token: CancellationToken,
+}
+
+impl Shutdown {
     pub fn new() -> Self {
         Self {
             token: CancellationToken::new(),
-            outcome: Arc::new(RwLock::new(
-                ShutdownOutcome::UserRequested,
-            )),
-        }
-    }
-}
-
-pub async fn listener(
-    shutdown_notification: CancellationToken,
-    shutdown_completed: CancellationToken,
-) -> Result<(), Error> {
-    tokio::select! {
-        biased;
-        result = signal::ctrl_c() => {
-            process_signal(result)?;
-
-            tracing::info!("Received the shutdown signal. Initialising the shutdown...");
-
-            shutdown_notification.cancel();
-        }
-        () = shutdown_notification.cancelled() => {
-            tracing::info!("The shutdown started by an unrecoverable error...");
         }
     }
 
-    let shutdown_completed_clone = shutdown_completed.clone();
-    let tip = tokio::spawn(async move {
+    /// Installs a panic hook that cancels the shutdown token on any panic.
+    pub fn install_panic_hook(&self) {
+        let token = self.token.clone();
+
+        panic::set_hook(Box::new(move |panic_info| {
+            tracing::error!("{}", format_panic_message(panic_info));
+            token.cancel();
+        }));
+    }
+
+    pub fn token(&self) -> CancellationToken {
+        self.token.clone()
+    }
+
+    /// Waits for an OS signal or an internal trigger (panic or component
+    /// failure), then cancels the token to initiate graceful shutdown.
+    pub async fn run(self) -> Result<(), Error> {
         tokio::select! {
-            biased;
-            () = shutdown_completed_clone.cancelled() => {}
-            () = time::sleep(Duration::from_secs(TIP_FUSE_SECS)) => {
-                tracing::warn!(
-                    "Send the shutdown signal one more time to early terminate the daemon \
-                    instead of waiting for the graceful shutdown."
-                );
+            result = signal::ctrl_c() => {
+                result.map_err(Error::ShutdownSignal)?;
+                tracing::info!("Received shutdown signal. Initiating graceful shutdown...");
+                self.token.cancel();
             }
-        }
-    });
-
-    tokio::select! {
-        biased;
-        () = shutdown_completed.cancelled() => {}
-        result = signal::ctrl_c() => {
-            process_signal(result)?;
-
-            tracing::info!("Received the second shutdown signal. Terminating the daemon...");
-
-            return Ok(());
-        }
-    }
-
-    tip.await
-        .expect("tip task shouldn't panic");
-
-    tracing::debug!("The shutdown signal listener is shut down.");
-
-    Ok(())
-}
-
-fn process_signal(result: IoResult<()>) -> Result<(), Error> {
-    result.map_err(Error::ShutdownSignal)?;
-
-    // Print shutdown log messages on the next line after the Control-C command.
-    println!();
-
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-#[expect(clippy::module_name_repetitions)]
-pub enum ShutdownOutcome {
-    UserRequested,
-    UnrecoverableError { panic: bool },
-}
-
-pub fn set_panic_hook(
-    print: impl Fn(PrettyPanic<'_>) + Send + Sync + 'static,
-    shutdown_notification: ShutdownNotification,
-) {
-    panic::set_hook(Box::new(move |panic_info| {
-        let outcome = shutdown_notification
-            .outcome
-            .upgradable_read_blocking();
-
-        let first = if matches!(
-            *outcome,
-            ShutdownOutcome::UnrecoverableError {
-                panic: true
+            () = self.token.cancelled() => {
+                tracing::info!("Shutdown triggered by internal error.");
             }
-        ) {
-            false
-        } else {
-            *RwLockUpgradableReadGuard::upgrade_blocking(outcome) =
-                ShutdownOutcome::UnrecoverableError {
-                    panic: true,
-                };
-
-            shutdown_notification.token.cancel();
-
-            true
-        };
-
-        print(PrettyPanic {
-            panic_info,
-            first,
-        });
-    }));
-}
-
-pub struct PrettyPanic<'a> {
-    panic_info: &'a PanicHookInfo<'a>,
-    first: bool,
-}
-
-// It looks like it's impossible to acquire `PanicInfo` outside of
-// `panic::set_hook`, which could alter execution of other unit tests, so,
-// without mocking the `panic_info` field, there's no way to test the
-// `Display`ing.
-impl Display for PrettyPanic<'_> {
-    fn fmt(
-        &self,
-        f: &mut Formatter<'_>,
-    ) -> FmtResult {
-        f.write_str("A panic detected")?;
-
-        if let Some(location) = self.panic_info.location() {
-            f.write_str(" at ")?;
-            location.fmt(f)?;
-        }
-
-        let payload = self.panic_info.payload();
-        let message_option = match payload.downcast_ref() {
-            Some(string) => Some(*string),
-            None => payload
-                .downcast_ref::<String>()
-                .map(|string| &string[..]),
-        };
-
-        if let Some(panic_message) = message_option {
-            f.write_str(":\n    ")?;
-            f.write_str(panic_message)?;
-        }
-
-        f.write_str(".")?;
-
-        // Print the report request only on the first panic.
-
-        if self.first {
-            f.write_str(concat!(
-                "\n\nThis is a bug. Please report it at ",
-                env!("CARGO_PKG_REPOSITORY"),
-                "/issues."
-            ))?;
         }
 
         Ok(())
