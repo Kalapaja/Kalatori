@@ -17,7 +17,7 @@ pub fn initialize(config: &LoggerConfig) -> Option<BackgroundTaskController> {
     let (loki_layer, loki_controller) = if let Some(url) = &config.loki_url {
         let parsed_url: tracing_loki::url::Url = url
             .parse()
-            .unwrap_or_else(|e| panic!("Failed to parse Loki URL '{url}': {e}"));
+            .expect("Failed to parse Loki URL");
 
         let (layer, controller, task) = tracing_loki::builder()
             .build_controller_url(parsed_url)

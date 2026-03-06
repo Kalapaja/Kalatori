@@ -66,7 +66,7 @@ impl Shutdown {
         F: Future<Output = ()>,
     {
         tokio::select! {
-            _ = signal => {
+            () = signal => {
                 tracing::info!("Received shutdown signal. Initiating graceful shutdown...");
                 self.token.cancel();
             }
