@@ -5,15 +5,19 @@
 //! - Panic hook installation
 //! - [`CancellationToken`] distribution to components
 
+use std::future::Future;
 use std::panic::{
     self,
     PanicHookInfo,
 };
 
-use tokio::signal;
 use tokio_util::sync::CancellationToken;
 
-use crate::error::Error;
+async fn ctrl_c_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to install CTRL+C signal handler");
+}
 
 fn format_panic_message(info: &PanicHookInfo<'_>) -> String {
     let location = info.location().map_or_else(
@@ -55,10 +59,14 @@ impl Shutdown {
 
     /// Waits for an OS signal or an internal trigger (panic or component
     /// failure), then cancels the token to initiate graceful shutdown.
-    pub async fn run(self) -> Result<(), Error> {
+    async fn run<F>(
+        self,
+        signal: F,
+    ) where
+        F: Future<Output = ()>,
+    {
         tokio::select! {
-            result = signal::ctrl_c() => {
-                result.map_err(Error::ShutdownSignal)?;
+            _ = signal => {
                 tracing::info!("Received shutdown signal. Initiating graceful shutdown...");
                 self.token.cancel();
             }
@@ -66,7 +74,11 @@ impl Shutdown {
                 tracing::info!("Shutdown triggered by internal error.");
             }
         }
+    }
 
-        Ok(())
+    /// Spawns the shutdown coordinator as a background task
+    pub fn watch_shutdown_signal(self) -> tokio::task::JoinHandle<()> {
+        let signal = ctrl_c_signal();
+        tokio::task::spawn(async move { self.run(signal).await })
     }
 }
