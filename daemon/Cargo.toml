@@ -127,7 +127,7 @@ dev_api = []
 strip = true
 lto = true
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 overflow-checks = true
 
 [lints]
