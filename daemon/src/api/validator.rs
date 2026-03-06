@@ -1,9 +1,8 @@
 //! Validator for API request parameters.
 //!
-//! Private to the `api` module — do not re-export.
+//! Used only inside the `api` module — do not re-export.
 
 use futures::future;
-
 use kalatori_client::types::{
     CreateInvoiceParams,
     InvoiceCart as PublicInvoiceCart,

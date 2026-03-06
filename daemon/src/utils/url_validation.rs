@@ -1,8 +1,8 @@
-//! URL validation for order's redirect/image URL with SSRF attack prevention.
+//! URL validation with SSRF attack prevention.
 //!
 //! # Security Model
 //!
-//! This module validates redirect/image URLs before the server makes outbound
+//! This module validates URLs before the server makes outbound
 //! HTTP requests to prevent Server-Side Request Forgery (SSRF) and related
 //! attacks.
 //!
@@ -23,6 +23,7 @@
 //!    - Not CGNAT (`100.64.0.0/10`) - blocks Alibaba Cloud metadata
 //!    - Not documentation/test ranges (`192.0.2.0/24`, `198.51.100.0/24`, etc.)
 //!    - Not multicast, broadcast or reserved ranges
+//! 8. File extension check. Used mainly outside for cart item image URLs - only allows well-known image extensions
 //!
 //! ## DNS rebinding
 //! The attack is mitigated by HTTPS requirement (certificate validation fails
@@ -34,14 +35,6 @@
 //! normalizes IP addresses in various formats (hex, octal, decimal) to standard
 //! dotted-decimal notation before validation, preventing IP obfuscation
 //! techniques and double URL encoding attacks.
-//!
-//! ## Image URL extra validation
-//! When validating image URLs (`validate_image_with_allowed_base_many`), an
-//! additional file-extension check is performed on top of all general checks
-//! listed above. Only well-known raster/vector image extensions are accepted
-//! (see `ALLOWED_IMAGE_EXTENSIONS`). Unknown extensions (e.g. `.php`, `.html`)
-//! are rejected, reducing the attack surface for content-type confusion
-//! attacks.
 //!
 //! ## Known Limitations
 //! Currently it's expected that the callback URL is a fire and forget endpoint,

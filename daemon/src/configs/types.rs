@@ -368,6 +368,7 @@ impl RawShopConfig {
             allow_insecure_urls,
             meta,
         } = self;
+
         let api_validator_config = if !allow_insecure_urls {
             url_validation::validate(invoices_webhook_url.as_str())
                 .await

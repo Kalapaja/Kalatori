@@ -34,13 +34,11 @@ async fn create_invoice(
     State(api_state): State<ApiState>,
     AppJson(params): AppJson<CreateInvoiceParams>,
 ) -> ApiResult<PublicInvoice, DaoInvoiceError> {
-    // 1. Validate URLs at the input boundary before touching business logic.
     api_state
         .validator
         .validate_create_invoice_params(&params)
         .await?;
 
-    // 2. Delegate to AppState with already-valid data.
     let invoice = api_state
         .inner
         .create_invoice(params)
@@ -92,13 +90,11 @@ async fn update_invoice(
     State(api_state): State<ApiState>,
     AppJson(params): AppJson<UpdateInvoiceParams>,
 ) -> ApiResult<PublicInvoice, DaoInvoiceError> {
-    // 1. Validate cart item URLs at the input boundary.
     api_state
         .validator
         .validate_update_invoice_params(&params)
         .await?;
 
-    // 2. Delegate to AppState with already-valid data.
     let invoice = api_state
         .inner
         .update_invoice(params)
