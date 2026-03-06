@@ -3,7 +3,6 @@ mod chain;
 mod chain_client;
 mod configs;
 mod dao;
-mod error;
 mod etherscan_client;
 mod expiration_detector;
 mod state;
@@ -43,7 +42,6 @@ use configs::{
     web_server_config_with_prefix,
 };
 use dao::DAO;
-use error::Error;
 use etherscan_client::EtherscanClient;
 use expiration_detector::ExpirationDetector;
 use state::AppState;
@@ -56,26 +54,26 @@ use crate::dao::DaoInterface;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
 
-async fn init_invoice_registry(dao: &impl DaoInterface) -> Result<InvoiceRegistry, Error> {
+async fn init_invoice_registry(dao: &impl DaoInterface) -> InvoiceRegistry {
     let invoice_registry = InvoiceRegistry::new();
 
     let restore_invoices = dao
         .get_active_invoices_with_amounts()
         .await
-        .map_err(|_| Error::Fatal)?;
+        .expect("Failed to restore invoices from database");
 
     invoice_registry
         .add_invoices(restore_invoices)
         .await;
 
-    Ok(invoice_registry)
+    invoice_registry
 }
 
 fn validate_and_extend_configs(
     chains_config: &mut ChainsConfig,
     payments_config: &mut PaymentsConfig,
     restored_asset_ids: HashMap<ChainType, HashSet<String>>,
-) -> Result<(), Error> {
+) {
     // Ensure that we have recipients for all chains from restored invoices and for
     // default chain
     let mut required_recipients: Vec<_> = restored_asset_ids
@@ -89,13 +87,11 @@ fn validate_and_extend_configs(
 
     payments_config
         .validate_recipients(&required_recipients)
-        .map_err(|_| Error::Fatal)?;
+        .expect("Missing recipient for one or more chains");
 
     // Extend chains config with default and restored asset IDs
     chains_config.add_default_asset_ids(&payments_config.default_asset_id);
     chains_config.add_restored_asset_ids(restored_asset_ids);
-
-    Ok(())
 }
 
 #[tokio::main]
@@ -110,7 +106,7 @@ async fn main() {
     let configs_path = std::env::var(format!("{env_prefix}_CONFIG_DIR_PATH")).unwrap_or_default();
 
     let logger_config = logger_config_with_prefix(&configs_path, &env_prefix);
-    let loki_controller = logger::initialize(&logger_config).expect("Failed to initialize loki");
+    let loki_controller = logger::initialize(&logger_config);
 
     tracing::info!(
         "Kalatori {} is starting...",
@@ -145,16 +141,13 @@ async fn main() {
         .await
         .expect("Failed to init DAO");
 
-    let invoice_registry = init_invoice_registry(&dao)
-        .await
-        .expect("Failed to init invoice registry");
+    let invoice_registry = init_invoice_registry(&dao).await;
 
     validate_and_extend_configs(
         &mut chains_config,
         &mut payments_config,
         invoice_registry.used_asset_ids().await,
-    )
-    .expect("Config validation failed");
+    );
 
     // Initialize Asset Hub client
     let asset_hub_chain_config = chains_config
@@ -291,7 +284,7 @@ async fn main() {
     )
     .await;
 
-    let shutdown_handle = tokio::spawn(shutdown.run());
+    let shutdown_handle = shutdown.watch_shutdown_signal();
 
     tracing::info!("The initialization has been completed.");
 
