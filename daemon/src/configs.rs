@@ -5,6 +5,8 @@ mod utils;
 pub use types::*;
 use utils::*;
 
+use crate::error::inputs_validation::ConfigInputValidationError;
+
 // TODO: add logger config
 
 pub fn secrets_config_with_prefix(
@@ -68,13 +70,15 @@ pub fn database_config_with_prefix(
     config_from_file_or_env(&config_path, &env_prefix)
 }
 
-pub fn shop_config_with_prefix(
+pub async fn shop_config_with_prefix(
     config_dir_path: &str,
     prefix: &str,
-) -> ShopConfig {
+) -> Result<ValidatedShopConfig, ConfigInputValidationError> {
     let config_path = format_config_path(config_dir_path, "shop.json");
     let env_prefix = format_prefix(prefix, "SHOP");
-    config_from_file_or_env(&config_path, &env_prefix)
+    let raw_shop_config = config_from_file_or_env::<RawShopConfig>(&config_path, &env_prefix);
+
+    raw_shop_config.validated().await
 }
 
 pub fn logger_config_with_prefix(

@@ -205,16 +205,8 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let mut payments_config = payments_config_with_prefix(&configs_path, &env_prefix);
     let web_server_config = web_server_config_with_prefix(&configs_path, &env_prefix);
     let database_config = database_config_with_prefix(&configs_path, &env_prefix);
-    let shop_config = shop_config_with_prefix(&configs_path, &env_prefix);
+    let shop_config = shop_config_with_prefix(&configs_path, &env_prefix).await?;
     let etherscan_client_config = etherscan_client_config_with_prefix(&configs_path, &env_prefix);
-
-    let (
-        invoices_webhook_url,
-        signature_max_age_secs,
-        allowed_redirect_domain,
-        allowed_image_domains,
-        shop_meta,
-    ) = shop_config.into_inner();
 
     let hmac_config = HmacConfig::new(
         secrets_config
@@ -222,7 +214,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
             .expose_secret()
             .as_bytes()
             .to_vec(),
-        signature_max_age_secs,
+        shop_config.signature_max_age_secs,
     );
     secrets_config.api_secret_key.zeroize();
 
@@ -370,7 +362,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let webhook_sender = webhook_sender::WebhookSender::new(
         dao.clone(),
-        invoices_webhook_url,
+        shop_config.invoices_webhook_url,
         hmac_config.clone(),
     );
 
@@ -382,15 +374,14 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         invoice_registry,
         asset_names_map,
         payments_config,
-        allowed_redirect_domain,
-        allowed_image_domains,
-        shop_meta,
+        shop_config.meta,
     );
 
     let api_handle = api::api_server(
         web_server_config,
         hmac_config,
         app_state,
+        shop_config.api_validator_config,
         shutdown_notification.token.clone(),
     )
     .await;

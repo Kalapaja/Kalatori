@@ -17,48 +17,7 @@ use kalatori_client::types::{
 };
 
 use super::ApiErrorExt;
-
-#[derive(Debug)]
-pub(super) struct SuccessWrapper<T: Serialize>(T);
-
-impl<T: Serialize> From<T> for SuccessWrapper<T> {
-    fn from(value: T) -> Self {
-        SuccessWrapper(value)
-    }
-}
-
-impl<T: Serialize> IntoResponse for SuccessWrapper<T> {
-    fn into_response(self) -> Response {
-        (
-            StatusCode::OK,
-            Json(ApiResultStructured::Ok {
-                result: self.0,
-            }),
-        )
-            .into_response()
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct ErrorWrapper<E: ApiErrorExt>(E);
-
-impl<E: ApiErrorExt> From<E> for ErrorWrapper<E> {
-    fn from(value: E) -> Self {
-        ErrorWrapper(value)
-    }
-}
-
-impl<E: ApiErrorExt> IntoResponse for ErrorWrapper<E> {
-    fn into_response(self) -> Response {
-        (
-            self.0.http_status_code(),
-            Json(ApiResultStructured::<()>::Err {
-                error: self.0.to_api_error(),
-            }),
-        )
-            .into_response()
-    }
-}
+use crate::error::inputs_validation::ApiInputValidationError;
 
 #[derive(thiserror::Error, Debug)]
 pub(super) enum AppExtractorError {
@@ -104,7 +63,97 @@ pub(super) struct AppJson<T>(pub T);
 #[from_request(via(axum::extract::Query), rejection(AppExtractorError))]
 pub(super) struct AppQuery<T>(pub T);
 
-pub type ApiResult<T, E> = Result<SuccessWrapper<T>, ErrorWrapper<E>>;
+pub type ApiResult<T, E> = Result<SuccessWrapper<T>, HandlerError<E>>;
+
+#[derive(Debug)]
+pub(super) struct SuccessWrapper<T: Serialize>(T);
+
+impl<T: Serialize> From<T> for SuccessWrapper<T> {
+    fn from(value: T) -> Self {
+        SuccessWrapper(value)
+    }
+}
+
+impl<T: Serialize> IntoResponse for SuccessWrapper<T> {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::OK,
+            Json(ApiResultStructured::Ok {
+                result: self.0,
+            }),
+        )
+            .into_response()
+    }
+}
+
+/// Combines non domain API related errors with any downstream domain error `E`.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum HandlerError<E: ApiErrorExt> {
+    #[error(transparent)]
+    Validation(#[from] ApiInputValidationError),
+
+    #[error(transparent)]
+    Domain(#[from] E),
+}
+
+impl<E: ApiErrorExt> IntoResponse for HandlerError<E> {
+    fn into_response(self) -> Response {
+        let status_code = self.http_status_code();
+        let api_error = self.to_api_error();
+
+        (
+            status_code,
+            Json(ApiResultStructured::<()>::Err {
+                error: api_error,
+            }),
+        )
+            .into_response()
+    }
+}
+
+impl<E: ApiErrorExt> ApiErrorExt for HandlerError<E> {
+    fn category(&self) -> &str {
+        match self {
+            Self::Validation(_) => "INVALID_PARAMETER",
+            Self::Domain(e) => e.category(),
+        }
+    }
+
+    fn code(&self) -> &str {
+        match self {
+            Self::Validation(e) => match e {
+                ApiInputValidationError::InvalidRedirectUrl(_) => "INVALID_REDIRECT_URL",
+                ApiInputValidationError::InvalidImageUrl(_) => "INVALID_IMAGE_URL",
+                ApiInputValidationError::InvalidProductUrl(_) => "INVALID_PRODUCT_URL",
+            },
+            Self::Domain(e) => e.code(),
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::Validation(e) => match e {
+                ApiInputValidationError::InvalidRedirectUrl(_) => {
+                    "The redirect URL failed validation."
+                },
+                ApiInputValidationError::InvalidImageUrl(_) => {
+                    "A cart item image URL failed validation."
+                },
+                ApiInputValidationError::InvalidProductUrl(_) => {
+                    "A cart item product URL failed validation."
+                },
+            },
+            Self::Domain(e) => e.message(),
+        }
+    }
+
+    fn http_status_code(&self) -> StatusCode {
+        match self {
+            Self::Validation(_) => StatusCode::BAD_REQUEST,
+            Self::Domain(e) => e.http_status_code(),
+        }
+    }
+}
 
 pub(super) async fn fallback_handler() -> impl IntoResponse {
     (

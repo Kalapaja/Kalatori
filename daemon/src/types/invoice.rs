@@ -14,8 +14,6 @@ use sqlx::types::{
 };
 use uuid::Uuid;
 
-use crate::utils::url_validation::ValidatedUrl;
-
 use super::ChainType;
 
 // Re-export types from kalatori_client for consistency
@@ -44,7 +42,7 @@ pub struct Invoice {
     pub payment_address: String,
     pub status: InvoiceStatus,
     pub cart: InvoiceCart,
-    pub redirect_url: ValidatedUrl,
+    pub redirect_url: String,
     pub valid_till: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -87,11 +85,7 @@ impl InvoiceWithReceivedAmount {
                 payment_url_base.trim_end_matches('/'),
                 self.invoice.id
             ),
-            redirect_url: self
-                .invoice
-                .redirect_url
-                .into_inner()
-                .to_string(),
+            redirect_url: self.invoice.redirect_url,
             cart: self.invoice.cart.into(),
             valid_till: self.invoice.valid_till,
             created_at: self.invoice.created_at,
@@ -113,7 +107,7 @@ pub struct InvoiceRow {
     pub payment_address: String,
     pub status: InvoiceStatus,
     pub cart: Json<InvoiceCart>,
-    pub redirect_url: ValidatedUrl,
+    pub redirect_url: String,
     pub valid_till: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -149,7 +143,7 @@ pub struct CreateInvoiceData {
     pub amount: Decimal,
     pub payment_address: String,
     pub cart: InvoiceCart,
-    pub redirect_url: ValidatedUrl,
+    pub redirect_url: String,
     pub valid_till: DateTime<Utc>,
 }
 
@@ -213,8 +207,8 @@ pub struct InvoiceCartItem {
     pub name: String,
     pub quantity: u32,
     pub price: Decimal, // Price per single item
-    pub product_url: Option<ValidatedUrl>,
-    pub image_url: Option<ValidatedUrl>,
+    pub product_url: Option<String>,
+    pub image_url: Option<String>,
     pub tax: Option<Decimal>,
     pub discount: Option<Decimal>,
 }
@@ -225,12 +219,8 @@ impl From<InvoiceCartItem> for PublicInvoiceCartItem {
             name: item.name,
             quantity: item.quantity,
             price: item.price,
-            product_url: item
-                .product_url
-                .map(|url| url.into_inner().to_string()),
-            image_url: item
-                .image_url
-                .map(|url| url.into_inner().to_string()),
+            product_url: item.product_url,
+            image_url: item.image_url,
             tax: item.tax,
             discount: item.discount,
         }
@@ -256,7 +246,7 @@ pub fn default_create_invoice_data() -> CreateInvoiceData {
         amount: Decimal::new(10000, 2),
         payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
         cart: InvoiceCart::empty(),
-        redirect_url: ValidatedUrl::new_unchecked("http://example.com/thankyou"),
+        redirect_url: "http://example.com/thankyou".to_string(),
         #[expect(clippy::arithmetic_side_effects)]
         valid_till: now + chrono::Duration::hours(24),
     }

@@ -14,7 +14,6 @@ use crate::types::{
     InvoiceWithReceivedAmount,
     UpdateInvoiceData,
 };
-use crate::utils::url_validation::UrlValidationError;
 
 use super::DaoExecutor;
 use super::error_parsing::{
@@ -62,36 +61,6 @@ pub enum DaoInvoiceError {
     /// Database operation failed
     #[error("Database error during invoice operation")]
     DatabaseError,
-
-    #[error("Invalid URL parameter: {description}, error: {source:?}")]
-    InvalidUrlParameter {
-        description: &'static str,
-        source: UrlValidationError,
-    },
-
-    #[error("DNS lookup failed for hostname '{hostname}': {error}")]
-    DnsLookupFailed { hostname: String, error: String },
-}
-
-impl DaoInvoiceError {
-    pub(crate) fn from_url_validation_error(
-        description: &'static str,
-        err: UrlValidationError,
-    ) -> Self {
-        match err {
-            UrlValidationError::DnsLookupFailed {
-                hostname,
-                error,
-            } => DaoInvoiceError::DnsLookupFailed {
-                hostname,
-                error,
-            },
-            _ => DaoInvoiceError::InvalidUrlParameter {
-                description,
-                source: err,
-            },
-        }
-    }
 }
 
 impl crate::api::ApiErrorExt for DaoInvoiceError {
@@ -110,13 +79,7 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => "DUPLICATE_ENTITY",
-            DaoInvoiceError::DatabaseError
-            | DaoInvoiceError::DnsLookupFailed {
-                ..
-            } => "INTERNAL_SERVER_ERROR",
-            DaoInvoiceError::InvalidUrlParameter {
-                ..
-            } => "INVALID_PARAMETER",
+            DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
 
@@ -134,13 +97,7 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => "INVOICE_DUPLICATE_ORDER_ID",
-            DaoInvoiceError::DatabaseError
-            | DaoInvoiceError::DnsLookupFailed {
-                ..
-            } => "INTERNAL_SERVER_ERROR",
-            DaoInvoiceError::InvalidUrlParameter {
-                ..
-            } => "INVALID_URL_PARAMETER",
+            DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
 
@@ -159,12 +116,6 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
                 ..
             } => "An invoice with the specified order ID already exists.",
             DaoInvoiceError::DatabaseError => "A database error occurred.",
-            DaoInvoiceError::InvalidUrlParameter {
-                description, ..
-            } => description,
-            DaoInvoiceError::DnsLookupFailed {
-                ..
-            } => "DNS lookup failed for provided URL.",
         }
     }
 
@@ -182,13 +133,7 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => reqwest::StatusCode::CONFLICT,
-            DaoInvoiceError::DatabaseError
-            | DaoInvoiceError::DnsLookupFailed {
-                ..
-            } => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            DaoInvoiceError::InvalidUrlParameter {
-                ..
-            } => reqwest::StatusCode::BAD_REQUEST,
+            DaoInvoiceError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }

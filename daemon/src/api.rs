@@ -29,6 +29,7 @@ mod internal;
 mod private;
 mod public;
 mod utils;
+mod validator;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -53,10 +54,20 @@ use tower_http::trace::TraceLayer;
 use kalatori_client::types::ApiError;
 use kalatori_client::utils::HmacConfig;
 
-use crate::configs::WebServerConfig;
+use crate::configs::{
+    ApiValidatorConfig,
+    WebServerConfig,
+};
 use crate::state::AppState;
 
-pub type ApiState = Arc<AppState>;
+use validator::ApiParamsValidator;
+
+/// State shared across all API handlers.
+#[derive(Clone)]
+pub struct ApiState {
+    pub inner: Arc<AppState>,
+    validator: Arc<ApiParamsValidator>,
+}
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
@@ -87,9 +98,15 @@ pub async fn api_server(
     config: WebServerConfig,
     hmac_config: HmacConfig,
     state: AppState,
+    validator_config: ApiValidatorConfig,
     cancellation_token: tokio_util::sync::CancellationToken,
 ) -> impl std::future::Future<Output = ()> {
-    let api_state = Arc::new(state);
+    let api_state = ApiState {
+        inner: Arc::new(state),
+        validator: Arc::new(ApiParamsValidator::new(
+            validator_config,
+        )),
+    };
 
     let host = SocketAddr::new(config.host, config.port);
 

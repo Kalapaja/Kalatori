@@ -4,9 +4,7 @@ use chrono::{
     Duration,
     Utc,
 };
-use futures::future;
 use rust_decimal::Decimal;
-use url::Host;
 use uuid::Uuid;
 
 use kalatori_client::types::{
@@ -54,7 +52,6 @@ use crate::types::{
     Transaction,
     UpdateInvoiceData,
 };
-use crate::utils::url_validation;
 
 pub struct AppState<D: DaoInterface = DAO> {
     keyring: KeyringClient,
@@ -62,21 +59,16 @@ pub struct AppState<D: DaoInterface = DAO> {
     registry: InvoiceRegistry,
     asset_names_map: HashMap<String, String>,
     payments_config: PaymentsConfig,
-    allowed_redirect_domain: Host<String>,
-    allowed_image_domains: Vec<Host<String>>,
     shop_meta: ShopMetaConfig,
 }
 
 impl<D: DaoInterface> AppState<D> {
-    #[expect(clippy::too_many_arguments)]
     pub fn new(
         keyring: KeyringClient,
         dao: D,
         registry: InvoiceRegistry,
         asset_names_map: HashMap<String, String>,
         payments_config: PaymentsConfig,
-        allowed_redirect_domain: Host<String>,
-        allowed_image_domains: Vec<Host<String>>,
         shop_meta: ShopMetaConfig,
     ) -> Self {
         Self {
@@ -85,8 +77,6 @@ impl<D: DaoInterface> AppState<D> {
             registry,
             asset_names_map,
             payments_config,
-            allowed_redirect_domain,
-            allowed_image_domains,
             shop_meta,
         }
     }
@@ -160,9 +150,7 @@ impl<D: DaoInterface> AppState<D> {
         &self,
         params: UpdateInvoiceParams,
     ) -> Result<InvoiceWithReceivedAmount, DaoInvoiceError> {
-        let data = self
-            .update_invoice_params_to_data(params)
-            .await?;
+        let data = self.update_invoice_params_to_data(params)?;
 
         let dao_transaction = self
             .dao
@@ -448,10 +436,7 @@ impl<D: DaoInterface> AppState<D> {
             .await
     }
 
-    // Converts `CreateInvoiceData` from `CreateInvoiceParams`.
-    //
-    // Validates redirect URL and cart item image/product URLs and generates payment
-    // address.
+    // Converts `CreateInvoiceParams` to `CreateInvoiceData`.
     #[expect(clippy::arithmetic_side_effects, clippy::cast_possible_wrap)]
     async fn create_invoice_params_to_data(
         &self,
@@ -523,18 +508,7 @@ impl<D: DaoInterface> AppState<D> {
             },
         };
 
-        // Validate the redirect URL.
-        let redirect_url = url_validation::validate_with_allowed_base(
-            &params.redirect_url,
-            &self.allowed_redirect_domain,
-        )
-        .await
-        .map_err(|err| DaoInvoiceError::from_url_validation_error("Invalid redirect URL", err))?;
-
-        // Validate cart item image URLs.
-        let cart = self
-            .convert_to_invoice_cart(params.cart)
-            .await?;
+        let cart = self.convert_to_invoice_cart(params.cart)?;
 
         let valid_till = Utc::now()
             + Duration::milliseconds(
@@ -547,7 +521,7 @@ impl<D: DaoInterface> AppState<D> {
             order_id: params.order_id,
             amount: params.amount,
             cart,
-            redirect_url,
+            redirect_url: params.redirect_url,
             asset_id,
             asset_name,
             chain,
@@ -556,18 +530,13 @@ impl<D: DaoInterface> AppState<D> {
         })
     }
 
-    // Converts `UpdateInvoiceData` from `UpdateInvoiceParams`.
-    //
-    // Validates cart item image/product URLs.
+    // Converts `UpdateInvoiceParams` to `UpdateInvoiceData`.
     #[expect(clippy::arithmetic_side_effects, clippy::cast_possible_wrap)]
-    async fn update_invoice_params_to_data(
+    fn update_invoice_params_to_data(
         &self,
         params: UpdateInvoiceParams,
     ) -> Result<UpdateInvoiceData, DaoInvoiceError> {
-        // Validate cart item image URLs.
-        let cart = self
-            .convert_to_invoice_cart(params.cart)
-            .await?;
+        let cart = self.convert_to_invoice_cart(params.cart)?;
 
         let valid_till = Utc::now()
             + Duration::milliseconds(
@@ -583,67 +552,29 @@ impl<D: DaoInterface> AppState<D> {
         })
     }
 
-    async fn convert_to_invoice_cart(
+    fn convert_to_invoice_cart(
         &self,
         PublicInvoiceCart {
             items,
         }: PublicInvoiceCart,
     ) -> Result<InvoiceCart, DaoInvoiceError> {
-        let allowed_image_domains = &self.allowed_image_domains;
-
-        let items = future::try_join_all(
-            items
-                .into_iter()
-                .map(|item| async move {
-                    let image_url = if let Some(image_url) = item.image_url.as_ref() {
-                        let url = url_validation::validate_with_allowed_base_many(
-                            image_url,
-                            allowed_image_domains,
-                        )
-                        .await
-                        .map_err(|err| {
-                            DaoInvoiceError::from_url_validation_error(
-                                "Invalid cart item image URL",
-                                err,
-                            )
-                        })?;
-
-                        Some(url)
-                    } else {
-                        None
-                    };
-
-                    let product_url = if let Some(product_url) = item.product_url.as_ref() {
-                        let url = url_validation::validate(product_url)
-                            .await
-                            .map_err(|err| {
-                                DaoInvoiceError::from_url_validation_error(
-                                    "Invalid cart item product URL",
-                                    err,
-                                )
-                            })?;
-
-                        Some(url)
-                    } else {
-                        None
-                    };
-
-                    Ok::<InvoiceCartItem, DaoInvoiceError>(InvoiceCartItem {
-                        name: item.name,
-                        quantity: item.quantity,
-                        price: item.price,
-                        tax: item.tax,
-                        discount: item.discount,
-                        image_url,
-                        product_url,
-                    })
-                }),
-        )
-        .await?;
-
-        Ok(InvoiceCart {
+        let items = items
+            .into_iter()
+            .map(|item| InvoiceCartItem {
+                name: item.name,
+                quantity: item.quantity,
+                price: item.price,
+                product_url: item.product_url,
+                image_url: item.image_url,
+                tax: item.tax,
+                discount: item.discount,
+            })
+            .collect::<Vec<InvoiceCartItem>>();
+        let cart = InvoiceCart {
             items,
-        })
+        };
+
+        Ok(cart)
     }
 }
 
@@ -663,7 +594,6 @@ mod tests {
         InvoiceCart,
         default_invoice,
     };
-    use crate::utils::url_validation::ValidatedUrl;
 
     use super::*;
 
@@ -704,11 +634,6 @@ mod tests {
             registry,
             asset_names_map,
             config,
-            Host::Domain("example.com".to_string()),
-            vec![
-                Host::Domain("example.com".to_string()),
-                Host::Domain("cdn.example.com".to_string()),
-            ],
             shop_meta,
         )
     }
@@ -859,9 +784,7 @@ mod tests {
                 order_id: params.order_id.clone(),
                 amount: params.amount,
                 cart: InvoiceCart::empty(),
-                redirect_url: ValidatedUrl::new(&params.redirect_url)
-                    .await
-                    .unwrap(),
+                redirect_url: params.redirect_url.clone(),
                 asset_id: 1337.to_string(),
                 asset_name: "USDC".to_string(),
                 chain: ChainType::PolkadotAssetHub,
@@ -987,9 +910,7 @@ mod tests {
                 order_id: params.order_id.clone(),
                 amount: params.amount,
                 cart: InvoiceCart::empty(),
-                redirect_url: ValidatedUrl::new(&params.redirect_url)
-                    .await
-                    .unwrap(),
+                redirect_url: params.redirect_url.clone(),
                 asset_id: 1337.to_string(),
                 asset_name: "USDC".to_string(),
                 chain: ChainType::PolkadotAssetHub,

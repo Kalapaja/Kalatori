@@ -76,6 +76,9 @@ pub enum Error {
     ChainTransaction(
         #[from] crate::chain_client::TransactionError<crate::chain_client::AssetHubChainConfig>,
     ),
+
+    #[error("Failed to parse and instantiate shop configuration - {0:?}")]
+    ShopConfig(#[from] inputs_validation::ConfigInputValidationError),
 }
 
 impl From<crate::dao::DaoInvoiceError> for Error {
@@ -425,6 +428,51 @@ pub enum SignerError {
 pub enum NotHexError {
     #[error("block hash string isn't a valid hexadecimal")]
     BlockHash,
+}
+
+pub mod inputs_validation {
+    //! Input validation error types for entry points that accept external
+    //! data.
+
+    use crate::utils::url_validation::UrlValidationError;
+
+    /// Identifies which API request field contained an invalid URL.
+    ///
+    /// Produced before any domain/AppState logic runs, always results in
+    /// `400 BAD_REQUEST`. Implemented in [`crate::api::ApiErrorExt`].
+    #[derive(Debug, thiserror::Error)]
+    #[expect(clippy::enum_variant_names)]
+    pub enum ApiInputValidationError {
+        #[error("Invalid redirect URL: {0}")]
+        InvalidRedirectUrl(UrlValidationError),
+
+        #[error("Invalid cart item image URL: {0}")]
+        InvalidImageUrl(UrlValidationError),
+
+        #[error("Invalid cart item product URL: {0}")]
+        InvalidProductUrl(UrlValidationError),
+    }
+
+    /// Identifies which config file field contained an invalid URL.
+    ///
+    /// Always fatal — the daemon will not start.
+    #[derive(Debug, thiserror::Error)]
+    pub enum ConfigInputValidationError {
+        #[error("Invalid invoices webhook URL: {0}")]
+        InvalidInvoiceWebhookUrl(UrlValidationError),
+
+        #[error("Expected invoice webhook URL to have a domain")]
+        InvoiceWebhookUrlHasNoDomain,
+
+        #[error("Invalid allowed base redirect URL: {0}")]
+        InvalidAllowedBaseRedirectUrl(UrlValidationError),
+
+        #[error("Invalid allowed base image URL: {0}")]
+        InvalidAllowedBaseImageUrl(UrlValidationError),
+
+        #[error("Allowed base image URLs list is empty")]
+        AllowedBaseImageUrlsEmpty,
+    }
 }
 
 mod pretty_cause {

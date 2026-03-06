@@ -17,10 +17,11 @@ use super::utils::{
 
 #[tracing::instrument(skip_all)]
 async fn get_changes(
-    State(state): State<ApiState>,
+    State(api_state): State<ApiState>,
     AppQuery(params): AppQuery<GetChangesParams>,
 ) -> ApiResult<PublicChangesResponse, DaoChangesError> {
-    let result = state
+    let result = api_state
+        .inner
         .get_invoice_changes(params.since)
         .await?;
     Ok(result.into())

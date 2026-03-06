@@ -9,18 +9,16 @@ use std::str::FromStr;
 use rand::prelude::*;
 use rust_decimal::Decimal;
 use secrecy::SecretString;
-use serde::de::Deserializer;
 use serde::{
     Deserialize,
     Serialize,
 };
-use url::{
-    Host,
-    Url,
-};
+use url::Url;
 
 use crate::chain::utils::to_base58_string;
+use crate::error::inputs_validation::ConfigInputValidationError;
 use crate::types::ChainType;
+use crate::utils::url_validation;
 
 use super::consts::{
     DEFAULT_ALLOW_INSECURE_ENDPOINTS,
@@ -339,144 +337,117 @@ pub struct ShopMetaConfig {
     pub reown_project_id: String,
 }
 
-#[derive(Clone)]
-pub struct ShopConfig {
-    pub invoices_webhook_url: Url,
-    pub signature_max_age_secs: u64,
-    pub allowed_base_redirect_url: Option<Host<String>>,
-    pub allowed_base_image_urls: Option<Vec<Host<String>>>,
-    pub meta: ShopMetaConfig,
+/// Raw shop configuration parsed from the config file.
+#[derive(Clone, Deserialize)]
+pub(super) struct RawShopConfig {
+    invoices_webhook_url: Url,
+    #[serde(default = "default_signature_max_age_secs")]
+    signature_max_age_secs: u64,
+    /// Allowlisted base URL for redirect URLs.
+    /// `None` defaults to the invoices webhook URL's domain.
+    allowed_base_redirect_url: Option<Url>,
+    /// Allowlisted base URLs for image URLs.
+    /// `None` defaults to the invoices webhook URL's domain.
+    allowed_base_image_urls: Option<Vec<Url>>,
+    /// When `true`, no validation checks for URLs are performed.
+    #[serde(default)]
+    allow_insecure_urls: bool,
+    #[serde(flatten)]
+    meta: ShopMetaConfig,
 }
 
-impl ShopConfig {
-    pub fn into_inner(
-        self
-    ) -> (
-        String,
-        u64,
-        Host<String>,
-        Vec<Host<String>>,
-        ShopMetaConfig,
-    ) {
-        let webhook_domain = self
-            .invoices_webhook_url
+impl RawShopConfig {
+    /// Resolves optional allowlist fields, defaulting to the webhook domain.
+    /// Called once on program startup after deserialization succeeds.
+    pub(super) async fn validated(self) -> Result<ValidatedShopConfig, ConfigInputValidationError> {
+        let Self {
+            invoices_webhook_url,
+            signature_max_age_secs,
+            allowed_base_redirect_url,
+            allowed_base_image_urls,
+            allow_insecure_urls,
+            meta,
+        } = self;
+        let api_validator_config = if !allow_insecure_urls {
+            url_validation::validate(invoices_webhook_url.as_str())
+                .await
+                .map_err(ConfigInputValidationError::InvalidInvoiceWebhookUrl)?;
+
+            let allowed_base_redirect_url = if let Some(redirect_url) = allowed_base_redirect_url {
+                url_validation::validate_base_url(&redirect_url)
+                    .map_err(ConfigInputValidationError::InvalidAllowedBaseRedirectUrl)?;
+
+                redirect_url
+            } else {
+                Self::base_url_from_webhook(&invoices_webhook_url)?
+            };
+
+            let allowed_base_image_urls = if let Some(image_urls) = allowed_base_image_urls {
+                if image_urls.is_empty() {
+                    return Err(ConfigInputValidationError::AllowedBaseImageUrlsEmpty);
+                }
+
+                for url in &image_urls {
+                    url_validation::validate_base_url(url)
+                        .map_err(ConfigInputValidationError::InvalidAllowedBaseImageUrl)?;
+                }
+
+                image_urls
+            } else {
+                vec![Self::base_url_from_webhook(&invoices_webhook_url)?]
+            };
+
+            ApiValidatorConfig {
+                allowed_base_redirect_url,
+                allowed_base_image_urls,
+                allow_insecure_urls: false,
+            }
+        } else {
+            ApiValidatorConfig::insecure_config()
+        };
+
+        Ok(ValidatedShopConfig {
+            api_validator_config,
+            invoices_webhook_url,
+            signature_max_age_secs,
+            meta,
+        })
+    }
+
+    fn base_url_from_webhook(invoice_webhook_url: &Url) -> Result<Url, ConfigInputValidationError> {
+        invoice_webhook_url
             .domain()
-            .expect("shop config webhook URL must have domain")
-            .to_owned();
-
-        let allowed_base_redirect_domain = self
-            .allowed_base_redirect_url
-            .unwrap_or_else(|| Host::Domain(webhook_domain.clone()));
-
-        let allowed_base_image_domains = self
-            .allowed_base_image_urls
-            .unwrap_or_else(|| vec![Host::Domain(webhook_domain)]);
-
-        (
-            self.invoices_webhook_url.to_string(),
-            self.signature_max_age_secs,
-            allowed_base_redirect_domain,
-            allowed_base_image_domains,
-            self.meta,
-        )
+            .map(|host| Url::parse(&format!("https://{host}/")).expect("valid URL"))
+            .ok_or(ConfigInputValidationError::InvoiceWebhookUrlHasNoDomain)
     }
 }
 
-impl<'de> Deserialize<'de> for ShopConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct RawShopConfig {
-            invoices_webhook_url: Url,
-            #[serde(default = "default_signature_max_age_secs")]
-            signature_max_age_secs: u64,
-            #[serde(default)]
-            allowed_redirect_url: Option<Url>,
-            #[serde(default)]
-            allowed_image_urls: Option<Vec<Url>>,
-            #[serde(flatten)]
-            meta: ShopMetaConfig,
+/// [`ShopConfig`], but with validated fields.
+#[derive(Debug, Clone)]
+pub struct ValidatedShopConfig {
+    pub api_validator_config: ApiValidatorConfig,
+    pub invoices_webhook_url: Url,
+    pub signature_max_age_secs: u64,
+    pub meta: ShopMetaConfig,
+}
+
+/// Minimal configuration consumed by api params validator.
+#[derive(Debug, Clone)]
+pub struct ApiValidatorConfig {
+    pub allowed_base_redirect_url: Url,
+    // TODO: bring type level guarantees that isn't empty?
+    pub allowed_base_image_urls: Vec<Url>,
+    pub allow_insecure_urls: bool,
+}
+
+impl ApiValidatorConfig {
+    pub fn insecure_config() -> Self {
+        // Set any allowed* domains, as they will be ignore in validation.
+        Self {
+            allowed_base_redirect_url: Url::parse("https://example.com/").unwrap(),
+            allowed_base_image_urls: vec![Url::parse("https://example.com/").unwrap()],
+            allow_insecure_urls: true,
         }
-
-        let raw = RawShopConfig::deserialize(deserializer)?;
-
-        // Validate url is of https protocol, port 443 (if has any) and has a domain
-        // host.
-        fn validate_https_443(url: &Url) -> Result<(), String> {
-            if url.scheme() != "https" {
-                return Err(format!(
-                    "URL must use https scheme: {url}"
-                ));
-            }
-
-            if let Some(port) = url.port()
-                && port != 443
-            {
-                return Err(format!(
-                    "URL port must be 443 when explicitly set: {url}"
-                ));
-            }
-
-            if url.domain().is_none() {
-                return Err(format!("URL host has no domain: {url}"));
-            }
-
-            Ok(())
-        }
-
-        // Validate invoices_webhook_url
-        validate_https_443(&raw.invoices_webhook_url).map_err(serde::de::Error::custom)?;
-
-        // Validate allowed_redirect_url
-        if let Some(ref redirect_url) = raw.allowed_redirect_url {
-            validate_https_443(redirect_url).map_err(serde::de::Error::custom)?;
-        }
-
-        // Validate allowed_image_urls
-        if let Some(ref image_urls) = raw.allowed_image_urls {
-            if image_urls.is_empty() {
-                return Err(serde::de::Error::custom(
-                    "allowed_image_urls must not be an empty list; omit this field to use default behavior",
-                ));
-            }
-            for image_url in image_urls {
-                validate_https_443(image_url).map_err(serde::de::Error::custom)?;
-            }
-        }
-
-        // Extract domain from URL.
-        // We only care about domain for allowlists, so we ignore scheme, port and path.
-        fn domain_from_url(url: Url) -> Result<Host<String>, String> {
-            url.domain()
-                .map(|host| Host::Domain(host.to_string()))
-                .ok_or_else(|| format!("URL host has no domain in shop config: {url}"))
-        }
-
-        let allowed_base_redirect_url = raw
-            .allowed_redirect_url
-            .map(domain_from_url)
-            .transpose()
-            .map_err(serde::de::Error::custom)?;
-
-        let allowed_base_image_urls = raw
-            .allowed_image_urls
-            .map(|urls| {
-                urls.into_iter()
-                    .map(domain_from_url)
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()
-            .map_err(serde::de::Error::custom)?;
-
-        Ok(Self {
-            invoices_webhook_url: raw.invoices_webhook_url,
-            signature_max_age_secs: raw.signature_max_age_secs,
-            allowed_base_redirect_url,
-            allowed_base_image_urls,
-            meta: raw.meta,
-        })
     }
 }
 
@@ -494,81 +465,321 @@ pub struct LoggerConfig {
 
 #[cfg(test)]
 mod tests {
+    use super::super::consts::DEFAULT_SIGNATURE_MAX_AGE_SECS;
     use super::*;
+    use crate::utils::url_validation::UrlValidationError;
 
-    #[test]
-    fn shop_config_defaults_allowlists_from_webhook_domain() {
-        let config: ShopConfig = serde_json::from_value(serde_json::json!({
-            "invoices_webhook_url": "https://payments.example.com/webhooks/invoices",
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    #[tokio::test]
+    async fn shop_config_defaults_allowlists_from_webhook_domain() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
             "signature_max_age_secs": 60,
             "shop_name": "Shop",
             "reown_project_id": "project"
         }))
         .expect("shop config should deserialize");
 
-        let (_, _, redirect_domain, image_domains, _) = config.into_inner();
+        let validated = config.validated().await.unwrap();
 
         assert_eq!(
-            redirect_domain,
-            Host::Domain("payments.example.com".to_string())
+            validated
+                .api_validator_config
+                .allowed_base_redirect_url,
+            url("https://example.com/")
         );
         assert_eq!(
-            image_domains,
-            vec![Host::Domain("payments.example.com".to_string())]
+            validated
+                .api_validator_config
+                .allowed_base_image_urls,
+            vec![url("https://example.com/")]
+        );
+        assert!(
+            !validated
+                .api_validator_config
+                .allow_insecure_urls
         );
     }
 
-    #[test]
-    fn shop_config_normalizes_provided_allowlists() {
-        let config: ShopConfig = serde_json::from_value(serde_json::json!({
-            "invoices_webhook_url": "https://payments.example.com/webhooks/invoices",
+    #[tokio::test]
+    async fn shop_config_normalizes_provided_allowlists() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
             "signature_max_age_secs": 60,
-            "allowed_redirect_url": "https://checkout.example.com/redirect",
-            "allowed_image_urls": [
-                "https://cdn.example.com/assets",
-                "https://images.example.com/path"
+            "allowed_base_redirect_url": "https://checkout.example.com/redirect/",
+            "allowed_base_image_urls": [
+                "https://cdn.example.com/assets/",
+                "https://images.example.com/path/"
             ],
             "shop_name": "Shop",
             "reown_project_id": "project"
         }))
         .expect("shop config should deserialize");
 
-        let (_, _, redirect_domain, image_domains, _) = config.into_inner();
+        let validated = config.validated().await.unwrap();
 
         assert_eq!(
-            redirect_domain,
-            Host::Domain("checkout.example.com".to_string())
+            validated
+                .api_validator_config
+                .allowed_base_redirect_url,
+            url("https://checkout.example.com/redirect/")
         );
         assert_eq!(
-            image_domains,
+            validated
+                .api_validator_config
+                .allowed_base_image_urls,
             vec![
-                Host::Domain("cdn.example.com".to_string()),
-                Host::Domain("images.example.com".to_string())
+                url("https://cdn.example.com/assets/"),
+                url("https://images.example.com/path/")
             ]
         );
     }
 
     #[test]
-    fn shop_config_rejects_non_https_allowlist_urls() {
-        let result: Result<ShopConfig, _> = serde_json::from_value(serde_json::json!({
+    fn shop_config_allow_insecure_urls_defaults_to_false() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
             "invoices_webhook_url": "https://payments.example.com/webhooks/invoices",
-            "allowed_redirect_url": "http://checkout.example.com/redirect",
             "shop_name": "Shop",
             "reown_project_id": "project"
-        }));
+        }))
+        .expect("shop config should deserialize");
 
-        assert!(result.is_err());
+        assert!(!config.allow_insecure_urls);
+    }
+
+    #[tokio::test]
+    async fn shop_config_rejects_non_https_allowlist_urls() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
+            "allowed_base_redirect_url": "http://checkout.example.com/redirect/",
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("invalid config");
+
+        let res = config.validated().await;
+        assert!(matches!(
+            res,
+            Err(
+                ConfigInputValidationError::InvalidAllowedBaseRedirectUrl(
+                    UrlValidationError::InvalidScheme(_)
+                )
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn shop_config_rejects_non_domain_allowlist_urls() {
+        let result: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
+            "allowed_base_redirect_url": "https://192.168.0.1/redirect/",
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("invalid config");
+
+        let res = result.validated().await;
+        assert!(matches!(
+            res,
+            Err(
+                ConfigInputValidationError::InvalidAllowedBaseRedirectUrl(
+                    UrlValidationError::UrlHostIsNotDomain
+                )
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn shop_config_rejects_non_https_webhook_url() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "http://example.com/webhooks/invoices",
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("shop config should deserialize");
+
+        let res = config.validated().await;
+        assert!(matches!(
+            res,
+            Err(
+                ConfigInputValidationError::InvalidInvoiceWebhookUrl(
+                    UrlValidationError::InvalidScheme(_)
+                )
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn shop_config_rejects_ip_webhook_url_when_no_explicit_allowlists() {
+        // 93.184.216.34 is a globally-routable IP so validate() passes, but
+        // domain() returns None, triggering InvoiceWebhookUrlHasNoDomain when
+        // no explicit allowed_base_* entries are provided to fall back on.
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://93.184.216.34/webhooks/invoices",
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("shop config should deserialize");
+
+        let res = config.validated().await;
+        assert!(matches!(
+            res,
+            Err(ConfigInputValidationError::InvoiceWebhookUrlHasNoDomain)
+        ));
+    }
+
+    #[tokio::test]
+    async fn shop_config_rejects_non_https_image_allowlist_url() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
+            "allowed_base_image_urls": ["http://cdn.example.com/assets/"],
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("shop config should deserialize");
+
+        let res = config.validated().await;
+        assert!(matches!(
+            res,
+            Err(
+                ConfigInputValidationError::InvalidAllowedBaseImageUrl(
+                    UrlValidationError::InvalidScheme(_)
+                )
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn shop_config_rejects_ip_host_in_image_allowlist_url() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
+            "allowed_base_image_urls": ["https://192.168.0.1/assets/"],
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("shop config should deserialize");
+
+        let res = config.validated().await;
+        assert!(matches!(
+            res,
+            Err(
+                ConfigInputValidationError::InvalidAllowedBaseImageUrl(
+                    UrlValidationError::UrlHostIsNotDomain
+                )
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn shop_config_allow_insecure_urls_skips_all_validation() {
+        // A URL that would normally fail validation (non-https, localhost) passes
+        // when allow_insecure_urls is set.
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "http://localhost/webhooks",
+            "allow_insecure_urls": true,
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("shop config should deserialize");
+
+        let validated = config.validated().await.unwrap();
+        assert!(
+            validated
+                .api_validator_config
+                .allow_insecure_urls
+        );
     }
 
     #[test]
-    fn shop_config_rejects_non_domain_allowlist_urls() {
-        let result: Result<ShopConfig, _> = serde_json::from_value(serde_json::json!({
-            "invoices_webhook_url": "https://payments.example.com/webhooks/invoices",
-            "allowed_redirect_url": "https://192.168.0.1/redirect",
+    fn shop_config_signature_max_age_secs_default() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
             "shop_name": "Shop",
             "reown_project_id": "project"
-        }));
+        }))
+        .expect("shop config should deserialize");
 
-        assert!(result.is_err());
+        // DEFAULT_SIGNATURE_MAX_AGE_SECS is 5 minutes (300 s)
+        assert_eq!(
+            config.signature_max_age_secs,
+            DEFAULT_SIGNATURE_MAX_AGE_SECS
+        );
+    }
+
+    #[tokio::test]
+    async fn shop_config_validated_preserves_webhook_url_and_meta() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
+            "signature_max_age_secs": 120,
+            "shop_name": "My Shop",
+            "logo_url": "https://example.com/logo.png",
+            "reown_project_id": "proj-abc"
+        }))
+        .expect("shop config should deserialize");
+
+        let validated = config.validated().await.unwrap();
+
+        assert_eq!(
+            validated.invoices_webhook_url.as_str(),
+            "https://example.com/webhooks/invoices",
+        );
+        assert_eq!(validated.signature_max_age_secs, 120);
+        assert_eq!(validated.meta.shop_name, "My Shop");
+        assert_eq!(
+            validated.meta.logo_url.as_deref(),
+            Some("https://example.com/logo.png"),
+        );
+        assert_eq!(
+            validated.meta.reown_project_id,
+            "proj-abc"
+        );
+    }
+
+    #[tokio::test]
+    async fn shop_config_rejects_empty_allowed_base_image_urls() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
+            "allowed_base_image_urls": [],
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("shop config should deserialize");
+
+        let res = config.validated().await;
+        assert!(matches!(
+            res,
+            Err(ConfigInputValidationError::AllowedBaseImageUrlsEmpty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn base_url_from_host_is_a_valid_base_url() {
+        let config: RawShopConfig = serde_json::from_value(serde_json::json!({
+            "invoices_webhook_url": "https://example.com/webhooks/invoices",
+            "shop_name": "Shop",
+            "reown_project_id": "project"
+        }))
+        .expect("shop config should deserialize");
+
+        let validated = config.validated().await.unwrap();
+
+        assert!(
+            url_validation::validate_base_url(
+                &validated
+                    .api_validator_config
+                    .allowed_base_redirect_url
+            )
+            .is_ok()
+        );
+
+        for url in &validated
+            .api_validator_config
+            .allowed_base_image_urls
+        {
+            assert!(url_validation::validate_base_url(url).is_ok());
+        }
     }
 }

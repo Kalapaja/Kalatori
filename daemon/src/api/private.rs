@@ -31,12 +31,24 @@ use super::utils::{
 
 #[tracing::instrument(skip_all)]
 async fn create_invoice(
-    State(state): State<ApiState>,
+    State(api_state): State<ApiState>,
     AppJson(params): AppJson<CreateInvoiceParams>,
 ) -> ApiResult<PublicInvoice, DaoInvoiceError> {
-    let invoice = state.create_invoice(params).await?;
+    // 1. Validate URLs at the input boundary before touching business logic.
+    api_state
+        .validator
+        .validate_create_invoice_params(&params)
+        .await?;
 
-    let result = state.invoice_to_public_invoice(invoice);
+    // 2. Delegate to AppState with already-valid data.
+    let invoice = api_state
+        .inner
+        .create_invoice(params)
+        .await?;
+
+    let result = api_state
+        .inner
+        .invoice_to_public_invoice(invoice);
     Ok(result.into())
 }
 
@@ -46,17 +58,21 @@ async fn get_invoice(
     AppQuery(params): AppQuery<GetInvoiceParams>,
 ) -> ApiResult<PublicInvoice, DaoInvoiceError> {
     let invoice = state
+        .inner
         .get_invoice(params.invoice_id)
         .await?
         .ok_or(DaoInvoiceError::NotFound {
             invoice_id: params.invoice_id,
         })?;
 
-    let mut result = state.invoice_to_public_invoice(invoice);
+    let mut result = state
+        .inner
+        .invoice_to_public_invoice(invoice);
 
     // TODO: filter it on database query level
     if params.include_transactions && result.status == InvoiceStatus::Waiting {
         let transactions = state
+            .inner
             .get_invoice_transactions(params.invoice_id)
             .await
             .map_err(|_| DaoInvoiceError::DatabaseError)?
@@ -73,12 +89,24 @@ async fn get_invoice(
 
 #[tracing::instrument(skip_all)]
 async fn update_invoice(
-    State(state): State<ApiState>,
+    State(api_state): State<ApiState>,
     AppJson(params): AppJson<UpdateInvoiceParams>,
 ) -> ApiResult<PublicInvoice, DaoInvoiceError> {
-    let invoice = state.update_invoice(params).await?;
+    // 1. Validate cart item URLs at the input boundary.
+    api_state
+        .validator
+        .validate_update_invoice_params(&params)
+        .await?;
 
-    let result = state.invoice_to_public_invoice(invoice);
+    // 2. Delegate to AppState with already-valid data.
+    let invoice = api_state
+        .inner
+        .update_invoice(params)
+        .await?;
+
+    let result = api_state
+        .inner
+        .invoice_to_public_invoice(invoice);
     Ok(result.into())
 }
 
@@ -88,14 +116,18 @@ async fn cancel_invoice(
     AppJson(params): AppJson<CancelInvoiceParams>,
 ) -> ApiResult<PublicInvoice, DaoInvoiceError> {
     let invoice = state
+        .inner
         .cancel_invoice_admin(params.invoice_id)
         .await?;
 
-    let mut result = state.invoice_to_public_invoice(invoice);
+    let mut result = state
+        .inner
+        .invoice_to_public_invoice(invoice);
 
     // TODO: filter it on database query level
     if params.include_transactions && result.status == InvoiceStatus::Waiting {
         let transactions = state
+            .inner
             .get_invoice_transactions(params.invoice_id)
             .await
             .map_err(|_| DaoInvoiceError::DatabaseError)?

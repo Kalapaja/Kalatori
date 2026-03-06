@@ -1072,7 +1072,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             if amount_wei.is_zero() {
                 return Err(TransactionError::InsufficientBalance {
                     transaction_id: op_hash.to_string(),
-                })
+                });
             }
 
             // have to recalculate op_hash
@@ -1157,14 +1157,14 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                         recipient: data.receipt.to,
                         transaction_id: data.receipt.transaction_hash,
                         timestamp: Utc::now().timestamp_millis() as u64,
-                    })
+                    });
                 },
                 Ok(Some(data)) => {
                     tracing::warn!(response = ?data, "Got unsuccessful operation result from pimlico");
                     return Err(TransactionError::ExecutionFailed {
                         transaction_id: op_hash,
                         error_code: "".to_string(),
-                    })
+                    });
                 },
                 Ok(None) => tracing::trace!("No receipt returned yet, continue watching"),
                 Err(e) => tracing::debug!(
