@@ -15,6 +15,7 @@ use crate::configs::ApiValidatorConfig;
 use crate::error::inputs_validation::ApiInputValidationError;
 use crate::utils::url_validation::{
     self,
+    ALLOWED_IMAGE_EXTENSIONS,
     UrlValidationError,
 };
 
@@ -93,6 +94,7 @@ impl ApiParamsValidator {
         self.validate_url_with_allowed_base_many(
             url,
             &self.allowed_base_image_urls,
+            Some(ALLOWED_IMAGE_EXTENSIONS),
             ApiInputValidationError::InvalidImageUrl,
         )
         .await
@@ -145,10 +147,11 @@ impl ApiParamsValidator {
         &self,
         url: &str,
         allowed_bases: &[Url],
+        allowed_extensions: Option<&[&str]>,
         error_op: impl FnOnce(UrlValidationError) -> ApiInputValidationError,
     ) -> Result<(), ApiInputValidationError> {
         if !self.allow_insecure_urls {
-            url_validation::validate_with_allowed_base_many(url, allowed_bases)
+            url_validation::validate_with_allowed_base_many(url, allowed_bases, allowed_extensions)
                 .await
                 .map_err(error_op)?;
         }

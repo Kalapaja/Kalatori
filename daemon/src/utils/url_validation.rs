@@ -35,6 +35,14 @@
 //! dotted-decimal notation before validation, preventing IP obfuscation
 //! techniques and double URL encoding attacks.
 //!
+//! ## Image URL extra validation
+//! When validating image URLs (`validate_image_with_allowed_base_many`), an
+//! additional file-extension check is performed on top of all general checks
+//! listed above. Only well-known raster/vector image extensions are accepted
+//! (see `ALLOWED_IMAGE_EXTENSIONS`). Unknown extensions (e.g. `.php`, `.html`)
+//! are rejected, reducing the attack surface for content-type confusion
+//! attacks.
+//!
 //! ## Known Limitations
 //! Currently it's expected that the callback URL is a fire and forget endpoint,
 //! that doesn't return anything meaningful to the server. Also it's expected
@@ -57,6 +65,12 @@ use url::{
 /// Maximum allowed URL length.
 const MAX_URL_LENGTH: usize = 2048;
 const VALID_PORT: u16 = 443;
+
+/// Known raster/vector image file extensions accepted for cart item image URLs.
+/// All comparisons are case-insensitive.
+pub const ALLOWED_IMAGE_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "webp", "svg", "avif", "ico", "bmp", "tiff", "tif",
+];
 
 /// Validates a URL that is used as a base URL to check user input URLs
 /// belong to the allowlist.
@@ -87,7 +101,7 @@ pub fn validate_base_url(url: &Url) -> Result<(), UrlValidationError> {
 /// Validates a URL for security concerns described in the
 /// [module](crate::utils::url_validation).
 pub async fn validate(url: &str) -> Result<(), UrlValidationError> {
-    validate_with_allowed_base_impl(url, None).await
+    validate_with_allowed_base_impl(url, None, None).await
 }
 
 /// Validates a URL same as [`validate()`], but also checks that the URL host
@@ -101,6 +115,7 @@ pub async fn validate_with_allowed_base(
         Some(EitherUrlsCollection::Url(
             allowed_base_url,
         )),
+        None,
     )
     .await
 }
@@ -108,9 +123,13 @@ pub async fn validate_with_allowed_base(
 /// Validates a URL same as [`validate()`], but also checks that the URL host
 /// matches at least one of the allowed base URLs provided in
 /// `allowed_base_urls`.
+///
+/// When `allowed_file_extensions` is `Some`, the URL path must end with one of
+/// the provided extensions (case-insensitive).
 pub async fn validate_with_allowed_base_many(
     url: &str,
     allowed_base_urls: &[Url],
+    allowed_file_extensions: Option<&[&str]>,
 ) -> Result<(), UrlValidationError> {
     if allowed_base_urls.is_empty() {
         return Err(UrlValidationError::AllowedBaseImageUrlsEmpty);
@@ -121,6 +140,7 @@ pub async fn validate_with_allowed_base_many(
         Some(EitherUrlsCollection::UrlCollection(
             allowed_base_urls,
         )),
+        allowed_file_extensions,
     )
     .await
 }
@@ -133,6 +153,7 @@ pub async fn validate_with_allowed_base_many(
 async fn validate_with_allowed_base_impl(
     url: &str,
     allowed_base_urls: Option<EitherUrlsCollection<'_>>,
+    allowed_file_extensions: Option<&[&str]>,
 ) -> Result<(), UrlValidationError> {
     // Length check
     if url.len() > MAX_URL_LENGTH {
@@ -149,6 +170,11 @@ async fn validate_with_allowed_base_impl(
     // Validate against allowed base url if provided
     if let Some(allowed_base_urls) = allowed_base_urls {
         allowed_base_urls.validate(&parsed)?;
+    }
+
+    // File extension check.
+    if let Some(extensions) = allowed_file_extensions {
+        validate_url_file_extension(&parsed, extensions)?;
     }
 
     // Check ips
@@ -424,7 +450,49 @@ fn host_to_ip<T>(host: Host<T>) -> Option<IpAddr> {
     }
 }
 
-#[derive(Debug, Error)]
+fn validate_url_file_extension(
+    url: &Url,
+    allowed: &[&str],
+) -> Result<(), UrlValidationError> {
+    let url_last_segment = url
+        .path_segments()
+        .and_then(|segments| {
+            segments
+                .filter(|s| !s.is_empty())
+                .next_back()
+        });
+
+    let filename = match url_last_segment {
+        Some(name) => name,
+        None => return Err(UrlValidationError::FileInUrlNotFound),
+    };
+
+    let ext = match filename.rsplit('.').next() {
+        Some(ext) if ext != filename => ext,
+        _ => return Err(UrlValidationError::FileInUrlHasNoExtension),
+    };
+
+    if allowed
+        .iter()
+        .any(|&a| a.eq_ignore_ascii_case(ext))
+    {
+        Ok(())
+    } else {
+        let expected = allowed
+            .iter()
+            .map(|&s| s.to_string())
+            .collect();
+
+        Err(
+            UrlValidationError::UnsupportedFileExtension {
+                expected,
+                actual: ext.to_string(),
+            },
+        )
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum UrlValidationError {
     #[error("URL exceeds maximum length of 2048 characters")]
     TooLong,
@@ -468,6 +536,21 @@ pub enum UrlValidationError {
 
     #[error("Allowed base image URLs list is empty")]
     AllowedBaseImageUrlsEmpty,
+
+    #[error("URL has no file in the path")]
+    FileInUrlNotFound,
+
+    #[error("URL file has no extension")]
+    FileInUrlHasNoExtension,
+
+    #[error(
+        "File in URL has unsupported extension - {actual}; \
+        expected one of: {expected:?}"
+    )]
+    UnsupportedFileExtension {
+        expected: Vec<String>,
+        actual: String,
+    },
 }
 
 #[cfg(test)]
@@ -498,6 +581,7 @@ mod tests {
         let error = validate_with_allowed_base_many(
             "https://evil.com/webhook",
             &[url("https://example.com")],
+            None,
         )
         .await
         .expect_err("host must be rejected");
@@ -1078,7 +1162,173 @@ mod tests {
     async fn validate_with_allowed_base_many_empty_slice() {
         // An empty allowlist imposes no host restriction — any otherwise-valid
         // URL is accepted.
-        let result = validate_with_allowed_base_many("https://example.com/webhook", &[]).await;
+        let result =
+            validate_with_allowed_base_many("https://example.com/webhook", &[], None).await;
+        assert!(matches!(
+            result,
+            Err(UrlValidationError::AllowedBaseImageUrlsEmpty)
+        ));
+    }
+
+    // ----- check_image_extension -----
+
+    #[test]
+    fn image_extension_accepts_known_extensions() {
+        let valid = [
+            "https://cdn.example.com/product.jpg",
+            "https://cdn.example.com/product.jpeg",
+            "https://cdn.example.com/product.png",
+            "https://cdn.example.com/product.gif",
+            "https://cdn.example.com/product.webp",
+            "https://cdn.example.com/product.svg",
+            "https://cdn.example.com/product.avif",
+            "https://cdn.example.com/product.ico",
+            "https://cdn.example.com/product.bmp",
+            "https://cdn.example.com/product.tiff",
+            "https://cdn.example.com/product.tif",
+            // Case-insensitive
+            "https://cdn.example.com/product.JPG",
+            "https://cdn.example.com/product.PNG",
+            // Nested path
+            "https://cdn.example.com/store/items/product.webp",
+            // Query string and fragment must not interfere with extension detection
+            "https://cdn.example.com/product.png?v=42",
+            "https://cdn.example.com/product.png#section",
+        ];
+
+        for raw in valid {
+            assert!(
+                validate_url_file_extension(&url(raw), ALLOWED_IMAGE_EXTENSIONS).is_ok(),
+                "expected ok for {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_extension_rejects_unknown_extensions() {
+        let invalid = [
+            (
+                "https://cdn.example.com/file.php",
+                "php",
+            ),
+            (
+                "https://cdn.example.com/file.html",
+                "html",
+            ),
+            ("https://cdn.example.com/file.js", "js"),
+            (
+                "https://cdn.example.com/file.exe",
+                "exe",
+            ),
+            (
+                "https://cdn.example.com/file.pdf",
+                "pdf",
+            ),
+        ];
+
+        for (raw, expected_ext) in invalid {
+            match validate_url_file_extension(&url(raw), ALLOWED_IMAGE_EXTENSIONS) {
+                Err(UrlValidationError::UnsupportedFileExtension {
+                    actual: extension, ..
+                }) => {
+                    assert_eq!(
+                        extension, expected_ext,
+                        "wrong extension reported for {raw}"
+                    );
+                },
+                other => panic!("expected UnsupportedImageExtension for {raw}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn image_extension_rejects_missing_extension() {
+        // No dot in the last segment → extension is empty string → rejected.
+        let no_ext = [
+            (
+                "https://cdn.example.com/image",
+                UrlValidationError::FileInUrlHasNoExtension,
+            ),
+            (
+                "https://cdn.example.com/",
+                UrlValidationError::FileInUrlNotFound,
+            ),
+        ];
+
+        for (raw, expected_err) in no_ext {
+            assert!(
+                matches!(
+                    validate_url_file_extension(&url(raw), ALLOWED_IMAGE_EXTENSIONS),
+                    Err(err) if err == expected_err
+                ),
+                "expected UnsupportedImageExtension with empty extension for {raw}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ntest::timeout(5_000)]
+    async fn validate_with_allowed_base_many_accepts_valid_image_url() {
+        let bases = [url("https://example.com/")];
+        assert!(
+            validate_with_allowed_base_many(
+                "https://example.com/products/shirt.png",
+                &bases,
+                Some(ALLOWED_IMAGE_EXTENSIONS),
+            )
+            .await
+            .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_with_allowed_base_many_rejects_unknown_image_extension() {
+        let bases = [url("https://example.com/")];
+        let err = validate_with_allowed_base_many(
+            "https://example.com/products/script.php",
+            &bases,
+            Some(ALLOWED_IMAGE_EXTENSIONS),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                UrlValidationError::UnsupportedFileExtension { .. }
+            ),
+            "expected UnsupportedImageExtension, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_with_allowed_base_many_rejects_disallowed_host_with_extension_check() {
+        let bases = [url("https://example.com/")];
+        let err = validate_with_allowed_base_many(
+            "https://evil.com/image.png",
+            &bases,
+            Some(ALLOWED_IMAGE_EXTENSIONS),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                UrlValidationError::UrlNotAllowed(_)
+            ),
+            "expected UrlNotAllowed, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_with_allowed_base_many_with_extension_check_empty_slice() {
+        let result = validate_with_allowed_base_many(
+            "https://cdn.example.com/img.png",
+            &[],
+            Some(ALLOWED_IMAGE_EXTENSIONS),
+        )
+        .await;
         assert!(matches!(
             result,
             Err(UrlValidationError::AllowedBaseImageUrlsEmpty)
