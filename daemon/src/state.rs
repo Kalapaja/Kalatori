@@ -35,6 +35,7 @@ use crate::dao::{
     DaoTransactionError,
     DaoTransactionInterface,
 };
+use crate::swaps::SwapsExecutor;
 use crate::types::{
     ChainType,
     ChangesResponse,
@@ -51,7 +52,6 @@ use crate::types::{
     Transaction,
     UpdateInvoiceData,
 };
-use crate::swaps::SwapsExecutor;
 
 pub use swaps::SwapRequestError;
 

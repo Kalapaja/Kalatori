@@ -3,15 +3,20 @@ use chrono::{
     DateTime,
     Utc,
 };
+use rust_decimal::Decimal;
 use serde::{
     Deserialize,
     Serialize,
 };
-use rust_decimal::Decimal;
-use uuid::Uuid;
 use sqlx::Type;
+use uuid::Uuid;
 
-use crate::clients::{AcrossQuoteDetails, AcrossRawTransaction, BungeeQuoteDetails, BungeeRawTransaction};
+use crate::clients::{
+    AcrossQuoteDetails,
+    AcrossRawTransaction,
+    BungeeQuoteDetails,
+    BungeeRawTransaction,
+};
 
 use super::ChainType;
 
@@ -44,7 +49,7 @@ pub struct CreateSwapParams {
     pub from_address: String,
     pub from_amount_units: u128,
     #[serde(default)]
-    pub expected_to_amount_units: Option<u128>,  // if None, will calculate invoice's unpaid amount
+    pub expected_to_amount_units: Option<u128>, // if None, will calculate invoice's unpaid amount
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -54,7 +59,10 @@ pub enum SwapExecutorType {
 }
 
 impl std::fmt::Display for SwapExecutorType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
         match self {
             Self::Across => write!(f, "Across"),
             Self::Bungee => write!(f, "Bungee"),
@@ -69,7 +77,7 @@ impl std::str::FromStr for SwapExecutorType {
         match s {
             "Across" => Ok(Self::Across),
             "Bungee" => Ok(Self::Bungee),
-            _ => Err("Unknown swap executor type: {s}".to_string())
+            _ => Err("Unknown swap executor type: {s}".to_string()),
         }
     }
 }
@@ -79,7 +87,7 @@ impl SwapExecutorType {
     pub fn detect(
         from_chain: SwapChainType,
         to_chain: SwapChainType,
-        direction: SwapDirection,
+        _direction: SwapDirection,
     ) -> Option<SwapExecutorType> {
         if from_chain == to_chain {
             Some(Self::Bungee)
@@ -120,7 +128,9 @@ impl From<ChainType> for SwapChainType {
     fn from(value: ChainType) -> Self {
         match value {
             ChainType::Polygon => SwapChainType::Polygon,
-            ChainType::PolkadotAssetHub => unimplemented!("Polkadot Asset Hub can not be used with swaps enabled"),
+            ChainType::PolkadotAssetHub => {
+                unimplemented!("Polkadot Asset Hub can not be used with swaps enabled")
+            },
         }
     }
 }
@@ -150,6 +160,9 @@ impl TryFrom<u64> for SwapChainType {
             137 => Ok(Polygon),
             534352 => Ok(Scroll),
             1868 => Ok(Soneium),
+            // TODO: This is not actual chain id, soloana doesn't have one at all.
+            // Need to "wrap" it somehow for Across specifically and also check other
+            // chains and ids
             34268394551451 => Ok(Solana),
             130 => Ok(Unichain),
             480 => Ok(WorldChain),
@@ -223,7 +236,7 @@ impl std::str::FromStr for SwapChainType {
             "WorldChain" => Ok(Self::WorldChain),
             "ZkSync" => Ok(Self::ZkSync),
             "Zora" => Ok(Self::Zora),
-            _ => Err(format!("Unknown swap chain: {s}"))
+            _ => Err(format!("Unknown swap chain: {s}")),
         }
     }
 }
@@ -303,7 +316,7 @@ impl std::str::FromStr for SwapStatus {
             "Completed" => Ok(Self::Completed),
             "Failed" => Ok(Self::Failed),
             "Abandoned" => Ok(Self::Abandoned),
-            _ => Err(format!("Unknown swap status: {s}"))
+            _ => Err(format!("Unknown swap status: {s}")),
         }
     }
 }
@@ -338,7 +351,7 @@ pub fn default_create_swap_data(invoice_id: Uuid) -> CreateSwapData {
         to_chain: SwapChainType::Polygon,
         from_token_address: "".to_string(),
         to_token_address: "".to_string(),
-        from_amount_units: 10_100_000,  // 10.1
+        from_amount_units: 10_100_000,        // 10.1
         expected_to_amount_units: 10_000_000, // 10
         from_address: "".to_string(),
         to_address: "".to_string(),
@@ -346,6 +359,7 @@ pub fn default_create_swap_data(invoice_id: Uuid) -> CreateSwapData {
     }
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum InternalQuoteDetails {
@@ -367,7 +381,7 @@ pub struct SwapQuote {
 pub struct AcrossSwapDetails {
     pub id: String,
     pub raw_transaction: AcrossRawTransaction,
-    pub transaction_hash: Option<String>,  // hash of the sent transaction
+    pub transaction_hash: Option<String>, // hash of the sent transaction
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +392,7 @@ pub struct BungeeSwapDetails {
     pub transaction_hash: Option<String>,
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum InternalSwapDetails {
@@ -388,17 +403,21 @@ pub enum InternalSwapDetails {
 impl From<SwapQuote> for InternalSwapDetails {
     fn from(value: SwapQuote) -> Self {
         match value.quote_details {
-            InternalQuoteDetails::Across(details) => InternalSwapDetails::Across(AcrossSwapDetails {
-                id: value.id,
-                raw_transaction: details,
-                transaction_hash: None,
-            }),
-            InternalQuoteDetails::Bungee(details) => InternalSwapDetails::Bungee(BungeeSwapDetails {
-                id: value.id,
-                raw_transaction: details,
-                signature: None,
-                transaction_hash: None,
-            }),
+            InternalQuoteDetails::Across(details) => {
+                InternalSwapDetails::Across(AcrossSwapDetails {
+                    id: value.id,
+                    raw_transaction: details,
+                    transaction_hash: None,
+                })
+            },
+            InternalQuoteDetails::Bungee(details) => {
+                InternalSwapDetails::Bungee(BungeeSwapDetails {
+                    id: value.id,
+                    raw_transaction: details,
+                    signature: None,
+                    transaction_hash: None,
+                })
+            },
         }
     }
 }
@@ -408,7 +427,7 @@ pub struct Swap {
     pub id: Uuid,
     pub request: CreateSwapData,
     pub status: SwapStatus,
-    pub estimated_to_amount: Decimal,  // calculated by swap executor
+    pub estimated_to_amount: Decimal, // calculated by swap executor
     pub swap_details: InternalSwapDetails,
     pub created_at: DateTime<Utc>,
     pub submitted_at: Option<DateTime<Utc>>,
@@ -418,7 +437,10 @@ pub struct Swap {
 }
 
 impl Swap {
-    pub fn new(request: CreateSwapData, quote: SwapQuote) -> Self {
+    pub fn new(
+        request: CreateSwapData,
+        quote: SwapQuote,
+    ) -> Self {
         let valid_till = quote.valid_till;
 
         Self {
@@ -445,8 +467,12 @@ impl Swap {
         use chrono::SubsecRound;
 
         self.created_at = self.created_at.trunc_subsecs(0);
-        self.submitted_at = self.submitted_at.map(|dt| dt.trunc_subsecs(0));
-        self.finished_at = self.finished_at.map(|dt| dt.trunc_subsecs(0));
+        self.submitted_at = self
+            .submitted_at
+            .map(|dt| dt.trunc_subsecs(0));
+        self.finished_at = self
+            .finished_at
+            .map(|dt| dt.trunc_subsecs(0));
     }
 }
 
@@ -478,7 +504,7 @@ pub struct PublicSwap {
     pub from_chain_id: u64,
     pub to_chain_id: u64,
     pub status: SwapStatus,
-    pub estimated_to_amount: Decimal,  // calculated by swap executor
+    pub estimated_to_amount: Decimal, // calculated by swap executor
     pub swap_details: InternalSwapDetails,
     pub created_at: DateTime<Utc>,
     pub valid_till: DateTime<Utc>,
@@ -500,8 +526,9 @@ impl From<Swap> for PublicSwap {
     }
 }
 
-// Some swaps should be submitted on front-end while the others on backend (depending on swaps executor).
-// For the swaps which were submitted on front-end we'd like to know their transaction hash.
+// Some swaps should be submitted on front-end while the others on backend
+// (depending on swaps executor). For the swaps which were submitted on
+// front-end we'd like to know their transaction hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmittedSwapParams {
     pub swap_id: Uuid,

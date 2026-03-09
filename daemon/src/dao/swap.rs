@@ -3,27 +3,30 @@ use chrono::{
     DateTime,
     Utc,
 };
+use rust_decimal::Decimal;
+use sqlx::types::{
+    Json,
+    Text,
+};
 use thiserror::Error;
 use uuid::Uuid;
-use sqlx::types::{Text, Json};
-use rust_decimal::Decimal;
 
 use crate::types::{
     CreateFrontEndSwapParams,
-    FrontEndSwap,
-    Swap,
     CreateSwapData,
-    SwapStatus,
-    SwapChainType,
-    SwapExecutorType,
+    FrontEndSwap,
     InternalSwapDetails,
+    Swap,
+    SwapChainType,
     SwapDirection,
+    SwapExecutorType,
+    SwapStatus,
 };
 
 use super::DaoExecutor;
 use super::error_parsing::{
-    StatusTriggerError,
     StatusTransitionError,
+    StatusTriggerError,
 };
 
 #[derive(sqlx::FromRow)]
@@ -92,7 +95,7 @@ struct SwapRow {
     #[sqlx(flatten)]
     request: CreateSwapDataRow,
     status: SwapStatus,
-    estimated_to_amount: Text<Decimal>,  // approximate
+    estimated_to_amount: Text<Decimal>, // approximate
     swap_details: Json<InternalSwapDetails>,
     created_at: DateTime<Utc>,
     submitted_at: Option<DateTime<Utc>>,
@@ -160,40 +163,56 @@ impl crate::api::ApiErrorExt for DaoSwapError {
                 ..
             } => "RELATED_ENTITY_NOT_FOUND",
             DaoSwapError::DatabaseError => "INTERNAL_SERVER_ERROR",
-            DaoSwapError::NotFound { .. } => "ENTITY_NOT_FOUND",
-            DaoSwapError::StatusConstraintViolation { .. } => "STATUS_CONSTRAINT_VIOLATION",
+            DaoSwapError::NotFound {
+                ..
+            } => "ENTITY_NOT_FOUND",
+            DaoSwapError::StatusConstraintViolation {
+                ..
+            } => "STATUS_CONSTRAINT_VIOLATION",
         }
     }
 
     fn code(&self) -> &str {
         match self {
-            DaoSwapError::NotFound { .. } => "SWAP_NOT_FOUND",
+            DaoSwapError::NotFound {
+                ..
+            } => "SWAP_NOT_FOUND",
             DaoSwapError::InvoiceNotFound {
                 ..
             } => "RELATED_INVOICE_NOT_FOUND",
-            DaoSwapError::StatusConstraintViolation { .. } => "SWAP_STATUS_CONSTRAINT_VIOLATION",
+            DaoSwapError::StatusConstraintViolation {
+                ..
+            } => "SWAP_STATUS_CONSTRAINT_VIOLATION",
             DaoSwapError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
 
     fn message(&self) -> &str {
         match self {
-            DaoSwapError::NotFound { .. } => "The requested swap was not found.",
+            DaoSwapError::NotFound {
+                ..
+            } => "The requested swap was not found.",
             DaoSwapError::InvoiceNotFound {
                 ..
             } => "The related invoice id was not found.",
-            DaoSwapError::StatusConstraintViolation { .. } => "The requested status transition is not allowed.",
+            DaoSwapError::StatusConstraintViolation {
+                ..
+            } => "The requested status transition is not allowed.",
             DaoSwapError::DatabaseError => "A database error occurred.",
         }
     }
 
     fn http_status_code(&self) -> reqwest::StatusCode {
         match self {
-            DaoSwapError::NotFound { .. } => reqwest::StatusCode::NOT_FOUND,
+            DaoSwapError::NotFound {
+                ..
+            } => reqwest::StatusCode::NOT_FOUND,
             DaoSwapError::InvoiceNotFound {
                 ..
             } => reqwest::StatusCode::BAD_REQUEST,
-            DaoSwapError::StatusConstraintViolation { .. } => reqwest::StatusCode::CONFLICT,
+            DaoSwapError::StatusConstraintViolation {
+                ..
+            } => reqwest::StatusCode::CONFLICT,
             DaoSwapError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -326,7 +345,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             "UPDATE swaps
             SET status = 'Pending'
             WHERE status = 'Submitted'
-            RETURNING *"
+            RETURNING *",
         );
 
         self.fetch_all(query)
@@ -347,7 +366,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
         let query = sqlx::query_as::<_, SwapRow>(
             "SELECT *
             FROM swaps
-            WHERE status = 'Pending'"
+            WHERE status = 'Pending'",
         );
 
         self.fetch_all(query)
@@ -372,7 +391,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             "UPDATE swaps
             SET status = 'Submitted', submitted_at = datetime('now')
             WHERE id = ?
-            RETURNING *"
+            RETURNING *",
         )
         .bind(swap_id);
 
@@ -395,7 +414,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
                     sqlx::Error::RowNotFound => DaoSwapError::NotFound {
                         swap_id,
                     },
-                    _ => DaoSwapError::DatabaseError
+                    _ => DaoSwapError::DatabaseError,
                 }
             })
     }
@@ -412,7 +431,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
                     '$.signature', ?
                 )
             WHERE id = ?
-            RETURNING *"
+            RETURNING *",
         )
         .bind(signature)
         .bind(swap_id);
@@ -436,13 +455,13 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
                     sqlx::Error::RowNotFound => DaoSwapError::NotFound {
                         swap_id,
                     },
-                    _ => DaoSwapError::DatabaseError
+                    _ => DaoSwapError::DatabaseError,
                 }
             })
     }
 
-    // TODO: probably this might be unified for all front-end submitting swaps. We can provide some "common" structure
-    // like
+    // TODO: probably this might be unified for all front-end submitting swaps. We
+    // can provide some "common" structure like
     // ```
     // struct FrontEndSubmittableSwapData<T> {
     //     transaction_hash: Option<String>,
@@ -463,7 +482,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
                     '$.transaction_hash', ?
                 )
             WHERE id = ?
-            RETURNING *"
+            RETURNING *",
         )
         .bind(transaction_hash)
         .bind(swap_id);
@@ -487,7 +506,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
                     sqlx::Error::RowNotFound => DaoSwapError::NotFound {
                         swap_id,
                     },
-                    _ => DaoSwapError::DatabaseError
+                    _ => DaoSwapError::DatabaseError,
                 }
             })
     }
@@ -500,7 +519,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             "UPDATE swaps
             SET status = 'Completed', finished_at = datetime('now')
             WHERE id = ?
-            RETURNING *"
+            RETURNING *",
         )
         .bind(swap_id);
 
@@ -523,7 +542,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
                     sqlx::Error::RowNotFound => DaoSwapError::NotFound {
                         swap_id,
                     },
-                    _ => DaoSwapError::DatabaseError
+                    _ => DaoSwapError::DatabaseError,
                 }
             })
     }
@@ -537,7 +556,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             "UPDATE swaps
             SET status = 'Failed', error_message = ?, finished_at = datetime('now')
             WHERE id = ?
-            RETURNING *"
+            RETURNING *",
         )
         .bind(error_message.to_string())
         .bind(swap_id);
@@ -561,17 +580,20 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
                     sqlx::Error::RowNotFound => DaoSwapError::NotFound {
                         swap_id,
                     },
-                    _ => DaoSwapError::DatabaseError
+                    _ => DaoSwapError::DatabaseError,
                 }
             })
     }
 
     #[cfg_attr(not(test), expect(dead_code))]
-    async fn get_swap_by_id(&self, swap_id: Uuid) -> Result<Option<Swap>, DaoSwapError> {
+    async fn get_swap_by_id(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError> {
         let query = sqlx::query_as::<_, SwapRow>(
             "SELECT *
             FROM swaps
-            WHERE id = ?"
+            WHERE id = ?",
         )
         .bind(swap_id);
 
@@ -595,7 +617,12 @@ impl<T: DaoExecutor + 'static> DaoSwapMethods for T {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{dao::{create_test_dao, invoice::DaoInvoiceMethods}, types::{default_create_invoice_data, default_swap}};
+    use crate::dao::create_test_dao;
+    use crate::dao::invoice::DaoInvoiceMethods;
+    use crate::types::{
+        default_create_invoice_data,
+        default_swap,
+    };
 
     use super::*;
 
@@ -606,17 +633,25 @@ mod tests {
         let invoice = default_create_invoice_data();
         let invoice_id = invoice.id;
 
-        dao.create_invoice(invoice).await.unwrap();
+        dao.create_invoice(invoice)
+            .await
+            .unwrap();
 
         let swap = default_swap(invoice_id);
         let swap_id = swap.id;
-        let result = dao.create_swap(swap.clone()).await.unwrap();
+        let result = dao
+            .create_swap(swap.clone())
+            .await
+            .unwrap();
         assert_eq!(result, swap);
 
         let submitted_swaps = dao.get_submitted_swaps().await.unwrap();
         assert!(submitted_swaps.is_empty());
 
-        let mut submitted = dao.update_swap_submitted(swap_id).await.unwrap();
+        let mut submitted = dao
+            .update_swap_submitted(swap_id)
+            .await
+            .unwrap();
         submitted.trunc_timestamps();
 
         // TODO: add methods for cutting timestamps for testing
@@ -635,7 +670,11 @@ mod tests {
         assert_eq!(submitted_swaps.len(), 1);
         assert_eq!(submitted_swaps[0].id, swap.id);
 
-        let mut pending = dao.get_swap_by_id(swap_id).await.unwrap().unwrap();
+        let mut pending = dao
+            .get_swap_by_id(swap_id)
+            .await
+            .unwrap()
+            .unwrap();
         pending.trunc_timestamps();
 
         let mut expected_pending = Swap {
@@ -646,7 +685,10 @@ mod tests {
 
         assert_eq!(pending, expected_pending);
 
-        let mut completed = dao.update_swap_completed(swap_id).await.unwrap();
+        let mut completed = dao
+            .update_swap_completed(swap_id)
+            .await
+            .unwrap();
         completed.trunc_timestamps();
 
         let mut expected_completed = Swap {
@@ -658,19 +700,38 @@ mod tests {
 
         assert_eq!(completed, expected_completed);
 
-        // Create another swap for testing failure flow and some status transition constraints
+        // Create another swap for testing failure flow and some status transition
+        // constraints
         let swap = default_swap(invoice_id);
         let swap_id = swap.id;
-        let result = dao.create_swap(swap.clone()).await.unwrap();
+        let result = dao
+            .create_swap(swap.clone())
+            .await
+            .unwrap();
         assert_eq!(result, swap);
 
-        let completed_err = dao.update_swap_completed(swap_id).await.unwrap_err();
-        assert_eq!(completed_err, DaoSwapError::StatusConstraintViolation { current_status: SwapStatus::Created, attempted_status: SwapStatus::Completed });
+        let completed_err = dao
+            .update_swap_completed(swap_id)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            completed_err,
+            DaoSwapError::StatusConstraintViolation {
+                current_status: SwapStatus::Created,
+                attempted_status: SwapStatus::Completed
+            }
+        );
 
         let pending = dao.get_submitted_swaps().await.unwrap();
         assert!(pending.is_empty());
 
-        let mut submitted = dao.update_across_swap_submitted(swap_id, "transaction_hash123".to_string()).await.unwrap();
+        let mut submitted = dao
+            .update_across_swap_submitted(
+                swap_id,
+                "transaction_hash123".to_string(),
+            )
+            .await
+            .unwrap();
         submitted.trunc_timestamps();
 
         let mut expected_submitted = Swap {
@@ -686,14 +747,26 @@ mod tests {
 
         assert_eq!(submitted, expected_submitted);
 
-        let completed_err = dao.update_swap_completed(swap_id).await.unwrap_err();
-        assert_eq!(completed_err, DaoSwapError::StatusConstraintViolation { current_status: SwapStatus::Submitted, attempted_status: SwapStatus::Completed });
+        let completed_err = dao
+            .update_swap_completed(swap_id)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            completed_err,
+            DaoSwapError::StatusConstraintViolation {
+                current_status: SwapStatus::Submitted,
+                attempted_status: SwapStatus::Completed
+            }
+        );
 
         let submitted_swaps = dao.get_submitted_swaps().await.unwrap();
         assert_eq!(submitted_swaps.len(), 1);
         assert_eq!(submitted_swaps[0].id, swap.id);
 
-        let mut failed = dao.update_swap_failed(swap_id, "Failure message".to_string()).await.unwrap();
+        let mut failed = dao
+            .update_swap_failed(swap_id, "Failure message".to_string())
+            .await
+            .unwrap();
         failed.trunc_timestamps();
 
         let mut expected_failed = Swap {
@@ -709,19 +782,48 @@ mod tests {
         // Check correct "Not Found" errors and foreign key error
         let swap_id = Uuid::new_v4();
 
-        let result = dao.update_swap_submitted(swap_id).await.unwrap_err();
-        assert_eq!(result, DaoSwapError::NotFound { swap_id });
+        let result = dao
+            .update_swap_submitted(swap_id)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            result,
+            DaoSwapError::NotFound {
+                swap_id
+            }
+        );
 
-        let result = dao.update_swap_completed(swap_id).await.unwrap_err();
-        assert_eq!(result, DaoSwapError::NotFound { swap_id });
+        let result = dao
+            .update_swap_completed(swap_id)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            result,
+            DaoSwapError::NotFound {
+                swap_id
+            }
+        );
 
-        let result = dao.update_swap_failed(swap_id, "message".to_string()).await.unwrap_err();
-        assert_eq!(result, DaoSwapError::NotFound { swap_id });
+        let result = dao
+            .update_swap_failed(swap_id, "message".to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            result,
+            DaoSwapError::NotFound {
+                swap_id
+            }
+        );
 
         let invoice_id = Uuid::new_v4();
         let swap = default_swap(invoice_id);
 
         let result = dao.create_swap(swap).await.unwrap_err();
-        assert_eq!(result, DaoSwapError::InvoiceNotFound { invoice_id });
+        assert_eq!(
+            result,
+            DaoSwapError::InvoiceNotFound {
+                invoice_id
+            }
+        );
     }
 }

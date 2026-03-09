@@ -25,10 +25,10 @@ use crate::types::{
     PayoutStatus,
     Refund,
     RetryMeta,
+    Swap,
     Transaction,
     UpdateInvoiceData,
     WebhookEvent,
-    Swap,
 };
 
 use super::changes::{
@@ -247,7 +247,10 @@ pub trait DaoInterface: Send + Sync + 'static {
 
     async fn get_all_front_end_swaps(&self) -> Result<Vec<FrontEndSwap>, DaoSwapError>;
 
-    async fn create_swap(&self, swap: Swap) -> Result<Swap, DaoSwapError>;
+    async fn create_swap(
+        &self,
+        swap: Swap,
+    ) -> Result<Swap, DaoSwapError>;
 
     async fn get_submitted_swaps(&self) -> Result<Vec<Swap>, DaoSwapError>;
 
@@ -422,7 +425,10 @@ pub trait DaoTransactionInterface {
 
     async fn get_all_front_end_swaps(&self) -> Result<Vec<FrontEndSwap>, DaoSwapError>;
 
-    async fn create_swap(&self, swap: Swap) -> Result<Swap, DaoSwapError>;
+    async fn create_swap(
+        &self,
+        swap: Swap,
+    ) -> Result<Swap, DaoSwapError>;
 
     async fn get_submitted_swaps(&self) -> Result<Vec<Swap>, DaoSwapError>;
 
@@ -667,7 +673,10 @@ impl DaoInterface for DAO {
         DaoSwapMethods::get_all_front_end_swaps(self).await
     }
 
-    async fn create_swap(&self, swap: Swap) -> Result<Swap, DaoSwapError> {
+    async fn create_swap(
+        &self,
+        swap: Swap,
+    ) -> Result<Swap, DaoSwapError> {
         DaoSwapMethods::create_swap(self, swap).await
     }
 
@@ -901,7 +910,10 @@ impl DaoTransactionInterface for DaoTransaction {
         DaoSwapMethods::get_all_front_end_swaps(self).await
     }
 
-    async fn create_swap(&self, swap: Swap) -> Result<Swap, DaoSwapError> {
+    async fn create_swap(
+        &self,
+        swap: Swap,
+    ) -> Result<Swap, DaoSwapError> {
         DaoSwapMethods::create_swap(self, swap).await
     }
 

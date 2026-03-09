@@ -68,7 +68,10 @@ use utils::task_tracker::TaskTracker;
 use crate::chain::TransactionsRecorder;
 use crate::configs::etherscan_client_config_with_prefix;
 use crate::dao::DaoInterface;
-use crate::swaps::{SwapsExecutor, SwapsTracker};
+use crate::swaps::{
+    SwapsExecutor,
+    SwapsTracker,
+};
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
 

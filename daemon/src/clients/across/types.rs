@@ -1,9 +1,20 @@
-use serde::{Serialize, Deserialize};
-use serde_with::{serde_as, DisplayFromStr};
-use rust_decimal::Decimal;
 use chrono::DateTime;
+use rust_decimal::Decimal;
+use serde::{
+    Deserialize,
+    Serialize,
+};
+use serde_with::{
+    DisplayFromStr,
+    serde_as,
+};
 
-use crate::types::{CreateSwapData, SwapQuote, SwapExecutorType, InternalQuoteDetails};
+use crate::types::{
+    CreateSwapData,
+    InternalQuoteDetails,
+    SwapExecutorType,
+    SwapQuote,
+};
 
 use super::AcrossQuoteDetails;
 
@@ -73,6 +84,8 @@ pub struct ApprovalTransaction {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapTransactionInternal {
+    // TODO: check if it's true? But also probably if it's false API should return us an error?
+    #[expect(dead_code)]
     pub simulation_success: bool,
     pub chain_id: u64,
     pub to: String,
@@ -114,6 +127,7 @@ impl From<SwapTransactionInternal> for SwapTransaction {
     }
 }
 
+#[expect(dead_code)]
 #[serde_as]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,7 +156,8 @@ impl From<SwapApprovalResponse> for SwapQuote {
             swap_executor: SwapExecutorType::Across,
             id: value.id,
             estimated_to_amount_units: value.expected_output_amount,
-            // TODO: in response there's output token with it's params (decimals), so we can calculate it
+            // TODO: in response there's output token with it's params (decimals), so we can
+            // calculate it
             estimated_to_amount: Decimal::ZERO,
             // TODO: ensure unwrap is safe here?
             valid_till: DateTime::from_timestamp_secs(value.quote_expiry_timestamp).unwrap(),
@@ -160,11 +175,12 @@ pub struct SwapStatusRequest {
 impl From<&str> for SwapStatusRequest {
     fn from(value: &str) -> Self {
         Self {
-            deposit_txn_ref: value.to_string()
+            deposit_txn_ref: value.to_string(),
         }
     }
 }
 
+#[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapStatusResponse {
@@ -177,6 +193,7 @@ pub struct SwapStatusResponse {
     pub deposit_refund_txn_ref: Option<String>,
 }
 
+#[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcrossApiError {
@@ -199,6 +216,7 @@ pub struct GetDepositsRequest {
     pub depositor: String,
 }
 
+#[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetDepositsResponse {

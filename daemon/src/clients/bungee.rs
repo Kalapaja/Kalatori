@@ -2,19 +2,23 @@ mod types;
 
 use std::time::Duration;
 
-use serde::{Serialize, Deserialize};
 use serde::de::DeserializeOwned;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use types::*;
 
 pub use types::BungeeSwapStatus;
 
-const BUNGEE_BASE_URL: &'static str = "https://public-backend.bungee.exchange";
+const BUNGEE_BASE_URL: &str = "https://public-backend.bungee.exchange";
 const BUNGEE_CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 // Although it's a copy of `QuoteAutoRoute` structure, it's better
 // to leave it as is. Otherwise we'll have to implement different
-// `rename_all` for serialize and deserialize + this structure can be modified in future
+// `rename_all` for serialize and deserialize + this structure can be modified
+// in future
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BungeeRawTransaction {
     pub quote_id: String,
@@ -33,6 +37,7 @@ struct BungeeApiResponse<T> {
     success: bool,
     #[serde(default)]
     message: Option<String>,
+    #[expect(dead_code)]
     #[serde(default)]
     status_code: Option<u32>,
 }
@@ -40,7 +45,9 @@ struct BungeeApiResponse<T> {
 impl<T> From<BungeeApiResponse<T>> for BungeeClientError {
     fn from(value: BungeeApiResponse<T>) -> Self {
         Self::BungeeError {
-            message: value.message.unwrap_or("Error message is not provided in response".to_string()),
+            message: value
+                .message
+                .unwrap_or("Error message is not provided in response".to_string()),
         }
     }
 }
@@ -48,9 +55,7 @@ impl<T> From<BungeeApiResponse<T>> for BungeeClientError {
 #[derive(Debug, thiserror::Error)]
 pub enum BungeeClientError {
     #[error("Bungee API Error")]
-    BungeeError {
-        message: String,
-    },
+    BungeeError { message: String },
     #[error("Request failed")]
     RequestFailed,
 }
@@ -80,12 +85,14 @@ impl BungeeClient {
         method: reqwest::Method,
         params: T,
     ) -> Result<R, BungeeClientError>
-      where T: Serialize + std::fmt::Debug,
-            R: DeserializeOwned + std::fmt::Debug,
+    where
+        T: Serialize + std::fmt::Debug,
+        R: DeserializeOwned + std::fmt::Debug,
     {
         let full_url = format!("{BUNGEE_BASE_URL}{url}");
 
-        let request = self.client
+        let request = self
+            .client
             .request(method.clone(), full_url)
             .timeout(BUNGEE_CLIENT_REQUEST_TIMEOUT);
 
@@ -141,8 +148,9 @@ impl BungeeClient {
         self.send_request(
             "/api/v1/bungee/quote",
             reqwest::Method::GET,
-            data
-        ).await
+            data,
+        )
+        .await
         // TODO: check if `auto_quote` is empty, if so return an error
     }
 
@@ -154,7 +162,8 @@ impl BungeeClient {
             "/api/v1/bungee/submit",
             reqwest::Method::POST,
             data,
-        ).await
+        )
+        .await
     }
 
     pub async fn get_swap_status(
@@ -164,7 +173,8 @@ impl BungeeClient {
         self.send_request(
             "/api/v1/bungee/status",
             reqwest::Method::GET,
-            data
-        ).await
+            data,
+        )
+        .await
     }
 }

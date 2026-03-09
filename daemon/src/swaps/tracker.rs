@@ -1,13 +1,22 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use uuid::Uuid;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
-use crate::clients::{AcrossClient, AcrossSwapStatus, BungeeClient, BungeeSwapStatus};
+use crate::clients::{
+    AcrossClient,
+    AcrossSwapStatus,
+    BungeeClient,
+    BungeeSwapStatus,
+};
 use crate::dao::DaoInterface;
-use crate::types::{InternalSwapDetails, Swap, SwapExecutorType};
+use crate::types::{
+    InternalSwapDetails,
+    Swap,
+    SwapExecutorType,
+};
 
 const SWAPS_EXECUTOR_API_POLLING_INTERVAL_MILLIS: u64 = 3000;
 const SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS: u64 = 100;
@@ -27,7 +36,10 @@ impl TrackedSwaps {
         !self.swaps.is_empty()
     }
 
-    pub fn add_swaps(&mut self, swaps: Vec<Swap>) {
+    pub fn add_swaps(
+        &mut self,
+        swaps: Vec<Swap>,
+    ) {
         for swap in swaps {
             self.swaps.insert(swap.id, swap);
         }
@@ -37,7 +49,10 @@ impl TrackedSwaps {
         self.swaps.values().cloned().collect()
     }
 
-    pub fn remove_swap(&mut self, swap_id: Uuid) {
+    pub fn remove_swap(
+        &mut self,
+        swap_id: Uuid,
+    ) {
         self.swaps.remove(&swap_id);
     }
 }
@@ -70,7 +85,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id))]
-    async fn check_across_swap(&mut self, swap: &Swap) -> Result<(), SwapsTrackerError> {
+    async fn check_across_swap(
+        &mut self,
+        swap: &Swap,
+    ) -> Result<(), SwapsTrackerError> {
         tracing::trace!("Check across swap");
 
         let InternalSwapDetails::Across(details) = &swap.swap_details else {
@@ -79,7 +97,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         };
 
         if let Some(tx_hash) = details.transaction_hash.as_ref() {
-            let result = self.across_client
+            let result = self
+                .across_client
                 .get_swap_status(tx_hash.as_str().into())
                 .await
                 // TODO: check errors specifically?
@@ -89,7 +108,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                 AcrossSwapStatus::Expired => {
                     // shouldn't really happen as long as it already has been sent but just in case
                     self.dao
-                        .update_swap_failed(swap.id, "Got bungee status code expired or cancelled".to_string())
+                        .update_swap_failed(
+                            swap.id,
+                            "Got bungee status code expired or cancelled".to_string(),
+                        )
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
@@ -113,7 +135,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                 },
                 AcrossSwapStatus::Refunded => {
                     self.dao
-                        .update_swap_failed(swap.id, "Swap has been failed and refunded".to_string())
+                        .update_swap_failed(
+                            swap.id,
+                            "Swap has been failed and refunded".to_string(),
+                        )
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
@@ -124,7 +149,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             }
         } else {
             self.dao
-                .update_swap_failed(swap.id, "No transaction hash saved".to_string())
+                .update_swap_failed(
+                    swap.id,
+                    "No transaction hash saved".to_string(),
+                )
                 .await
                 .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
@@ -138,7 +166,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id))]
-    async fn check_bungee_swap(&mut self, swap: &Swap) -> Result<(), SwapsTrackerError> {
+    async fn check_bungee_swap(
+        &mut self,
+        swap: &Swap,
+    ) -> Result<(), SwapsTrackerError> {
         tracing::trace!("Check bungee swap");
 
         let InternalSwapDetails::Bungee(details) = &swap.swap_details else {
@@ -147,7 +178,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         };
 
         if let Some(tx_hash) = details.transaction_hash.as_ref() {
-            let result = self.bungee_client
+            let result = self
+                .bungee_client
                 .get_swap_status(tx_hash.as_str().into())
                 .await
                 // TODO: check errors specifically?
@@ -163,7 +195,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                 BungeeSwapStatus::Expired | BungeeSwapStatus::Cancelled => {
                     // shouldn't really happen as long as it already has been sent but just in case
                     self.dao
-                        .update_swap_failed(swap.id, "Got bungee status code expired or cancelled".to_string())
+                        .update_swap_failed(
+                            swap.id,
+                            "Got bungee status code expired or cancelled".to_string(),
+                        )
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
@@ -174,7 +209,9 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                         "Got bungee status code expired or cancelled. Swap has been marked as failed and will no longer be tracked"
                     );
                 },
-                BungeeSwapStatus::Pending | BungeeSwapStatus::Assigned | BungeeSwapStatus::Extracted => {
+                BungeeSwapStatus::Pending
+                | BungeeSwapStatus::Assigned
+                | BungeeSwapStatus::Extracted => {
                     tracing::trace!("Swap still has pending status, keep watching")
                 },
                 // According to the docs, both settled and fulfilled statuses are final
@@ -189,7 +226,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                 },
                 BungeeSwapStatus::Refunded => {
                     self.dao
-                        .update_swap_failed(swap.id, "Swap has been failed and refunded".to_string())
+                        .update_swap_failed(
+                            swap.id,
+                            "Swap has been failed and refunded".to_string(),
+                        )
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
@@ -200,7 +240,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             }
         } else {
             self.dao
-                .update_swap_failed(swap.id, "No transaction hash saved".to_string())
+                .update_swap_failed(
+                    swap.id,
+                    "No transaction hash saved".to_string(),
+                )
                 .await
                 .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
@@ -235,17 +278,22 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         tracing::info!("Starting swaps tracker");
 
         let mut api_polling_interval = interval(Duration::from_millis(
-            SWAPS_EXECUTOR_API_POLLING_INTERVAL_MILLIS
+            SWAPS_EXECUTOR_API_POLLING_INTERVAL_MILLIS,
         ));
 
         let mut database_polling_interval = interval(Duration::from_millis(
-            SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS
+            SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS,
         ));
 
         // First of all need to fetch pending swaps which has left after service realod.
-        // Need to either handle an error and retry loading or just panic and restart the
-        // daemon, we can't just leave those pending swaps in this state forever.
-        let pending_swaps = self.dao.get_pending_swaps().await.unwrap();
+        // Need to either handle an error and retry loading or just panic and restart
+        // the daemon, we can't just leave those pending swaps in this state
+        // forever.
+        let pending_swaps = self
+            .dao
+            .get_pending_swaps()
+            .await
+            .unwrap();
         self.store.add_swaps(pending_swaps);
 
         loop {

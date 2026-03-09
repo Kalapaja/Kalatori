@@ -2,14 +2,17 @@ mod types;
 
 use std::time::Duration;
 
-use serde::{Serialize, Deserialize};
 use serde::de::DeserializeOwned;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use types::*;
 
 pub use types::AcrossSwapStatus;
 
-const ACROSS_BASE_URL: &'static str = "https://app.across.to";
+const ACROSS_BASE_URL: &str = "https://app.across.to";
 const ACROSS_CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,9 +42,7 @@ pub type AcrossQuoteDetails = AcrossRawTransaction;
 #[derive(Debug, thiserror::Error)]
 pub enum AcrossClientError {
     #[error("Across API Error with code")]
-    AcrossError {
-        message: String,
-    },
+    AcrossError { message: String },
     #[error("Request failed")]
     RequestFailed,
 }
@@ -78,12 +79,14 @@ impl AcrossClient {
         url: &str,
         params: T,
     ) -> Result<R, AcrossClientError>
-      where T: Serialize + std::fmt::Debug,
-            R: DeserializeOwned + std::fmt::Debug,
+    where
+        T: Serialize + std::fmt::Debug,
+        R: DeserializeOwned + std::fmt::Debug,
     {
         let full_url = format!("{ACROSS_BASE_URL}{url}");
 
-        let raw_response = self.client
+        let raw_response = self
+            .client
             .get(full_url)
             .query(&params)
             .timeout(ACROSS_CLIENT_REQUEST_TIMEOUT)
@@ -128,20 +131,24 @@ impl AcrossClient {
         &self,
         data: SwapApprovalRequest,
     ) -> Result<SwapApprovalResponse, AcrossClientError> {
-        self.send_request("/api/swap/approval", data).await
+        self.send_request("/api/swap/approval", data)
+            .await
     }
 
     pub async fn get_swap_status(
         &self,
         data: SwapStatusRequest,
     ) -> Result<SwapStatusResponse, AcrossClientError> {
-        self.send_request("/api/deposit/status", data).await
+        self.send_request("/api/deposit/status", data)
+            .await
     }
 
+    #[expect(dead_code)]
     pub async fn get_deposits_by_address(
         &self,
         data: GetDepositsRequest,
     ) -> Result<Vec<GetDepositsResponse>, AcrossClientError> {
-        self.send_request("/api/deposits", data).await
+        self.send_request("/api/deposits", data)
+            .await
     }
 }

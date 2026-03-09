@@ -1,12 +1,25 @@
-use serde::{Serialize, Deserialize};
 use alloy::dyn_abi::Eip712Domain;
-use serde_with::{serde_as, DisplayFromStr, TryFromInto};
-use rust_decimal::Decimal;
 use chrono::DateTime;
+use rust_decimal::Decimal;
+use serde::{
+    Deserialize,
+    Serialize,
+};
+use serde_with::{
+    DisplayFromStr,
+    TryFromInto,
+    serde_as,
+};
 
-use crate::types::{CreateSwapData, SwapQuote, SwapExecutorType, InternalQuoteDetails, BungeeSwapDetails};
+use crate::types::{
+    BungeeSwapDetails,
+    CreateSwapData,
+    InternalQuoteDetails,
+    SwapExecutorType,
+    SwapQuote,
+};
 
-use super::{BungeeRawTransaction, BungeeQuoteDetails};
+use super::BungeeQuoteDetails;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,8 +141,14 @@ impl From<QuoteResponse> for SwapQuote {
     fn from(value: QuoteResponse) -> Self {
         let route = value.auto_route;
 
-        let valid_till = DateTime::from_timestamp_secs(route.sign_typed_data.values.deadline).unwrap();
-        let estimated_to_amount_units = route.sign_typed_data.values.witness.basic_req.min_output_amount;
+        let valid_till =
+            DateTime::from_timestamp_secs(route.sign_typed_data.values.deadline).unwrap();
+        let estimated_to_amount_units = route
+            .sign_typed_data
+            .values
+            .witness
+            .basic_req
+            .min_output_amount;
 
         let details = BungeeQuoteDetails {
             quote_id: route.quote_id.clone(),
@@ -142,7 +161,8 @@ impl From<QuoteResponse> for SwapQuote {
             swap_executor: SwapExecutorType::Bungee,
             id: route.quote_id,
             estimated_to_amount_units,
-            // TODO: in response there's output token with it's params (decimals), so we can calculate it
+            // TODO: in response there's output token with it's params (decimals), so we can
+            // calculate it
             estimated_to_amount: Decimal::ZERO,
             // TODO: ensure unwrap is safe here?
             valid_till,
@@ -162,10 +182,13 @@ pub struct SubmitOrderRequest {
 
 impl From<BungeeSwapDetails> for SubmitOrderRequest {
     fn from(value: BungeeSwapDetails) -> Self {
-
         Self {
             request_type: value.raw_transaction.request_type,
-            request: value.raw_transaction.sign_typed_data.values.witness,
+            request: value
+                .raw_transaction
+                .sign_typed_data
+                .values
+                .witness,
             // TODO: check if it's safe, at least add tests for that
             user_signature: value.signature.unwrap(),
             quote_id: value.id,

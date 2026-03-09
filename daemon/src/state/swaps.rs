@@ -1,11 +1,17 @@
-use uuid::Uuid;
 use rust_decimal::prelude::*;
+use uuid::Uuid;
 
 use crate::api::ApiErrorExt;
 use crate::dao::DaoInterface;
-use crate::swaps::SwapsExecutorError;
 use crate::types::{
-    CreateSwapData, CreateSwapParams, SubmittedSwapParams, Swap, SwapChainType, SwapDirection, SwapExecutorType, SwapSignatureParams
+    CreateSwapData,
+    CreateSwapParams,
+    SubmittedSwapParams,
+    Swap,
+    SwapChainType,
+    SwapDirection,
+    SwapExecutorType,
+    SwapSignatureParams,
 };
 
 use super::AppState;
@@ -13,13 +19,9 @@ use super::AppState;
 #[derive(Debug, thiserror::Error)]
 pub enum SwapRequestError {
     #[error("Invalid chain id: {chain_id}")]
-    InvalidChainId {
-        chain_id: u64,
-    },
+    InvalidChainId { chain_id: u64 },
     #[error("Invoice not found: {invoice_id}")]
-    InvoiceNotFound {
-        invoice_id: Uuid,
-    },
+    InvoiceNotFound { invoice_id: Uuid },
     #[error("Swap direction from {from_chain_id} to {to_chain_id} is not supported")]
     DirectionIsUnsupported {
         from_chain_id: u64,
@@ -57,34 +59,53 @@ impl<D: DaoInterface> AppState<D> {
         let direction = SwapDirection::Incoming;
         let invoice_id = params.invoice_id;
         let default_chain = self.payments_config.default_chain;
-        let to_token_address = self.payments_config.default_asset_id.get(&default_chain).unwrap().clone();
+        let to_token_address = self
+            .payments_config
+            .default_asset_id
+            .get(&default_chain)
+            .unwrap()
+            .clone();
 
-        let from_chain = SwapChainType::try_from(params.from_chain_id)
-            .map_err(|chain_id| SwapRequestError::InvalidChainId { chain_id })?;
+        let from_chain = SwapChainType::try_from(params.from_chain_id).map_err(|chain_id| {
+            SwapRequestError::InvalidChainId {
+                chain_id,
+            }
+        })?;
 
         let to_chain = default_chain.into();
 
-        let swap_executor = SwapExecutorType::detect(from_chain, to_chain, direction)
-            .ok_or_else(|| SwapRequestError::DirectionIsUnsupported {
-                from_chain_id: from_chain.chain_id(),
-                to_chain_id: to_chain.chain_id(),
+        let swap_executor =
+            SwapExecutorType::detect(from_chain, to_chain, direction).ok_or_else(|| {
+                SwapRequestError::DirectionIsUnsupported {
+                    from_chain_id: from_chain.chain_id(),
+                    to_chain_id: to_chain.chain_id(),
+                }
             })?;
 
-        let invoice = self.get_invoice(invoice_id)
+        let invoice = self
+            .get_invoice(invoice_id)
             .await
             // TODO: update error handling
             .map_err(|_| SwapRequestError::DatabaseError)?
-            .ok_or_else(|| SwapRequestError::InvoiceNotFound { invoice_id })?;
+            .ok_or(SwapRequestError::InvoiceNotFound {
+                invoice_id,
+            })?;
 
         if invoice.invoice.status.is_final() {
-            return Err(SwapRequestError::InvoiceNotFound { invoice_id })
+            return Err(SwapRequestError::InvoiceNotFound {
+                invoice_id,
+            })
         }
 
-        // get from params if provided, otherwise calculate from invoice's unfilled amount
+        // get from params if provided, otherwise calculate from invoice's unfilled
+        // amount
         let expected_to_amount_units = if let Some(units) = params.expected_to_amount_units {
             units
         } else {
-            println!("Invoice unfilled amount: {:?}", invoice.unfilled_amount());
+            println!(
+                "Invoice unfilled amount: {:?}",
+                invoice.unfilled_amount()
+            );
             // TODO: get real decimals for the asset
             (invoice.unfilled_amount() / Decimal::new(1, 6))
                 .to_u128()
@@ -106,10 +127,11 @@ impl<D: DaoInterface> AppState<D> {
             direction,
         };
 
-        let swap = self.swaps_executor
+        let swap = self
+            .swaps_executor
             .create_swap(data)
             .await
-            .map_err(|e| {
+            .map_err(|_e| {
                 // TODO: check errors
                 SwapRequestError::QuoteRequestFailed
             })?;
@@ -117,7 +139,10 @@ impl<D: DaoInterface> AppState<D> {
         Ok(swap)
     }
 
-    pub async fn update_swap_submitted(&self, params: SubmittedSwapParams) -> Result<Swap, SwapRequestError> {
+    pub async fn update_swap_submitted(
+        &self,
+        params: SubmittedSwapParams,
+    ) -> Result<Swap, SwapRequestError> {
         self.swaps_executor
             .update_swap_submitted_on_front_end(params)
             .await
@@ -125,7 +150,10 @@ impl<D: DaoInterface> AppState<D> {
             .map_err(|_| SwapRequestError::DatabaseError)
     }
 
-    pub async fn submit_swap_with_signature(&self, params: SwapSignatureParams) -> Result<Swap, SwapRequestError> {
+    pub async fn submit_swap_with_signature(
+        &self,
+        params: SwapSignatureParams,
+    ) -> Result<Swap, SwapRequestError> {
         self.swaps_executor
             .submit_with_signature(params)
             .await

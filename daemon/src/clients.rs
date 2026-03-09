@@ -1,20 +1,20 @@
 mod across;
 mod bungee;
 
+#[cfg(test)]
+pub use across::default_across_raw_transaction;
 pub use across::{
     AcrossClient,
     AcrossClientError,
-    AcrossRawTransaction,
     AcrossQuoteDetails,
+    AcrossRawTransaction,
     AcrossSwapStatus,
 };
-#[cfg(test)]
-pub use across::default_across_raw_transaction;
 
 pub use bungee::{
     BungeeClient,
     BungeeClientError,
-    BungeeRawTransaction,
     BungeeQuoteDetails,
+    BungeeRawTransaction,
     BungeeSwapStatus,
 };

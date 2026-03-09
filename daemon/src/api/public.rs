@@ -15,8 +15,14 @@ use uuid::Uuid;
 
 use crate::configs::ShopMetaConfig;
 use crate::dao::DaoSwapError;
-use crate::types::{CreateFrontEndSwapParams, CreateSwapParams, SubmittedSwapParams, SwapSignatureParams, PublicSwap};
-use crate::state::{SwapRequestError};
+use crate::state::SwapRequestError;
+use crate::types::{
+    CreateFrontEndSwapParams,
+    CreateSwapParams,
+    PublicSwap,
+    SubmittedSwapParams,
+    SwapSignatureParams,
+};
 
 use super::ApiState;
 use super::utils::{
