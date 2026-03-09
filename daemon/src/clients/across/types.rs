@@ -1,15 +1,11 @@
-use serde::{Serialize, Deserialize, Deserializer};
+use serde::{Serialize, Deserialize};
+use serde_with::{serde_as, DisplayFromStr};
+use rust_decimal::Decimal;
+use chrono::DateTime;
 
-use crate::types::CreateSwapData;
+use crate::types::{CreateSwapData, SwapQuote, SwapExecutorType, InternalQuoteDetails};
 
-fn deserialize_string_to_u128<'de, D>(deserializer: D) -> Result<u128, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = Deserialize::deserialize(deserializer)?;
-    s.parse()
-        .map_err(serde::de::Error::custom)
-}
+use super::AcrossQuoteDetails;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +13,24 @@ pub enum TradeType {
     ExactInput,
     MinOutput,
     ExactOutput,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AcrossSwapStatus {
+    // Deposits with this status have been filled on the destination chain
+    // and the recipient should have received funds. A FilledRelay event
+    // was emitted on the destination chain SpokePool.
+    Filled,
+    // Deposit has not been filled yet.
+    Pending,
+    // Deposit has expired and will not be filled. Expired deposits will be
+    // refunded to the depositor on the originChainId in the next batch of
+    // repayments.
+    Expired,
+    // Deposit has expired and the depositor has been successfully refunded
+    // on the originChain.
+    Refunded,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,37 +69,149 @@ pub struct ApprovalTransaction {
     pub data: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde_as]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SwapTransaction {
+pub struct SwapTransactionInternal {
     pub simulation_success: bool,
     pub chain_id: u64,
     pub to: String,
     pub data: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub gas: u128,
+    #[serde(default)]
+    #[serde_as(as = "DisplayFromStr")]
+    pub max_fee_per_gas: u128,
+    #[serde(default)]
+    #[serde_as(as = "DisplayFromStr")]
+    pub max_priority_fee_per_gas: u128,
+}
+
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwapTransaction {
+    pub chain_id: u64,
+    pub contract_address: String,
+    pub data: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub gas: u128,
+    #[serde_as(as = "DisplayFromStr")]
+    pub max_fee_per_gas: u128,
+    #[serde_as(as = "DisplayFromStr")]
+    pub max_priority_fee_per_gas: u128,
+}
+
+impl From<SwapTransactionInternal> for SwapTransaction {
+    fn from(value: SwapTransactionInternal) -> Self {
+        Self {
+            chain_id: value.chain_id,
+            contract_address: value.to,
+            data: value.data,
+            gas: value.gas,
+            max_fee_per_gas: value.max_fee_per_gas,
+            max_priority_fee_per_gas: value.max_priority_fee_per_gas,
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapApprovalResponse {
+    #[serde_as(as = "DisplayFromStr")]
+    pub input_amount: u128,
+    #[serde_as(as = "DisplayFromStr")]
+    pub max_input_amount: u128,
+    #[serde_as(as = "DisplayFromStr")]
+    pub expected_output_amount: u128,
+    #[serde(default)]
+    pub approval_txns: Vec<ApprovalTransaction>,
+    pub swap_tx: SwapTransactionInternal,
+    pub id: String,
+    pub quote_expiry_timestamp: i64,
+}
+
+impl From<SwapApprovalResponse> for SwapQuote {
+    fn from(value: SwapApprovalResponse) -> Self {
+        let details = AcrossQuoteDetails {
+            transaction: value.swap_tx.into(),
+            approval_transactions: value.approval_txns,
+        };
+
+        Self {
+            swap_executor: SwapExecutorType::Across,
+            id: value.id,
+            estimated_to_amount_units: value.expected_output_amount,
+            // TODO: in response there's output token with it's params (decimals), so we can calculate it
+            estimated_to_amount: Decimal::ZERO,
+            // TODO: ensure unwrap is safe here?
+            valid_till: DateTime::from_timestamp_secs(value.quote_expiry_timestamp).unwrap(),
+            quote_details: InternalQuoteDetails::Across(details),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapStatusRequest {
+    pub deposit_txn_ref: String,
+}
+
+impl From<&str> for SwapStatusRequest {
+    fn from(value: &str) -> Self {
+        Self {
+            deposit_txn_ref: value.to_string()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SwapApprovalResponse {
-    #[serde(deserialize_with = "deserialize_string_to_u128")]
-    pub input_amount: u128,
-    #[serde(deserialize_with = "deserialize_string_to_u128")]
-    pub max_input_amount: u128,
-    #[serde(default)]
-    pub approval_txns: Vec<ApprovalTransaction>,
-    pub swap_tx: SwapTransaction,
-    pub id: String,
+pub struct SwapStatusResponse {
+    pub status: AcrossSwapStatus,
+    pub origin_chain_id: u64,
+    pub deposit_id: String,
+    pub deposit_txn_ref: String,
+    pub fill_txn_ref: Option<String>,
+    pub destination_chain_id: u64,
+    pub deposit_refund_txn_ref: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcrossApiError {
-    #[serde(rename = "type")]
-    pub error_type: String,
-    pub code: String,
-    pub status: u32,
+    #[serde(default, rename = "type")]
+    pub error_type: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub status: Option<u32>,
     pub message: String,
-    pub id: String,
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetDepositsRequest {
+    pub depositor: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetDepositsResponse {
+    origin_chain_id: u64,
+    destination_chain_id: u64,
+    depositor: String,
+    recipient: String,
+    // input_token: String,
+    // #[serde(deserialize_with = "deserialize_string_to_u128")]
+    // input_amount: u128,
+    // output_token: String,
+    // #[serde(deserialize_with = "deserialize_string_to_u128")]
+    // output_amount: u128,
 }
 
 #[derive(Debug, Deserialize)]

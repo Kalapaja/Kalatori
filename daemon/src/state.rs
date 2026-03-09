@@ -1,3 +1,5 @@
+mod swaps;
+
 use std::collections::HashMap;
 
 use chrono::{
@@ -49,11 +51,15 @@ use crate::types::{
     Transaction,
     UpdateInvoiceData,
 };
+use crate::swaps::SwapsExecutor;
+
+pub use swaps::SwapRequestError;
 
 pub struct AppState<D: DaoInterface = DAO> {
     keyring: KeyringClient,
     dao: D,
     registry: InvoiceRegistry,
+    swaps_executor: SwapsExecutor<D>,
     asset_names_map: HashMap<String, String>,
     payments_config: PaymentsConfig,
     shop_meta: ShopMetaConfig,
@@ -64,6 +70,7 @@ impl<D: DaoInterface> AppState<D> {
         keyring: KeyringClient,
         dao: D,
         registry: InvoiceRegistry,
+        swaps_executor: SwapsExecutor<D>,
         asset_names_map: HashMap<String, String>,
         payments_config: PaymentsConfig,
         shop_meta: ShopMetaConfig,
@@ -72,6 +79,7 @@ impl<D: DaoInterface> AppState<D> {
             keyring,
             dao,
             registry,
+            swaps_executor,
             asset_names_map,
             payments_config,
             shop_meta,
@@ -90,6 +98,7 @@ impl<D: DaoInterface> AppState<D> {
         &self,
         invoice_id: Uuid,
     ) -> Result<Option<InvoiceWithReceivedAmount>, DaoInvoiceError> {
+        // TODO: try to search invoice in registry first?
         self.dao
             .get_invoice_with_received_amount_by_id(invoice_id)
             .await
@@ -574,11 +583,13 @@ mod tests {
         let keyring = KeyringClient::default();
         let dao = MockDaoInterface::default();
         let registry = InvoiceRegistry::new();
+        let swaps_executor = SwapsExecutor::new(MockDaoInterface::default());
 
         AppState::new(
             keyring,
             dao,
             registry,
+            swaps_executor,
             asset_names_map,
             config,
             shop_meta,

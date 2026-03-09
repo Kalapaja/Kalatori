@@ -18,10 +18,11 @@ CREATE TABLE IF NOT EXISTS swaps (
     expected_to_amount_units TEXT NOT NULL,  -- u128 as text to preserve precision
     from_address TEXT NOT NULL,        -- EVM address (hex)
     to_address TEXT NOT NULL,          -- EVM address (hex)
+    direction TEXT NOT NULL,           -- Swap direction, Incoming/Outgoing
 
     -- Swap data
     status TEXT NOT NULL CHECK(status IN (
-        'Created', 'Submitted', 'Pending', 'Completed', 'Failed'
+        'Created', 'Submitted', 'Pending', 'Completed', 'Failed', 'Abandoned'
     )) DEFAULT 'Created',
     estimated_to_amount TEXT NOT NULL,    -- Decimal string (approximate)
     swap_details TEXT NOT NULL,           -- JSON: depending on swap_executor
@@ -49,7 +50,7 @@ BEFORE UPDATE OF status ON swaps
 FOR EACH ROW
 BEGIN
     SELECT CASE
-        WHEN OLD.status = 'Created' AND NEW.status != OLD.status AND NEW.status NOT IN ('Submitted', 'Failed')
+        WHEN OLD.status = 'Created' AND NEW.status != OLD.status AND NEW.status NOT IN ('Submitted', 'Failed', 'Abandoned')
         THEN RAISE(ABORT, 'SWAP_STATUS_TRANSITION|old_status=' || OLD.status || '|new_status=' || NEW.status)
 
         WHEN OLD.status = 'Submitted' AND NEW.status != OLD.status AND NEW.status NOT IN ('Pending', 'Failed')

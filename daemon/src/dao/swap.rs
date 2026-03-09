@@ -17,6 +17,7 @@ use crate::types::{
     SwapChainType,
     SwapExecutorType,
     InternalSwapDetails,
+    SwapDirection,
 };
 
 use super::DaoExecutor;
@@ -64,6 +65,7 @@ struct CreateSwapDataRow {
     expected_to_amount_units: Text<u128>,
     from_address: String,
     to_address: String,
+    direction: SwapDirection,
 }
 
 impl From<CreateSwapDataRow> for CreateSwapData {
@@ -79,6 +81,7 @@ impl From<CreateSwapDataRow> for CreateSwapData {
             expected_to_amount_units: value.expected_to_amount_units.0,
             from_address: value.from_address,
             to_address: value.to_address,
+            direction: value.direction,
         }
     }
 }
@@ -269,8 +272,8 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
         let invoice_id = swap.request.invoice_id;
 
         let query = sqlx::query_as::<_, SwapRow>(
-            "INSERT INTO swaps (id, invoice_id, swap_executor, from_chain, to_chain, from_token_address, to_token_address, from_amount_units, expected_to_amount_units, from_address, to_address, status, estimated_to_amount, swap_details, created_at, valid_till)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO swaps (id, invoice_id, swap_executor, from_chain, to_chain, from_token_address, to_token_address, from_amount_units, expected_to_amount_units, from_address, to_address, direction, status, estimated_to_amount, swap_details, created_at, valid_till)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *"
         )
         .bind(swap.id)
@@ -284,6 +287,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
         .bind(Text(swap.request.expected_to_amount_units))
         .bind(Text(swap.request.from_address))
         .bind(Text(swap.request.to_address))
+        .bind(swap.request.direction)
         .bind(swap.status)
         .bind(Text(swap.estimated_to_amount))
         .bind(Json(swap.swap_details))
@@ -339,6 +343,27 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             })
     }
 
+    async fn get_pending_swaps(&self) -> Result<Vec<Swap>, DaoSwapError> {
+        let query = sqlx::query_as::<_, SwapRow>(
+            "SELECT *
+            FROM swaps
+            WHERE status = 'Pending'"
+        );
+
+        self.fetch_all(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.swap",
+                    error.operation = "get_pending_swaps",
+                    error.source = ?e,
+                    "Failed get get pending swaps"
+                );
+
+                DaoSwapError::DatabaseError
+            })
+    }
+
     async fn update_swap_submitted(
         &self,
         swap_id: Uuid,
@@ -360,6 +385,98 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
                     %swap_id,
                     error.source = ?e,
                     "Failed to update swap as submitted"
+                );
+
+                if let Some(error) = SwapStatus::from_sqlx_error(&e) {
+                    return error;
+                }
+
+                match e {
+                    sqlx::Error::RowNotFound => DaoSwapError::NotFound {
+                        swap_id,
+                    },
+                    _ => DaoSwapError::DatabaseError
+                }
+            })
+    }
+
+    async fn update_swap_set_signature(
+        &self,
+        swap_id: Uuid,
+        signature: String,
+    ) -> Result<Swap, DaoSwapError> {
+        let query = sqlx::query_as::<_, SwapRow>(
+            "UPDATE swaps
+            SET swap_details = json_set(
+                    swap_details,
+                    '$.signature', ?
+                )
+            WHERE id = ?
+            RETURNING *"
+        )
+        .bind(signature)
+        .bind(swap_id);
+
+        self.fetch_one(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.swap",
+                    error.operation = "update_across_swap_submitted",
+                    %swap_id,
+                    error.source = ?e,
+                    "Failed to update swap as submitted with transaction"
+                );
+
+                if let Some(error) = SwapStatus::from_sqlx_error(&e) {
+                    return error;
+                }
+
+                match e {
+                    sqlx::Error::RowNotFound => DaoSwapError::NotFound {
+                        swap_id,
+                    },
+                    _ => DaoSwapError::DatabaseError
+                }
+            })
+    }
+
+    // TODO: probably this might be unified for all front-end submitting swaps. We can provide some "common" structure
+    // like
+    // ```
+    // struct FrontEndSubmittableSwapData<T> {
+    //     transaction_hash: Option<String>,
+    //     data: T,
+    // }
+    // ```
+    async fn update_across_swap_submitted(
+        &self,
+        swap_id: Uuid,
+        transaction_hash: String,
+    ) -> Result<Swap, DaoSwapError> {
+        let query = sqlx::query_as::<_, SwapRow>(
+            "UPDATE swaps
+            SET status = 'Submitted',
+                submitted_at = datetime('now'),
+                swap_details = json_set(
+                    swap_details,
+                    '$.transaction_hash', ?
+                )
+            WHERE id = ?
+            RETURNING *"
+        )
+        .bind(transaction_hash)
+        .bind(swap_id);
+
+        self.fetch_one(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.swap",
+                    error.operation = "update_across_swap_submitted",
+                    %swap_id,
+                    error.source = ?e,
+                    "Failed to update swap as submitted with transaction"
                 );
 
                 if let Some(error) = SwapStatus::from_sqlx_error(&e) {
@@ -553,7 +670,7 @@ mod tests {
         let pending = dao.get_submitted_swaps().await.unwrap();
         assert!(pending.is_empty());
 
-        let mut submitted = dao.update_swap_submitted(swap_id).await.unwrap();
+        let mut submitted = dao.update_across_swap_submitted(swap_id, "transaction_hash123".to_string()).await.unwrap();
         submitted.trunc_timestamps();
 
         let mut expected_submitted = Swap {
@@ -561,6 +678,10 @@ mod tests {
             submitted_at: Some(Utc::now()),
             ..swap
         };
+        let InternalSwapDetails::Across(ref mut details) = expected_submitted.swap_details else {
+            panic!("Not across internal swap details");
+        };
+        details.transaction_hash = Some("transaction_hash123".to_string());
         expected_submitted.trunc_timestamps();
 
         assert_eq!(submitted, expected_submitted);

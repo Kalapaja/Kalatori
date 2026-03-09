@@ -91,6 +91,11 @@ impl InvoiceWithReceivedAmount {
             transactions: vec![],
         }
     }
+
+    /// Returns invoice's unfilled amount or 0 if it's filled or overpaid
+    pub fn unfilled_amount(&self) -> Decimal {
+        (self.invoice.amount - self.total_received_amount).max(Decimal::ZERO)
+    }
 }
 
 #[derive(FromRow)]

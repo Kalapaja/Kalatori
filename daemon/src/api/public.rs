@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use crate::configs::ShopMetaConfig;
 use crate::dao::DaoSwapError;
-use crate::types::CreateFrontEndSwapParams;
+use crate::types::{CreateFrontEndSwapParams, CreateSwapParams, SubmittedSwapParams, SwapSignatureParams, PublicSwap};
+use crate::state::{SwapRequestError};
 
 use super::ApiState;
 use super::utils::{
@@ -108,6 +109,42 @@ async fn create_front_end_swap(
     Ok(response.into())
 }
 
+async fn create_swap(
+    ExtractState(state): ExtractState<ApiState>,
+    AppJson(data): AppJson<CreateSwapParams>,
+) -> ApiResult<PublicSwap, SwapRequestError> {
+    let result = state
+        .create_swap(data)
+        .await?
+        .into_public();
+
+    Ok(result.into())
+}
+
+async fn update_swap_submitted(
+    ExtractState(state): ExtractState<ApiState>,
+    AppJson(data): AppJson<SubmittedSwapParams>,
+) -> ApiResult<PublicSwap, SwapRequestError> {
+    let result = state
+        .update_swap_submitted(data)
+        .await?
+        .into_public();
+
+    Ok(result.into())
+}
+
+async fn submit_with_signature(
+    ExtractState(state): ExtractState<ApiState>,
+    AppJson(data): AppJson<SwapSignatureParams>,
+) -> ApiResult<PublicSwap, SwapRequestError> {
+    let result = state
+        .submit_swap_with_signature(data)
+        .await?
+        .into_public();
+
+    Ok(result.into())
+}
+
 pub fn routes() -> axum::Router<ApiState> {
     axum::Router::new()
         .route("/", axum::routing::get(index))
@@ -116,6 +153,18 @@ pub fn routes() -> axum::Router<ApiState> {
         .route(
             "/swap/register",
             axum::routing::post(create_front_end_swap),
+        )
+        .route(
+            "/swap/create",
+            axum::routing::post(create_swap),
+        )
+        .route(
+            "/swap/submitted",
+            axum::routing::post(update_swap_submitted),
+        )
+        .route(
+            "/swap/signature",
+            axum::routing::post(submit_with_signature),
         )
         .nest_service(
             "/assets",

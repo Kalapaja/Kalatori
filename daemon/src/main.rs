@@ -68,6 +68,7 @@ use utils::task_tracker::TaskTracker;
 use crate::chain::TransactionsRecorder;
 use crate::configs::etherscan_client_config_with_prefix;
 use crate::dao::DaoInterface;
+use crate::swaps::{SwapsExecutor, SwapsTracker};
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
 
@@ -371,10 +372,16 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let webhook_sender_handle = webhook_sender.ignite(shutdown_notification.token.clone());
 
+    let swaps_executor = SwapsExecutor::new(dao.clone());
+
+    let swaps_tracker = SwapsTracker::new(dao.clone());
+    let swaps_tracker_handle = swaps_tracker.ignite(shutdown_notification.token.clone());
+
     let app_state = AppState::new(
         keyring_client,
         dao,
         invoice_registry,
+        swaps_executor,
         asset_names_map,
         payments_config,
         shop_config.meta,
@@ -412,6 +419,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
                 _asset_hub_tracker_result,
                 _polygon_tracker_result,
                 _webhook_sender_result,
+                _swaps_tracker_handle,
                 _api_server_result,
             ) = tokio::join!(
                 shutdown_listener,
@@ -421,6 +429,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
                 asset_hub_tracker_handle,
                 polygon_tracker_handle,
                 webhook_sender_handle,
+                swaps_tracker_handle,
                 api_handle,
             );
 

@@ -7,6 +7,8 @@ use serde::de::DeserializeOwned;
 
 use types::*;
 
+pub use types::AcrossSwapStatus;
+
 const ACROSS_BASE_URL: &'static str = "https://app.across.to";
 const ACROSS_CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -21,21 +23,24 @@ pub struct AcrossRawTransaction {
 pub fn default_across_raw_transaction() -> AcrossRawTransaction {
     AcrossRawTransaction {
         transaction: SwapTransaction {
-            simulation_success: true,
             chain_id: 8453,
-            to: "".to_string(),
+            contract_address: "".to_string(),
             data: "".to_string(),
+            gas: 100,
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 100,
         },
         approval_transactions: Vec::new(),
     }
 }
+
+pub type AcrossQuoteDetails = AcrossRawTransaction;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AcrossClientError {
     #[error("Across API Error with code")]
     AcrossError {
         message: String,
-        code: String,
     },
     #[error("Request failed")]
     RequestFailed,
@@ -45,7 +50,6 @@ impl From<AcrossApiError> for AcrossClientError {
     fn from(value: AcrossApiError) -> Self {
         Self::AcrossError {
             message: value.message,
-            code: value.code,
         }
     }
 }
@@ -111,7 +115,7 @@ impl AcrossClient {
 
         tracing::trace!(
             ?response,
-            "Got parsed response from etherscan"
+            "Got parsed response from across"
         );
 
         match response {
@@ -122,25 +126,22 @@ impl AcrossClient {
 
     pub async fn get_swap_approval(
         &self,
-        from_address: String,
-        to_address: String,
-        from_chain_id: u64,
-        to_chain_id: u64,
-        from_token_address: String,
-        to_token_address: String,
-        to_token_amount: u128,
+        data: SwapApprovalRequest,
     ) -> Result<SwapApprovalResponse, AcrossClientError> {
-        let data = SwapApprovalRequest {
-            trade_type: TradeType::MinOutput,
-            amount: to_token_amount,
-            input_token: from_token_address,
-            output_token: to_token_address,
-            origin_chain_id: from_chain_id,
-            destination_chain_id: to_chain_id,
-            depositor: from_address,
-            recipient: to_address,
-        };
-
         self.send_request("/api/swap/approval", data).await
+    }
+
+    pub async fn get_swap_status(
+        &self,
+        data: SwapStatusRequest,
+    ) -> Result<SwapStatusResponse, AcrossClientError> {
+        self.send_request("/api/deposit/status", data).await
+    }
+
+    pub async fn get_deposits_by_address(
+        &self,
+        data: GetDepositsRequest,
+    ) -> Result<Vec<GetDepositsResponse>, AcrossClientError> {
+        self.send_request("/api/deposits", data).await
     }
 }
