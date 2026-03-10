@@ -1,11 +1,11 @@
 # Kalatori — AI Agent Guide
 
-Self-hosted, non-custodial blockchain payment gateway daemon for Polkadot Asset Hub and Polygon. Derives unique HD payment accounts per invoice, monitors chains for incoming payments, auto-withdraws to merchant recipient. License: GPLv3. **Rust edition 2024, MSRV 1.88.** Status: Public Beta.
+Self-hosted, non-custodial blockchain payment gateway daemon for Polkadot Asset Hub and Polygon. Derives unique HD payment accounts per invoice, monitors chains for incoming payments, auto-withdraws to merchant recipient. License: GPLv3. **Rust edition 2024, MSRV 1.93.** Status: Public Beta.
 
 ## Critical Pitfalls
 
 - **Metadata regen required** when updating subxt or connecting to new chain version: `make install-subxt-cli && make download-node-metadata-ci`
-- **Version sync**: subxt-cli must match subxt in Cargo.toml (both 0.44), sqlx-cli must match sqlx (both 0.8) — versions pinned in `Makefile`
+- **Version sync**: subxt-cli must match subxt in Cargo.toml (both 0.44), sqlx-cli must match sqlx (both 0.8) — versions pinned in `Makefile` and `ci/src/versions.ts`
 - **Clippy strict**: CI runs `RUSTFLAGS="-Dwarnings"` — all warnings are errors, including pedantic lints
 - **Never use `mod.rs`** — self-named modules only (enforced by `mod_module_files` clippy lint)
 - **Nightly rustfmt**: `cargo +nightly fmt --all`
@@ -53,7 +53,7 @@ When sources disagree, trust in this order:
 - **Key derivation**: BIP39 seed → Keyring actor (mpsc channel) → per-chain derivation
 - **Config**: JSON files + env var overrides (`{PREFIX}_{CONFIG}_{FIELD}`)
 - **Testing**: nextest, llvm-cov, cargo-mutants, Rust example-based integration tests
-- **CI**: GitHub Actions with reusable `_job-*.yml` workflow templates
+- **CI**: GitHub Actions + Dagger (TypeScript module in `ci/`, migrating from pure GHA)
 
 ## Repository Layout
 
@@ -78,6 +78,7 @@ configs/                      Example JSON config files
 migrations/                   SQLite migration SQL files
 chopsticks/                   Chopsticks (Substrate fork simulator) Docker setup
 daemon/examples/              Integration test examples (crud, webhook)
+ci/                           Dagger CI module (TypeScript): pipeline definitions, version pins
 ```
 
 ## Essential Commands
@@ -95,8 +96,12 @@ daemon/examples/              Integration test examples (crud, webhook)
 | `make cargo-test` | Run tests via nextest |
 | `make generate-coverage-report` | Test coverage as lcov.info |
 | `make help` | Show all available targets |
+| `dagger call check-fmt` | Format check via Dagger (from `ci/` dir) |
+| `dagger call check-deny` | Dependency audit via Dagger |
+| `dagger call check-machete` | Unused dependency check via Dagger |
+| `dagger call all` | Run all Dagger checks in parallel |
 
-**Prefer `make` targets over calling cargo directly.**
+**Prefer `make` targets for local dev, `dagger call` for CI-equivalent checks.**
 
 ## Documentation Map
 
@@ -110,6 +115,7 @@ daemon/examples/              Integration test examples (crud, webhook)
 | [docs/doc-update-triggers.md](docs/doc-update-triggers.md) | What docs to update after code changes | After any PR |
 | [docs/DATABASE.md](docs/DATABASE.md) | SQLite schema, DAO pattern, status transitions | DB schema changes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Prerequisites, dev setup, release process | Releasing, onboarding |
+| [docs/dagger-migration-plan.md](docs/dagger-migration-plan.md) | Dagger CI migration: phases, DAG caching, service architecture | CI pipeline changes |
 | [README.md](README.md) | User-facing setup, compilation, usage | End-user documentation |
 
 ## MCP Tooling Summary

@@ -2,7 +2,7 @@
 
 ## Context
 
-Kalatori's CI currently uses 16 GitHub Actions workflow files (5 entry points + 11 reusable `_job-*.yml` workflows + 2 custom composite actions). While well-structured, this setup has typical GHA pain points: no local reproducibility, ephemeral caches that miss frequently, slow SQLite-from-source builds repeated across jobs, and a 5-minute sleep hack for integration test startup. Migrating to Dagger with the existing shared remote engine (already provisioned for Kapitan) will give us: persistent layer + volume caches across runs, local dev parity via `dagger call`, MCP integration for AI-assisted development, and simplified workflow files.
+Kalatori's CI currently uses 16 GitHub Actions workflow files (5 entry points + 11 reusable `_job-*.yml` workflows + 2 custom composite actions). While well-structured, this setup has typical GHA pain points: no local reproducibility, ephemeral caches that miss frequently, slow SQLite-from-source builds repeated across jobs, and a 5-minute sleep hack for integration test startup. Migrating to Dagger with the existing shared remote engine will give us: persistent layer + volume caches across runs, local dev parity via `dagger call`, MCP integration for AI-assisted development, and simplified workflow files.
 
 ## Dagger Module Structure
 
@@ -185,7 +185,7 @@ A1 (OS+SQLite) ─► A2 (Rust) ─┬─► A3 (chef cook) ──────�
 
 ### Module-scoped CacheVolumes
 
-Dagger CacheVolumes are scoped to the module that creates them. `dag.cacheVolume("cargo-registry")` in `kalatori-ci` is isolated from identically-named volumes in other modules (e.g. Kapitan) on the shared remote engine. No namespace prefix is needed.
+Dagger CacheVolumes are scoped to the module that creates them. `dag.cacheVolume("cargo-registry")` in `kalatori-ci` is isolated from identically-named volumes in other modules on the shared remote engine. No namespace prefix is needed.
 
 ### Standard cache volume names
 
@@ -266,7 +266,7 @@ concurrent unpacking conflict.
 
 ### `setup-dagger/action.yml` — Composite action
 
-Reuses the existing org-level secrets/variables already configured for Kapitan:
+Reuses the existing org-level secrets/variables:
 
 ```yaml
 inputs:
@@ -290,7 +290,7 @@ runs:
         version: "0.20.1"  # must match dagger.json engineVersion
 ```
 
-### `pr.yml` — Matrix strategy (Kapitan pattern)
+### `pr.yml` — Matrix strategy
 
 ```yaml
 name: PR Checks
@@ -365,7 +365,7 @@ Dagger approach:
 
 ### Service Startup Ordering
 
-Following Kapitan's K3s lessons: explicitly `start()` the Chopsticks service before starting the daemon (which depends on it), and start the daemon before running test examples. Dagger's service binding handles DNS resolution between containers.
+Explicitly `start()` the Chopsticks service before starting the daemon (which depends on it), and start the daemon before running test examples. Dagger's service binding handles DNS resolution between containers.
 
 ### Config File Adaptation
 
@@ -379,7 +379,7 @@ Mount adapted configs into the daemon container via `withFile()`.
 
 ## Remote Dagger Engine
 
-**Already provisioned** for Kapitan — reuse the same org-level GitHub variables/secrets:
+Reuse the existing org-level GitHub variables/secrets:
 
 | GitHub Config | Type | Already Exists |
 |---|---|---|
@@ -387,7 +387,7 @@ Mount adapted configs into the daemon container via `withFile()`.
 | `DAGGER_CI_KNOWN_HOST` | Variable (org) | Yes |
 | `DAGGER_CI_SSH_KEY` | Secret (org) | Yes |
 
-No new infrastructure needed. The persistent remote engine accumulates cache for both Kapitan and Kalatori.
+No new infrastructure needed. The persistent remote engine accumulates cache across all org projects.
 
 ---
 
@@ -403,11 +403,11 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
   - [x] Mount full source directory
   - [x] Run `cargo +nightly fmt --all -- --check`
 - [x] Implement `checkDeny` in `src/index.ts`:
-  - [x] Container: `rust:1.88-slim-bookworm` + `cargo install cargo-deny`
+  - [x] Container: `rust:${VERSIONS.rust}-slim-bookworm` + `cargo install cargo-deny`
   - [x] Mount full source directory
   - [x] Run `cargo deny check advisories` (non-blocking) and `cargo deny check bans licenses sources`
 - [x] Implement `checkMachete` in `src/index.ts` (**new check**):
-  - [x] Container: `rust:1.88-slim-bookworm` + `cargo install cargo-machete`
+  - [x] Container: `rust:${VERSIONS.rust}-slim-bookworm` + `cargo install cargo-machete`
   - [x] Mount source directory
   - [x] Run `cargo machete`
 - [x] Create `.github/actions/setup-dagger/action.yml` (SSH + Dagger CLI)
@@ -504,7 +504,7 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
 - [ ] Update `CLAUDE.md` — new CI commands, Dagger MCP usage
 - [ ] Update `CONTRIBUTING.md` — new CI workflow, local dev with Dagger
 - [ ] Update `Makefile` — keep local dev shortcuts, delegate to `dagger call` where appropriate
-- [ ] Bump MSRV and Dagger Rust toolchain to latest stable (currently pinned to 1.93 to match `ubuntu-latest` for legacy workflows; Dagger pins its own toolchain via `versions.ts` so this constraint is removed once legacy `_job-*.yml` workflows are deleted)
+- [ ] Bump MSRV and Dagger Rust toolchain to latest stable (currently 1.93; Dagger pins its own toolchain via `versions.ts` so MSRV can advance independently once legacy `_job-*.yml` workflows are deleted)
 
 ---
 
@@ -558,7 +558,7 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
 
 3. **metadata.scale regenerated each run** — takes ~5s, avoids stale metadata from chain runtime upgrades. Shared as `File` across all functions within a single pipeline invocation.
 
-4. **Existing remote engine** — shared with Kapitan, org-level secrets already configured. No new infrastructure.
+4. **Existing remote engine** — org-level secrets already configured. No new infrastructure.
 
 5. **Matrix strategy** (not consolidated job) — per-check GitHub status, focused logs, one-line to add new check. `dagger call all` for local dev consolidation.
 

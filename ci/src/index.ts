@@ -22,7 +22,7 @@ import { VERSIONS } from "./versions.js"
  * - /cargo-tools: persists installed binaries so `cargo install` is a no-op on warm cache
  *
  * CacheVolumes are module-scoped by Dagger — no collision with other
- * modules (e.g. Kapitan) on the shared remote engine.
+ * modules on the shared remote engine.
  */
 function withCargoCaches(ctr: Container): Container {
   return ctr
