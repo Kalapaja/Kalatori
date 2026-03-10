@@ -122,6 +122,7 @@ daemon/examples/              Integration test examples (crud, webhook)
 | **Exa** | Online search, code samples, best practices |
 | **mcp-server-git** | Git read ops. Bash for complex git |
 | **Playwright** | Browser automation for local testing |
+| **Sequential Thinking** | Step-by-step reasoning for complex problems |
 
 Details: [docs/mcp-tooling.md](docs/mcp-tooling.md)
 
