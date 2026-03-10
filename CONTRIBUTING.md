@@ -4,9 +4,14 @@ You can find issues waiting to be solved or create a new one in the [issues](htt
 
 ## Prerequisites
 
-- Rust: stable version
-- Docker: to run tests and spawn chopsticks instances
-- Node.js and Yarn: to run tests
+- Rust: stable version (MSRV 1.88), nightly for rustfmt
+- SQLite: >= 3.47.0 (see README.md for build-from-source instructions on Linux)
+- Docker: to run tests and spawn Chopsticks instances
+- Node.js and Yarn: to run integration tests
+- subxt-cli: install via `make install-subxt-cli`
+- sqlx-cli: install via `make install-sqlx-cli`
+
+For AI agents and detailed architecture, see [AGENTS.md](AGENTS.md) and `docs/`.
 
 ## Preparing development environment
 
@@ -15,9 +20,10 @@ Chopsticks Dockerfile exposes 4 ports (8000, 8500, 9000, 9500), so you can spawn
 Note that the RPCs are not real, so the changes made on one chopsticks instance will not affect the others.
 
 1. `cd chopsticks`
-2. Create docker network (do once) `docker network create kalatori-network`
-3. `docker compose up`, in case you want to just 2 instances edit the docker-compose.yml file
-4. start the app with `KALATORI_CONFIG` environment variable pointing to `configs/chopsticks.toml`
+2. Create docker network (do once): `docker network create kalatori-network`
+3. `docker compose up` (edit docker-compose.yml to adjust instance count)
+4. Copy example configs: `make copy-configs`
+5. Start the daemon: `make run`
 
 ## Running tests locally
 
