@@ -6,7 +6,7 @@
  */
 export const VERSIONS = {
   /** Stable Rust toolchain version — must be >= MSRV in daemon/Cargo.toml */
-  rust: "1.88",
+  rust: "1.94",
   /** Nightly toolchain for rustfmt — tracks latest; pin to a specific date if formatting becomes inconsistent */
   rustNightly: "nightly",
   /** subxt-cli version — keep in sync with subxt in Cargo.toml */
@@ -25,9 +25,9 @@ export const VERSIONS = {
   /** cargo-mutants version */
   mutants: "26.2.0",
   /** cargo-deny version */
-  cargoDeny: "0.18.5",
+  cargoDeny: "0.19.0",
   /** cargo-machete version */
-  cargoMachete: "0.8.0",
+  cargoMachete: "0.9.1",
   /** Kassette front-end release version */
   kassette: "0.0.4",
   /** Metadata RPC endpoint for subxt */
