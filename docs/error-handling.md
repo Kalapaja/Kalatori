@@ -105,8 +105,8 @@ This principle trades some type safety for maintainability. Mitigate with:
 // ✅ GOOD: Log with structured fields, then convert
 .map_err(|e| {
     tracing::debug!(
-        error.category = "chain_client",
-        error.operation = "fetch_balance",
+        error.category = category::CHAIN_CLIENT,
+        error.operation = operation::FETCH_BALANCE,
         asset_id = %asset_id,
         account = %account,
         error.source = ?e,  // Full library error
@@ -501,7 +501,7 @@ pub enum ChainError {
 
 **Key Innovation**: Instead of centralized conversion functions, each error type defines its own API representation via trait. This is decentralized, type-safe, and exhaustive (compiler enforces complete coverage).
 
-> **Current implementation**: The actual trait in the codebase is `ApiErrorExt` in `daemon/src/api.rs`, which provides `category()`, `code()`, `message()`, and `http_status_code()` methods plus a `to_api_error()` helper. The aspirational design below uses `KalatoriApiError` as the trait name with a blanket `IntoResponse` implementation. New error types should follow the `ApiErrorExt` pattern.
+> **Current implementation**: The actual trait in the codebase is `ApiErrorExt` in `daemon/src/api.rs`, which provides `category()`, `code()`, `message()`, and `http_status_code()` methods plus a `to_api_error()` helper. New error types should follow the `ApiErrorExt` pattern.
 
 **The ApiErrorExt Trait** (actual, in `daemon/src/api.rs`):
 
@@ -523,115 +523,7 @@ pub trait ApiErrorExt: std::error::Error {
 }
 ```
 
-**Target Design** (aspirational pattern for future blanket implementation):
-
-```rust
-pub trait KalatoriApiError: std::error::Error {
-    /// Machine-readable error code (snake_case, stable across versions)
-    fn code(&self) -> String;
-
-    /// Human-readable error message (safe for display)
-    fn message(&self) -> String;
-
-    /// Optional structured data (flexible schema per error variant)
-    fn data(&self) -> Option<serde_json::Value> {
-        None  // Default: no extra data
-    }
-
-    /// HTTP status code for this error
-    fn http_code(&self) -> StatusCode;
-}
-```
-
-**Implementation Example:**
-
-```rust
-impl KalatoriApiError for PayoutError {
-    fn code(&self) -> String {
-        match self {
-            PayoutError::InsufficientBalance { .. } => "insufficient_balance",
-            PayoutError::ChainUnavailable => "service_unavailable",
-            PayoutError::AccountNotFound => "account_not_found",
-            PayoutError::InvalidRequest { .. } => "invalid_request",
-            // Compiler enforces exhaustiveness - no `_ =>` needed!
-        }.to_string()
-    }
-
-    fn message(&self) -> String {
-        match self {
-            PayoutError::InsufficientBalance { required, available, .. } => {
-                match (required, available) {
-                    (Some(r), Some(a)) => {
-                        format!("Insufficient balance. Required: {}, Available: {}", r, a)
-                    },
-                    _ => "Insufficient balance to complete payout.".to_string(),
-                }
-            },
-            PayoutError::ChainUnavailable => {
-                "Blockchain temporarily unavailable. Please retry.".to_string()
-            },
-            PayoutError::AccountNotFound => {
-                "Payment account not found or expired.".to_string()
-            },
-            PayoutError::InvalidRequest { reason } => {
-                format!("Invalid request: {}", reason)
-            },
-        }
-    }
-
-    fn data(&self) -> Option<serde_json::Value> {
-        match self {
-            PayoutError::InsufficientBalance { transaction_id, required, available } => {
-                Some(json!({
-                    "internal_transaction_id": transaction_id,  // OK to include
-                    "required": required.map(|d| d.to_string()),
-                    "available": available.map(|d| d.to_string()),
-                }))
-            },
-            PayoutError::InvalidRequest { field, reason } => {
-                Some(json!({
-                    "field": field,
-                    "reason": reason,
-                }))
-            },
-            _ => None,
-        }
-    }
-
-    fn http_code(&self) -> StatusCode {
-        match self {
-            PayoutError::InsufficientBalance { .. } => StatusCode::UNPROCESSABLE_ENTITY,
-            PayoutError::ChainUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-            PayoutError::AccountNotFound => StatusCode::NOT_FOUND,
-            PayoutError::InvalidRequest { .. } => StatusCode::BAD_REQUEST,
-        }
-    }
-}
-```
-
-**Handler Usage:**
-
-Handlers simply return the error - trait converts automatically:
-
-```rust
-async fn create_payout_handler(
-    State(state): State<AppState>,
-    Path(payout_id): Path<u64>,
-) -> Result<Json<PayoutResponse>, PayoutError> {
-    state.execute_payout(payout_id).await
-        .map_err(|e| {
-            tracing::warn!(
-                payout_id = %payout_id,
-                error.internal = ?e,       // Log full internal error
-                error.code = e.code(),     // API error code
-                "Payout execution failed"
-            );
-            e  // Return error - IntoResponse handles conversion
-        })?;
-
-    Ok(Json(result))
-}
-```
+**Future direction**: The current `ApiErrorExt` trait requires manual `IntoResponse` implementations per error type. A future improvement would add a blanket `IntoResponse` impl for any `T: ApiErrorExt`, plus an optional `data() -> Option<serde_json::Value>` method for structured error payloads. This would eliminate per-type boilerplate while preserving type safety and exhaustive compiler checking. New error types should follow the current `ApiErrorExt` pattern — the blanket impl can be added later without breaking existing implementations.
 
 **What NOT to Expose:**
 

@@ -1,6 +1,6 @@
 # MCP Tooling Reference
 
-All MCP servers are configured externally. This documents expected availability and usage patterns.
+MCP servers are configured externally and may not all be available in every environment. If present, use as follows.
 
 ## Available Servers
 

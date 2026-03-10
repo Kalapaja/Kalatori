@@ -24,6 +24,21 @@ Self-hosted, non-custodial blockchain payment gateway daemon for Polkadot Asset 
 ### Research Policy
 - **Never assume library APIs from memory** — look up in Context7 or Exa first.
 
+### Trust Hierarchy
+When sources disagree, trust in this order:
+1. **Code, build files, CI workflows** — canonical source of truth
+2. **Tests** — verify behavior claims
+3. **Specific docs** (e.g., `docs/error-handling.md`) override general docs (e.g., `AGENTS.md`)
+4. **Docs describe intent and patterns** — not guaranteed implementation truth
+5. When unsure, **ask the user** which is correct and update the other
+
+### Editing Strategy
+- Prefer minimal, surgical edits. Don't refactor adjacent code opportunistically.
+- Preserve local module conventions even if globally suboptimal — unless explicitly refactoring.
+- When modifying legacy modules (e.g., code using `daemon/src/error.rs`), follow existing local patterns. Only introduce new error architecture at clear boundaries.
+- Add or update tests when behavior changes.
+- Check [docs/doc-update-triggers.md](docs/doc-update-triggers.md) after changes.
+
 ### Writing Style
 - Context-aware, terse, informative, concise.
 - No unnecessary abstractions — three similar lines > premature helper.

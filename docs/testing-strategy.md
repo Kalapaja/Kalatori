@@ -8,9 +8,9 @@
 - Example: `daemon/src/state.rs` tests module
 
 ### Integration Tests (Black-Box)
-- Jest/TypeScript test suite in `tests/kalatori-api-test-suite/`
-- Hits live API endpoints against a running daemon + Chopsticks (Substrate chain fork simulator)
-- Docker Compose environment in `tests/`
+- Rust examples (`crud`, `webhook`) run against a live daemon + Chopsticks (Substrate chain fork simulator)
+- `make run-test-examples` executes `cargo run --example crud; cargo run --example webhook`
+- CI workflow: starts daemon + Chopsticks in background, then runs examples
 
 ### Mutation Testing
 - `cargo-mutants` for evaluating test quality
@@ -30,20 +30,14 @@
 ### Running Integration Tests
 
 ```bash
-# Terminal 1: Start test environment
-cd tests
-docker-compose up
+# Terminal 1: Start daemon with Chopsticks
+make run
 
-# Terminal 2: Run tests
-cd tests/kalatori-api-test-suite
-yarn
-yarn test
-
-# Run a specific test
-yarn test -t "should create, repay, and automatically withdraw an order in USDC"
+# Terminal 2: Run integration examples
+make run-test-examples
 ```
 
-Ensure `DAEMON_HOST` points to the running daemon (default: `localhost:16726`).
+This runs the Rust examples against the live daemon (default: `localhost:16726`).
 
 ## CI Pipeline
 
@@ -66,7 +60,7 @@ Reusable job templates: `_job-cargo-check.yml`, `_job-cargo-test.yml`, `_job-car
 ## Test Environment
 
 - **Chopsticks**: Substrate chain fork simulator, configs in `chopsticks/`
-- **Docker network**: `kalatori-network` (create with `make create-network` or `docker network create kalatori-network`)
+- **Docker network**: `kalatori-network` (create with `docker network create kalatori-network`)
 - **Start/stop**: `make start-chopsticks` / `make stop-chopsticks`
 
 ## Tool Versions

@@ -8,6 +8,8 @@ Kalatori is a self-hosted, non-custodial blockchain payment gateway daemon. It r
 
 Called by external systems (e.g. e-commerce platforms) via HTTP API.
 
+> **Note**: This document describes the current implementation. Future directions are in a labeled section at the end. When in doubt, verify against source code.
+
 ## High-Level Flow
 
 ```

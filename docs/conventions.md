@@ -50,14 +50,9 @@ tracing::debug!(
 );
 ```
 
-**The Layer Rule** — avoid duplicate logging:
-- **Layer 3** (conversion boundary): Log raw library error with structured fields
-- **Layer 2** (intermediate): Don't log, just convert custom error types
-- **Layer 1** (handler): Log business-level error for user/ops
+**The Layer Rule** — log at conversion boundary (Layer 3), skip intermediates (Layer 2), log business error at handler (Layer 1). Full details and examples: [docs/error-handling.md](error-handling.md) (Principle 2).
 
 **Production config**: `RUST_LOG=info,kalatori::chain_client=debug`
-
-Full logging guidelines with examples: [docs/error-handling.md](error-handling.md) (Principle 2).
 
 ## Security
 
