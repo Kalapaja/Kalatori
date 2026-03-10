@@ -6,6 +6,7 @@
  */
 import {
   dag,
+  CacheSharingMode,
   Container,
   Directory,
   object,
@@ -28,10 +29,12 @@ function withCargoCaches(ctr: Container): Container {
     .withMountedCache(
       "/usr/local/cargo/registry",
       dag.cacheVolume("cargo-registry"),
+      { sharing: CacheSharingMode.Locked },
     )
     .withMountedCache(
       "/usr/local/cargo/git/db",
       dag.cacheVolume("cargo-git"),
+      { sharing: CacheSharingMode.Locked },
     )
     .withEnvVariable("CARGO_INSTALL_ROOT", "/cargo-tools")
     .withMountedCache("/cargo-tools", dag.cacheVolume("cargo-tools"))

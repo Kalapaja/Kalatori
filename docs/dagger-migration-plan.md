@@ -140,11 +140,17 @@ This lets `cargo install` detect existing binaries and skip recompilation entire
 
 ### CacheSharingMode
 
-Default mode is `Shared` (concurrent reads and writes). This is fine for:
-- `cargo-registry` and `cargo-git` (read-heavy, append-only)
-- `cargo-tools` (write-once per tool version, then read-only)
+`cargo-registry` and `cargo-git` use **`Locked`** mode (serialized access). Without this,
+concurrent `cargo install` commands (e.g. `checkDeny` + `checkMachete` running in parallel)
+collide when unpacking crate sources — "File exists (os error 17)" on `.cargo-ok` files.
+The performance impact is negligible: on warm cache, `cargo install` exits in ~0.1s so the
+lock is held briefly.
 
-For `cargo-target` (Phase 2+), consider `Locked` if concurrent matrix jobs cause corruption. Monitor during Phase 2 rollout and switch if needed.
+`cargo-tools` uses default **`Shared`** mode — it's write-once per tool version with no
+concurrent unpacking conflict.
+
+For `cargo-target` (Phase 2+), start with `Locked` to avoid similar concurrent build
+corruption. Relax to `Shared` only if profiling shows the serialization is a bottleneck.
 
 ---
 
