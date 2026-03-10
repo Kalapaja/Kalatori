@@ -3576,7 +3576,6 @@ dependencies = [
  "const-hex",
  "futures",
  "governor",
- "hmac 0.12.1",
  "httpmock",
  "indoc",
  "kalatori-client",
