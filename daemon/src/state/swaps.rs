@@ -102,10 +102,6 @@ impl<D: DaoInterface> AppState<D> {
         let expected_to_amount_units = if let Some(units) = params.expected_to_amount_units {
             units
         } else {
-            println!(
-                "Invoice unfilled amount: {:?}",
-                invoice.unfilled_amount()
-            );
             // TODO: get real decimals for the asset
             (invoice.unfilled_amount() / Decimal::new(1, 6))
                 .to_u128()

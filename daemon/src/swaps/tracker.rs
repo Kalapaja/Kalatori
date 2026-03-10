@@ -84,7 +84,7 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         }
     }
 
-    #[tracing::instrument(skip_all, fields(swap_id = %swap.id))]
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, invoice_id = %swap.request.invoice_id))]
     async fn check_across_swap(
         &mut self,
         swap: &Swap,
@@ -165,7 +165,7 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(swap_id = %swap.id))]
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, invoice_id = %swap.request.invoice_id))]
     async fn check_bungee_swap(
         &mut self,
         swap: &Swap,
@@ -266,7 +266,7 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             };
 
             if let Err(e) = result {
-                tracing::debug!(swap_id = ?swap.id, error = ?e, "Got an error while checking swap");
+                tracing::debug!(swap_id = %swap.id, invoice_id = %swap.request.invoice_id, error = ?e, "Got an error while checking swap");
             }
         }
     }

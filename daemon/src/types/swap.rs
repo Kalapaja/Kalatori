@@ -8,6 +8,10 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use serde_with::{
+    DisplayFromStr,
+    serde_as,
+};
 use sqlx::Type;
 use uuid::Uuid;
 
@@ -41,14 +45,17 @@ pub struct FrontEndSwap {
     pub updated_at: DateTime<Utc>,
 }
 
+#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSwapParams {
     pub invoice_id: Uuid,
     pub from_chain_id: u64,
     pub from_asset_id: String,
     pub from_address: String,
+    #[serde_as(as = "DisplayFromStr")]
     pub from_amount_units: u128,
     #[serde(default)]
+    #[serde_as(as = "Option<DisplayFromStr>")]
     pub expected_to_amount_units: Option<u128>, // if None, will calculate invoice's unpaid amount
 }
 
@@ -327,6 +334,7 @@ pub enum SwapDirection {
     Outgoing,
 }
 
+#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSwapData {
     pub invoice_id: Uuid,
@@ -335,7 +343,9 @@ pub struct CreateSwapData {
     pub to_chain: SwapChainType,
     pub from_token_address: String,
     pub to_token_address: String,
+    #[serde_as(as = "DisplayFromStr")]
     pub from_amount_units: u128,
+    #[serde_as(as = "DisplayFromStr")]
     pub expected_to_amount_units: u128,
     pub from_address: String,
     pub to_address: String,
