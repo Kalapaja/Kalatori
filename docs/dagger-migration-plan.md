@@ -262,23 +262,23 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
 
 ### Phase 1: Scaffold + No-Compilation Checks
 
-- [ ] Run `dagger init --sdk=typescript` in `ci/` directory
-- [ ] Create `src/versions.ts` with all pinned tool versions from Makefile/Dockerfile
-- [ ] Create `src/index.ts` with `KalatoriCi` module class
-- [ ] Implement `checkFmt` in `src/checks.ts`:
-  - [ ] Container: `debian:bookworm-slim` + rustup nightly + rustfmt component
-  - [ ] Mount only `*.rs` files + `rustfmt.toml` + `Cargo.toml`
-  - [ ] Run `cargo +nightly fmt --all -- --check`
-- [ ] Implement `checkDeny` in `src/checks.ts`:
-  - [ ] Container: use `embarkstudios/cargo-deny` image or install cargo-deny
-  - [ ] Mount `Cargo.toml`, `Cargo.lock`, `deny.toml`, workspace member `Cargo.toml`s
-  - [ ] Run `cargo deny check advisories` and `cargo deny check bans licenses sources`
-- [ ] Implement `checkMachete` in `src/checks.ts` (**new check**):
-  - [ ] Container: minimal Rust + `cargo-machete`
-  - [ ] Mount source directory
-  - [ ] Run `cargo machete`
-- [ ] Create `.github/actions/setup-dagger/action.yml` (SSH + Dagger CLI)
-- [ ] Add Dagger checks to PR workflow **alongside existing checks** (dual-run for validation)
+- [x] Run `dagger init --sdk=typescript` in `ci/` directory
+- [x] Create `src/versions.ts` with all pinned tool versions from Makefile/Dockerfile
+- [x] Create `src/index.ts` with `KalatoriCi` module class
+- [x] Implement `checkFmt` in `src/index.ts`:
+  - [x] Container: `rust:slim-bookworm` + rustup nightly + rustfmt component
+  - [x] Mount full source directory
+  - [x] Run `cargo +nightly fmt --all -- --check`
+- [x] Implement `checkDeny` in `src/index.ts`:
+  - [x] Container: `rust:1.88-slim-bookworm` + `cargo install cargo-deny`
+  - [x] Mount full source directory
+  - [x] Run `cargo deny check advisories` (non-blocking) and `cargo deny check bans licenses sources`
+- [x] Implement `checkMachete` in `src/index.ts` (**new check**):
+  - [x] Container: `rust:1.88-slim-bookworm` + `cargo install cargo-machete`
+  - [x] Mount source directory
+  - [x] Run `cargo machete`
+- [x] Create `.github/actions/setup-dagger/action.yml` (SSH + Dagger CLI)
+- [x] Add Dagger checks to PR workflow **alongside existing checks** (dual-run for validation)
 - [ ] Verify result parity over 3-5 PRs
 - [ ] Remove old `_job-fmt.yml` and `_job-cargo-deny.yml` usage from workflows
 
