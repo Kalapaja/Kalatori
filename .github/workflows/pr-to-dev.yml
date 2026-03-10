@@ -5,6 +5,10 @@ on:
     branches:
       - develop
 
+env:
+  DOCKER_HOST: ${{ vars.DAGGER_CI_HOST }}
+  _EXPERIMENTAL_DAGGER_RUNNER_HOST: docker-container://dagger-engine-v0.20.1
+
 jobs:
   semantic-pr:
     uses: ./.github/workflows/_job-semantic-pr.yml
@@ -26,3 +30,22 @@ jobs:
 
   integration-test:
     uses: ./.github/workflows/_job-integration-test.yml
+
+  # --- Dagger checks (Phase 1 migration, run alongside existing checks) ---
+  dagger-checks:
+    name: Dagger / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Format,  command: check-fmt }
+          - { name: Deny,    command: check-deny }
+          - { name: Machete, command: check-machete }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-dagger
+        with:
+          ssh-private-key: ${{ secrets.DAGGER_CI_SSH_KEY }}
+          known-host: ${{ vars.DAGGER_CI_KNOWN_HOST }}
+      - run: cd ci && dagger call ${{ matrix.command }}
