@@ -13,11 +13,12 @@ ci/
   src/
     index.ts               # Module class (KalatoriCi) + all() entrypoint
     versions.ts            # ALL tool versions centralized here
-    base.ts                # Layered base containers (OS+SQLite, Rust, metadata, deps)
+    base.ts                # DAG branches: osBase, rustBase, depCache, subxtCli,
+                           #   metadataFile, kassetteFrontEnd, buildContainer, runtimeImage
     checks.ts              # checkFmt, checkClippy, checkDeny, checkMachete
     tests.ts               # testUnit, testUnitCoverage, testIntegration
     docker.ts              # dockerBuild, dockerSmoke, dockerPublish
-    helpers.ts             # Directory filtering, cache volume names, shared utils
+    helpers.ts             # withCargoCaches, shared utils
 ```
 
 Written in **TypeScript** (official Dagger SDK).
@@ -28,17 +29,19 @@ All versions currently scattered across `Makefile`, `Dockerfile`, `.github/actio
 
 ```typescript
 export const VERSIONS = {
-  rust: "1.91",
-  rustNightly: "nightly-2025-XX-XX",  // pin for reproducibility
+  rust: "1.93",
+  rustNightly: "nightly",           // pin to a date if formatting becomes inconsistent
   subxtCli: "0.44.0",
   sqlite: "3.51.0",
   sqliteSourceUrl: "https://www.sqlite.org/2025/sqlite-autoconf-3510000.tar.gz",
+  sqlxCli: "0.8.6",
   nextest: "0.9.129",
   llvmCov: "0.8.4",
-  machete: "0.8.x",
-  cargoDeny: "0.18.x",
+  mutants: "26.2.0",
+  cargoDeny: "0.19.0",
+  cargoMachete: "0.9.1",
+  cargoChef: "0.1.71",              // dependency pre-build caching
   kassette: "0.0.4",
-  chopsticksImage: "node:20-alpine",
   metadataRpcUrl: "wss://asset-hub-polkadot-rpc.n.dwellir.com",
 } as const;
 ```
@@ -59,44 +62,122 @@ export const VERSIONS = {
 | `dockerPublish` | `docker-publish` | Push to GHCR |
 | `all` | `all` | Everything in parallel (local dev) |
 
-All public functions taking `src: Directory` use `@doc` + default path annotation for MCP.
+The module constructor takes `source: Directory` (defaultPath `..`) and `gitDir: Directory` (defaultPath `../.git`). All public functions use `@doc` + default path annotations for MCP.
 
 ---
 
-## Base Container: Layered Caching Strategy
+## Base Container: DAG Caching Strategy
 
-The key insight for Rust in Dagger: **dependency compilation is the expensive step**, so we structure layers to maximize cache hits.
+The key insight for Rust in Dagger: **dependency compilation is the expensive step**, and Dagger is a **DAG, not a linear layer chain**. We decompose the build into independent branches that run in parallel and converge only when needed.
 
-### Layer 1: OS + Build Tools + SQLite (changes: ~never)
+### Why not linear layers?
 
-`debian:bookworm-slim` + build-essential, clang, pkg-config, libssl-dev, ca-certificates, curl, git. Then compile SQLite 3.51.0 from source with the exact 13 CFLAGS from the current Dockerfile/setup-sqlite action. Install to `/usr/local`, set `PKG_CONFIG_PATH`, `LD_LIBRARY_PATH`, `SQLITE3_LIB_DIR`, `SQLITE3_INCLUDE_DIR`.
+The old plan's Layer 3 bundled subxt-cli (changes rarely), metadata.scale (regenerated every run), and Kassette front-end (changes frequently for staging) into one layer. Any Kassette bump would invalidate everything downstream, including the expensive dependency build. The DAG model eliminates this coupling entirely.
 
-### Layer 2: Rust Toolchain (changes: on Rust version bump)
+### Branch A: Build Environment (sequential, cached aggressively)
 
-`rustup` install at pinned version. `PATH` includes `~/.cargo/bin`.
+**A1 — OS + Build Tools + SQLite** (changes: ~never)
 
-### Layer 3: Subxt-cli + Metadata + Front-end (changes: on subxt/metadata update)
+`debian:bookworm-slim` + build-essential, clang, pkg-config, libssl-dev, ca-certificates, curl, git. Then compile SQLite 3.51.0 from source with the exact CFLAGS from the current Dockerfile/setup-sqlite action. Install to `/usr/local`, set `PKG_CONFIG_PATH`, `LD_LIBRARY_PATH`, `SQLITE3_LIB_DIR`, `SQLITE3_INCLUDE_DIR`.
 
-- Install `subxt-cli` (use `dag.http()` for binary if available, else `cargo install` with CacheVolume)
-- Generate `metadata.scale` via `subxt metadata --url $MetadataRpcUrl` — regenerated each run (runtime upgrades), shared across all functions as a `File`
-- Download Kassette front-end via `dag.http()` (content-addressed, cached by URL)
+**A2 — Rust Toolchain** (changes: on Rust version bump)
 
-### Layer 4: Dependency Build (changes: on Cargo.toml/Cargo.lock change)
+`rustup` install at pinned version. `PATH` includes `~/.cargo/bin`. Set `CARGO_INCREMENTAL=0` (incremental compilation wastes disk and doesn't help with Dagger's layer-based caching; the persistent engine's CacheVolumes handle reuse).
 
-Adapted cargo-chef pattern using Dagger directory filtering:
-1. `src.directory(".", { include: ["**/Cargo.toml", "Cargo.lock"] })` — copy only manifests
-2. Create dummy `main.rs`/`lib.rs` stubs (same trick as current Dockerfile lines 63-68)
-3. `cargo build --all-features` with CacheVolumes mounted:
-   - `cargo-registry` → `/usr/local/cargo/registry`
-   - `cargo-git` → `/usr/local/cargo/git/db`
-   - `cargo-target` → `/build/target`
-4. This layer is cached as long as Cargo.toml/Cargo.lock don't change
+**A3 — cargo-chef: Dependency Pre-build** (changes: on Cargo.toml/Cargo.lock change)
 
-### Layer 5: Full Source (changes: every commit)
+Uses [cargo-chef](https://github.com/LukeMathWalker/cargo-chef) instead of manual dummy source stubs. Two steps:
 
-Copy full source tree, build on top of cached dependencies.
+1. **Prepare**: `cargo chef prepare --recipe-path recipe.json` — runs against full source, produces a deterministic `recipe.json` capturing the workspace's complete dependency topology (all `Cargo.toml` files, `Cargo.lock`, features, examples, build scripts).
+2. **Cook**: `cargo chef cook --release --all-features --recipe-path recipe.json` — builds all dependencies from `recipe.json` without any project source code. This Dagger layer is cached as long as `recipe.json` doesn't change (i.e., `Cargo.toml`/`Cargo.lock` are unchanged).
 
-**Key setting**: `CARGO_INCREMENTAL=0` in CI (incremental compilation wastes disk and doesn't help with Dagger's layer-based caching; the persistent engine's CacheVolumes handle reuse).
+cargo-chef is installed via the `cargo-tools` CacheVolume pattern (instant after first run).
+
+**Why cargo-chef over manual stubs?** The current Dockerfile has 5+ manual stub files (`daemon/src/main.rs`, `client/src/lib.rs`, 3 examples). Adding a workspace member or example requires updating stubs. cargo-chef's `recipe.json` captures the full workspace topology automatically, including features, inter-crate deps, and build scripts.
+
+**Note**: `metadata.scale` is NOT needed during `cargo chef cook`. The `#[subxt::subxt(runtime_metadata_path = ...)]` proc macro at `daemon/src/chain_client/asset_hub.rs:57` only expands when daemon source is compiled — during cook, only dependency crates compile.
+
+CacheVolumes mounted during cook:
+- `cargo-registry` → `/usr/local/cargo/registry`
+- `cargo-git` → `/usr/local/cargo/git/db`
+
+### Branch B: subxt-cli Installation (independent of A3)
+
+Reuses A1+A2 base → `cargo install subxt-cli` with `cargo-tools` CacheVolume. Independent of the dependency build — on warm cache, subxt-cli is available instantly.
+
+If `paritytech/subxt` publishes pre-built Linux binaries, use `dag.http()` instead (~30s download vs ~2-3 min compile on cold cache). Check releases page during implementation.
+
+### Branch C: metadata.scale (depends on B only)
+
+Uses subxt-cli from Branch B → `subxt metadata --url $MetadataRpcUrl -f bytes -o metadata.scale` → returns a `File`.
+
+Cache-busted every pipeline run via timestamp env var (~5s, avoids stale metadata from chain runtime upgrades). Runs **in parallel** with the expensive Branch A3 dep compilation — its cost is fully hidden.
+
+### Branch D: Kassette Front-end (parallel, needed at build AND runtime)
+
+`dag.http()` download (content-addressed by URL) → unzip in lightweight container → returns a `Directory`.
+
+**Important**: Kassette is both a **build-time AND runtime** dependency:
+- `daemon/src/api/public.rs:33` uses `include_str!("../../../static/index.html")` — embeds `index.html` into the binary at compile time
+- `daemon/src/api/public.rs:122` uses `ServeDir::new("static/assets")` — serves JS/CSS assets from filesystem at runtime
+
+This means Kassette must be downloaded and mounted into the source tree **before `cargo build`** (not just at runtime image assembly). However, Branch D is still independent of Branches A-C and runs in parallel with them — it joins the DAG at the final build convergence point. A Kassette version bump invalidates only the final build layer; the expensive cargo-chef dep cache is unaffected since `include_str!` resolves during project source compilation, not dependency compilation.
+
+### Convergence: Final Build
+
+Mount paths are critical for macro resolution:
+- **Kassette** → `/src/static/` (so `include_str!("../../../static/index.html")` resolves from `/src/daemon/src/api/public.rs`)
+- **metadata.scale** → `/src/metadata.scale` (so `runtime_metadata_path = "../metadata.scale"` resolves from `/src/daemon/Cargo.toml` via `CARGO_MANIFEST_DIR`)
+- **.git** → `/src/.git` (for shadow-rs in `build.rs`)
+
+```
+A3 (cached deps)
+  + C (metadata File → /src/metadata.scale)
+  + D (Kassette → /src/static/)
+  + .git dir → /src/.git (optional — see below)
+  + full source
+  → cargo build --release
+
+Binary + A1 (SQLite .so) + D (Kassette static/) → runtime image
+```
+
+### Handling `.git` for shadow-rs
+
+`daemon/build.rs` uses `shadow-rs` (`new_deny`) to embed `COMMIT_HASH`, `LAST_TAG`, `TAG`, `GIT_CLEAN`, etc. into the binary. `.dockerignore` excludes `.git` (and Dagger respects this for `defaultPath`).
+
+**Graceful degradation**: shadow-rs does NOT fail when `.git` is missing — it produces placeholder values. The existing Dockerfile has always excluded `.git`, and Docker builds work fine. This means `.gitDir` is a **nice-to-have** for correct `--version` output on release binaries, not a build requirement. Non-release functions (checkClippy, tests) work without it.
+
+**Solution**: Load `.git` as a separate `Directory` argument in the module constructor:
+
+```typescript
+constructor(
+  @argument({ defaultPath: ".." })
+  source: Directory,              // excludes .git per .dockerignore — stable for caching
+  @argument({ defaultPath: "../.git" })
+  gitDir: Directory,              // .git loaded separately — changes per commit
+)
+```
+
+`.git` is mounted **only in `buildContainer`/`runtimeImage`** (release builds) — the dep cache (cargo-chef cook) never sees it. Since the final build already invalidates on every source change, mounting `.git` adds zero additional cache cost. shadow-rs finds `.git` at `/src/.git` and embeds correct git metadata. For non-release functions (checkClippy, tests), `.gitDir` is not mounted — shadow-rs falls back to placeholders, which is acceptable.
+
+### DAG Parallelism Diagram
+
+```
+A1 (OS+SQLite) ─► A2 (Rust) ─┬─► A3 (chef cook) ───────────────────────┐
+                             │                                         │
+                             └─► B (subxt-cli) ─► C (metadata.scale) ──┼─► Final Build ─► Runtime Image
+                                                                       │       │                │
+                                             D (Kassette) ─────────────┘       │                │
+                                                                               │  D (assets/) ──┘
+                                             .git (separate arg) ──────────────┘
+```
+
+`D` participates twice: `static/index.html` is mounted before `cargo build` (for `include_str!`), and `static/assets/` is copied into the runtime image (for `ServeDir`).
+
+**Parallelism gains:**
+- A3 (dep compilation, 2-5 min) runs simultaneously with B+C (metadata, ~8s total) and D (Kassette, ~2s)
+- A Kassette version bump: ~2s download cost, invalidates only the final build layer (dep cache unaffected)
+- A metadata regeneration: ~5s cost, hidden behind dep compilation
 
 ---
 
@@ -108,12 +189,13 @@ Dagger CacheVolumes are scoped to the module that creates them. `dag.cacheVolume
 
 ### Standard cache volume names
 
-| Volume name | Mount path | What it caches | Used by |
-|---|---|---|---|
-| `cargo-registry` | `/usr/local/cargo/registry` | Downloaded crate sources | All cargo-based checks |
-| `cargo-git` | `/usr/local/cargo/git/db` | Git dependency checkouts | All cargo-based checks |
-| `cargo-tools` | `/cargo-tools` | Installed tool binaries (via `CARGO_INSTALL_ROOT`) | checkDeny, checkMachete, Phase 2+ tools |
-| `cargo-target` | `/build/target` | Compiled project artifacts | Phase 2+ (checkClippy, tests) |
+| Volume name | Mount path | What it caches | Used by | Sharing mode |
+|---|---|---|---|---|
+| `cargo-registry` | `/usr/local/cargo/registry` | Downloaded crate sources | All cargo-based functions | Locked |
+| `cargo-git` | `/usr/local/cargo/git/db` | Git dependency checkouts | All cargo-based functions | Locked |
+| `cargo-tools` | `/cargo-tools` | Installed tool binaries: cargo-chef, cargo-deny, cargo-machete, subxt-cli, nextest, llvm-cov (via `CARGO_INSTALL_ROOT`) | All tool-installing functions | Shared (write-once) |
+
+**No `cargo-target` CacheVolume**: With cargo-chef, dependency compilation is cached as a Dagger layer (stable per `recipe.json`). Mounting a CacheVolume at `/src/target` would **shadow** the cook output (Dagger volumes overlay the path and start empty), defeating the dep cache. The final build compiles only project source (~30s with `CARGO_INCREMENTAL=0`). Retries hit Dagger's layer cache (same inputs = same cached layer).
 
 ### Layer cache vs CacheVolumes
 
@@ -148,9 +230,6 @@ lock is held briefly.
 
 `cargo-tools` uses default **`Shared`** mode — it's write-once per tool version with no
 concurrent unpacking conflict.
-
-For `cargo-target` (Phase 2+), start with `Locked` to avoid similar concurrent build
-corruption. Relax to `Shared` only if profiling shows the serialization is a bottleneck.
 
 ---
 
@@ -337,22 +416,30 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
 - [ ] Verify result parity over 3-5 PRs
 - [ ] Remove old `_job-fmt.yml` and `_job-cargo-deny.yml` usage from workflows
 
-### Phase 2: Base Container + CheckClippy
+### Phase 2: Base Container (DAG) + cargo-chef + checkClippy
 
-- [ ] Implement `src/base.ts` — layered base container:
-  - [ ] Layer 1: `debian:bookworm-slim` + build tools + SQLite 3.51.0 from source (13 CFLAGS)
-  - [ ] Layer 2: Rust toolchain via rustup at pinned version
-  - [ ] Layer 3: subxt-cli install + `metadata.scale` generation + Kassette front-end download
-  - [ ] Layer 4: Dependency pre-build (Cargo.toml/Cargo.lock only → dummy sources → `cargo build`)
-  - [ ] Layer 5: Full source copy
-  - [ ] CacheVolumes: `cargo-registry`, `cargo-git`, `cargo-target`
-  - [ ] Set `CARGO_INCREMENTAL=0`
+- [ ] Add `cargoChef` version to `src/versions.ts`
+- [ ] Add `gitDir` constructor parameter with `defaultPath: "../.git"` in `src/index.ts`
+- [ ] Implement `src/base.ts` with DAG branches:
+  - [ ] **Branch A — Build Environment:**
+    - [ ] `osBase()`: `debian:bookworm-slim` + build tools + SQLite 3.51.0 from source (CFLAGS)
+    - [ ] `rustBase()`: extends `osBase` + Rust toolchain via rustup, sets `CARGO_INCREMENTAL=0`
+    - [ ] `depCache(src)`: `rustBase` + cargo-chef prepare/cook (layer-cached per `recipe.json`)
+  - [ ] **Branch B — subxt-cli:**
+    - [ ] `subxtCli()`: `rustBase` + `withCargoCaches` + `cargo install subxt-cli` (cargo-tools volume)
+  - [ ] **Branch C — metadata.scale:**
+    - [ ] `metadataFile()`: uses `subxtCli()` → `subxt metadata --url ...` → returns `File` (cache-busted)
+  - [ ] **Branch D — Kassette front-end:**
+    - [ ] `kassetteFrontEnd()`: `dag.http()` + lightweight unzip container → returns `Directory`
+  - [ ] **Convergence:**
+    - [ ] `buildContainer(src, gitDir)`: `depCache` + `metadataFile` + `kassetteFrontEnd` (→ `/src/static/`) + full source + `.git` (→ `/src/.git`) → `cargo build --release`
+    - [ ] `runtimeImage(src, gitDir)`: slim debian + binary + SQLite .so + `kassetteFrontEnd` (→ `/app/static/`)
 - [ ] Implement `checkClippy` in `src/checks.ts`:
-  - [ ] Uses full base container (needs SQLite, metadata for subxt/sqlx macros)
+  - [ ] Uses dep-cached container from `depCache` + `metadataFile` (→ `/src/metadata.scale`) + `kassetteFrontEnd` (→ `/src/static/`) + full source (needs SQLite, metadata for subxt/sqlx macros, Kassette for `include_str!`)
+  - [ ] `.gitDir` NOT needed — shadow-rs degrades gracefully with placeholders for non-release builds
   - [ ] Run `RUSTFLAGS="-Dwarnings" cargo clippy --all-targets --all-features`
 - [ ] Run side-by-side with existing clippy workflow
 - [ ] Benchmark timing: target within 2x of current GHA with rust-cache
-- [ ] Tune CacheVolume strategy if needed
 - [ ] Remove old `_job-clippy.yml` usage
 
 ### Phase 3: Tests + Coverage
@@ -448,7 +535,8 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
 | File | Role |
 |---|---|
 | `Makefile` | Source of all tool versions → replicated in `versions.ts` |
-| `Dockerfile` | Reference for SQLite build flags, layer strategy, release profile |
+| `Dockerfile` | Reference for SQLite build flags, release profile |
+| `.dockerignore` | Dagger respects this for `defaultPath` — excludes `.git`, `static/`, `target/` |
 | `.github/actions/setup-sqlite/action.yml` | Exact SQLite CFLAGS and env vars to reproduce |
 | `.github/actions/setup-rust-build-env/action.yml` | subxt-cli install, metadata download, front-end download |
 | `.github/workflows/_job-integration-test.yml` | Chopsticks + daemon orchestration → Dagger Services |
@@ -456,6 +544,8 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
 | `.github/workflows/_job-docker-build.yml` | Docker build + GHCR push → Dagger native |
 | `chopsticks/docker-compose.yml` + `chopsticks/pd-ah.yml` | Chopsticks config → mount into Dagger Service |
 | `daemon/configs/` | Config templates to adapt for service hostnames |
+| `daemon/build.rs` | shadow-rs build script — needs `.git` for commit hash, tags, etc. |
+| `daemon/src/chain_client/asset_hub.rs:57` | `runtime_metadata_path = "../metadata.scale"` — confirms metadata only needed at source compile |
 | `deny.toml`, `rustfmt.toml` | Mounted into respective check containers |
 
 ---
@@ -464,7 +554,7 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
 
 1. **TypeScript for Dagger module** — official SDK, good for CI scripting.
 
-2. **No sccache** — persistent Dagger engine with CacheVolumes gives equivalent benefit without complexity. Layer caching (deps-first pattern) handles the cargo-chef use case natively.
+2. **cargo-chef for dependency caching** — produces a stable Dagger layer per `recipe.json` that invalidates only on `Cargo.toml`/`Cargo.lock` changes. Combined with automatic layer caching on the persistent engine, this gives reliable dep caching without sccache complexity. CacheVolumes handle registry/git downloads across layer invalidations (e.g., Rust version bumps).
 
 3. **metadata.scale regenerated each run** — takes ~5s, avoids stale metadata from chain runtime upgrades. Shared as `File` across all functions within a single pipeline invocation.
 

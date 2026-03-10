@@ -28,6 +28,8 @@ export const VERSIONS = {
   cargoDeny: "0.19.0",
   /** cargo-machete version */
   cargoMachete: "0.9.1",
+  /** cargo-chef version — for dependency pre-build caching */
+  cargoChef: "0.1.71",
   /** Kassette front-end release version */
   kassette: "0.0.4",
   /** Metadata RPC endpoint for subxt */
