@@ -14,6 +14,30 @@ import {
 } from "@dagger.io/dagger"
 import { VERSIONS } from "./versions.js"
 
+/**
+ * Mount cargo caches for tool installations.
+ *
+ * - registry/git: avoids re-downloading crate sources
+ * - /cargo-tools: persists installed binaries so `cargo install` is a no-op on warm cache
+ *
+ * CacheVolumes are module-scoped by Dagger — no collision with other
+ * modules (e.g. Kapitan) on the shared remote engine.
+ */
+function withCargoCaches(ctr: Container): Container {
+  return ctr
+    .withMountedCache(
+      "/usr/local/cargo/registry",
+      dag.cacheVolume("cargo-registry"),
+    )
+    .withMountedCache(
+      "/usr/local/cargo/git/db",
+      dag.cacheVolume("cargo-git"),
+    )
+    .withEnvVariable("CARGO_INSTALL_ROOT", "/cargo-tools")
+    .withMountedCache("/cargo-tools", dag.cacheVolume("cargo-tools"))
+    .withEnvVariable("PATH", "/cargo-tools/bin:$PATH", { expand: true })
+}
+
 @object()
 export class KalatoriCi {
   source: Directory
@@ -65,9 +89,9 @@ export class KalatoriCi {
    */
   @func()
   async checkDeny(): Promise<string> {
-    const base = dag
-      .container()
-      .from(`rust:${VERSIONS.rust}-slim-bookworm`)
+    const base = withCargoCaches(
+      dag.container().from(`rust:${VERSIONS.rust}-slim-bookworm`),
+    )
       .withExec(["cargo", "install", "cargo-deny", "--version", VERSIONS.cargoDeny, "--locked"])
       .withMountedDirectory("/src", this.source)
       .withWorkdir("/src")
@@ -116,9 +140,9 @@ export class KalatoriCi {
    */
   @func()
   async checkMachete(): Promise<string> {
-    return await dag
-      .container()
-      .from(`rust:${VERSIONS.rust}-slim-bookworm`)
+    return await withCargoCaches(
+      dag.container().from(`rust:${VERSIONS.rust}-slim-bookworm`),
+    )
       .withExec(["cargo", "install", "cargo-machete", "--version", VERSIONS.cargoMachete, "--locked"])
       .withMountedDirectory("/src", this.source)
       .withWorkdir("/src")

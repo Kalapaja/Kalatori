@@ -100,6 +100,54 @@ Copy full source tree, build on top of cached dependencies.
 
 ---
 
+## Caching Conventions
+
+### Module-scoped CacheVolumes
+
+Dagger CacheVolumes are scoped to the module that creates them. `dag.cacheVolume("cargo-registry")` in `kalatori-ci` is isolated from identically-named volumes in other modules (e.g. Kapitan) on the shared remote engine. No namespace prefix is needed.
+
+### Standard cache volume names
+
+| Volume name | Mount path | What it caches | Used by |
+|---|---|---|---|
+| `cargo-registry` | `/usr/local/cargo/registry` | Downloaded crate sources | All cargo-based checks |
+| `cargo-git` | `/usr/local/cargo/git/db` | Git dependency checkouts | All cargo-based checks |
+| `cargo-tools` | `/cargo-tools` | Installed tool binaries (via `CARGO_INSTALL_ROOT`) | checkDeny, checkMachete, Phase 2+ tools |
+| `cargo-target` | `/build/target` | Compiled project artifacts | Phase 2+ (checkClippy, tests) |
+
+### Layer cache vs CacheVolumes
+
+The persistent remote engine provides **automatic layer caching** — identical `withExec` steps are cached if all preceding layers match. This is free and works well for deterministic commands.
+
+**CacheVolumes** add robustness on top:
+- Survive layer cache evictions (LRU pressure from other builds on the shared engine)
+- Work across base image changes (Rust version bump invalidates layers but not volumes)
+- Enable cross-function sharing (checkDeny and checkMachete share the same registry cache)
+
+**Rule of thumb**: Use CacheVolumes for any directory that accumulates data across runs (downloads, compiled artifacts, installed binaries). Rely on layer cache for everything else.
+
+### Tool installation pattern
+
+Never mount a CacheVolume at `/usr/local/cargo/bin` — it hides `cargo`/`rustc` from the base image (empty volume on first mount). Instead, use `CARGO_INSTALL_ROOT` pointed at a cached path:
+
+```typescript
+.withEnvVariable("CARGO_INSTALL_ROOT", "/cargo-tools")
+.withMountedCache("/cargo-tools", dag.cacheVolume("cargo-tools"))
+.withEnvVariable("PATH", "/cargo-tools/bin:$PATH", { expand: true })
+```
+
+This lets `cargo install` detect existing binaries and skip recompilation entirely.
+
+### CacheSharingMode
+
+Default mode is `Shared` (concurrent reads and writes). This is fine for:
+- `cargo-registry` and `cargo-git` (read-heavy, append-only)
+- `cargo-tools` (write-once per tool version, then read-only)
+
+For `cargo-target` (Phase 2+), consider `Locked` if concurrent matrix jobs cause corruption. Monitor during Phase 2 rollout and switch if needed.
+
+---
+
 ## What Stays in GitHub Actions vs Moves to Dagger
 
 | Component | Where | Rationale |
@@ -279,6 +327,7 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
   - [x] Run `cargo machete`
 - [x] Create `.github/actions/setup-dagger/action.yml` (SSH + Dagger CLI)
 - [x] Add Dagger checks to PR workflow **alongside existing checks** (dual-run for validation)
+- [x] Add CacheVolumes for cargo tool installations (registry, git, installed binaries)
 - [ ] Verify result parity over 3-5 PRs
 - [ ] Remove old `_job-fmt.yml` and `_job-cargo-deny.yml` usage from workflows
 
