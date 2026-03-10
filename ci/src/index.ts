@@ -91,15 +91,23 @@ export class KalatoriCi {
       ])
       .stdout()
 
-    // Both run in parallel via Dagger's DAG.
+    // Both branches fork from `base` — Dagger's engine runs them in parallel.
     // Advisories failures are logged but don't fail the pipeline.
+    const [advisoriesResult, bansResult] = await Promise.allSettled([
+      advisories,
+      bansLicensesSources,
+    ])
+
     let output = ""
-    try {
-      output += await advisories
-    } catch (e) {
-      output += `[advisory warnings — non-blocking]\n${e}\n`
+    if (advisoriesResult.status === "rejected") {
+      output += `[advisory warnings — non-blocking]\n${advisoriesResult.reason}\n`
+    } else {
+      output += advisoriesResult.value
     }
-    output += await bansLicensesSources
+    if (bansResult.status === "rejected") {
+      throw bansResult.reason
+    }
+    output += bansResult.value
     return output
   }
 
