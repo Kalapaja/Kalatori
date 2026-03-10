@@ -1,9 +1,5 @@
 # /doc-sync Custom Skill
 
-> **Installation**: Copy this file to `.claude/commands/doc-sync.md` to make it available as `/doc-sync` in Claude Code. The `.claude/commands/` directory may need to be created first.
-
----
-
 Analyze recent code changes and identify which documentation files need updating.
 
 ## Instructions
