@@ -2,9 +2,9 @@
 
 !!! KALATORI IS IN PUBLIC BETA !!!
 
-Kalatori is an open-source daemon designed to enable secure and scalable blockchain payment processing. Licensed under GPLv3 ([LICENSE](LICENSE)), Kalatori currently supports assets on the Asset Hub parachain.
+Kalatori is an open-source daemon designed to enable secure and scalable blockchain payment processing. Licensed under GPLv3 ([LICENSE](LICENSE)), Kalatori supports assets on Polkadot's Asset Hub parachain and Polygon.
 
-The daemon derives unique accounts for each payment using a provided seed phrase and outputs all payments to a specified recipient wallet. It also offers limited transaction tracking for order management. Kalatori operates in a multithreaded mode and supports multiple currencies configured in a simple TOML-based configuration file.
+The daemon derives unique accounts for each payment using a provided seed phrase and outputs all payments to a specified recipient wallet. It also offers transaction tracking for order management. Kalatori operates in a multithreaded mode and supports multiple currencies configured in JSON configuration files.
 
 Client facing frontends can communicate with Kalatori leveraging exposed API described in the [API documentation](https://kalapaja.github.io/kalatori-api).
 
@@ -60,12 +60,16 @@ The compiled binaries will be located in the `target/release` folder.
 
 ### Project Structure
 
-- `chopsticks`: Contains configuration files for the Chopsticks tool and a Docker Compose setup for spawning AssetHub test chain.
-- `configs`: Contains configuration files for supported chains and assets.
-- `docs`: Includes project documentation.
-- `src`: The source code for the Kalatori daemon.
-- `tests`: Black-box test suite with a Docker Compose setup for testing the daemon.
+- `daemon/`: Source code for the Kalatori daemon (Rust workspace member).
+- `client/`: Public Rust client library for integrating with Kalatori.
+- `migrations/`: SQLite database migration files.
+- `configs/`: Example JSON configuration files for supported chains and assets.
+- `docs/`: Project documentation (architecture, conventions, error handling, testing, etc.).
+- `chopsticks/`: Configuration files for the Chopsticks tool and Docker Compose setup for spawning test chains.
+- `daemon/examples/`: Integration test examples (`crud`, `webhook`) run against a live daemon.
 - `Dockerfile`: Instructions for building a Docker image of the daemon.
+
+For AI agents and detailed architecture, see [AGENTS.md](AGENTS.md) and `docs/`.
 
 ### Configuration File Example
 
@@ -123,22 +127,18 @@ make run-release
 
 ### Testing
 
-The black-box test suite verifies the daemon's functionality by interacting with a running instance. Use the following steps to set it up:
-1. Start the daemon and test environment:
+Integration tests verify the daemon's functionality by running Rust examples against a live instance:
+
+1. Start the daemon with Chopsticks:
    ```sh
-   cd tests
-   docker-compose up
+   make run
    ```
-2. Run the tests manually using Yarn:
+2. Run integration examples:
    ```sh
-   ct tests/kalatori-api-test-suite
-   yarn
-   yarn test
+   make run-test-examples
    ```
 
-Ensure the `DAEMON_HOST` environment variable points to the running daemon (default: `localhost:16726`).
-
-For more details, refer to the [testing suite README.md](tests/kalatori-api-test-suite/README.md).
+The daemon listens on `localhost:16726` by default.
 
 ### Contributing
 
