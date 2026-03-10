@@ -6,7 +6,7 @@
  */
 export const VERSIONS = {
   /** Stable Rust toolchain version — must be >= MSRV in daemon/Cargo.toml */
-  rust: "1.94",
+  rust: "1.93",
   /** Nightly toolchain for rustfmt — tracks latest; pin to a specific date if formatting becomes inconsistent */
   rustNightly: "nightly",
   /** subxt-cli version — keep in sync with subxt in Cargo.toml */

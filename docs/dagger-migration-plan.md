@@ -362,6 +362,7 @@ No new infrastructure needed. The persistent remote engine accumulates cache for
 - [ ] Update `CLAUDE.md` — new CI commands, Dagger MCP usage
 - [ ] Update `CONTRIBUTING.md` — new CI workflow, local dev with Dagger
 - [ ] Update `Makefile` — keep local dev shortcuts, delegate to `dagger call` where appropriate
+- [ ] Bump MSRV and Dagger Rust toolchain to latest stable (currently pinned to 1.93 to match `ubuntu-latest` for legacy workflows; Dagger pins its own toolchain via `versions.ts` so this constraint is removed once legacy `_job-*.yml` workflows are deleted)
 
 ---
 
