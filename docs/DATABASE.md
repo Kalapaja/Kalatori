@@ -24,7 +24,7 @@ Primary entity. Tracks payment requests from merchants.
 | amount | TEXT | Decimal string (e.g., "123.456789") |
 | payment_address | TEXT | Derived HD address |
 | status | TEXT | See status transitions below |
-| cart | TEXT | JSONB metadata |
+| cart | TEXT | JSON (TEXT) metadata |
 | redirect_url | TEXT | Post-payment redirect |
 | valid_till | TEXT | ISO 8601 expiration |
 | created_at, updated_at | TEXT | ISO 8601 timestamps |
@@ -44,7 +44,7 @@ Unified table for both incoming (customer payments) and outgoing (payouts/refund
 | tx_hash | TEXT | NULL until finalized |
 | status | TEXT | `Waiting` -> `InProgress` -> `Completed` / `Failed` |
 | transaction_type | TEXT | `Incoming` or `Outgoing` |
-| outgoing_meta | TEXT | JSONB: extrinsic bytes, timestamps, failure info |
+| outgoing_meta | TEXT | JSON (TEXT): extrinsic bytes, timestamps, failure info |
 
 ### payouts
 Transfers from payment address to merchant's wallet.
@@ -71,7 +71,7 @@ Queue of webhook notifications to send to merchant's configured URL.
 |--------|------|-------|
 | id | BLOB (UUID v4) | Internal ID |
 | entity_id | BLOB | References any entity |
-| payload | TEXT | JSONB payload |
+| payload | TEXT | JSON (TEXT) payload |
 | sent | INTEGER | 0 = pending, 1 = sent |
 
 ## Status Transition Triggers

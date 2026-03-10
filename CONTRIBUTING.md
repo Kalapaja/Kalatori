@@ -7,7 +7,6 @@ You can find issues waiting to be solved or create a new one in the [issues](htt
 - Rust: stable version (MSRV 1.88), nightly for rustfmt
 - SQLite: >= 3.47.0 (see README.md for build-from-source instructions on Linux)
 - Docker: to run tests and spawn Chopsticks instances
-- Node.js and Yarn: to run integration tests
 - subxt-cli: install via `make install-subxt-cli`
 - sqlx-cli: install via `make install-sqlx-cli`
 
