@@ -52,7 +52,7 @@ When sources disagree, trust in this order:
 - **Chains**: Asset Hub (subxt 0.44, sr25519) + Polygon (alloy 1.5, secp256k1, Pimlico paymaster)
 - **Key derivation**: BIP39 seed → Keyring actor (mpsc channel) → per-chain derivation
 - **Config**: JSON files + env var overrides (`{PREFIX}_{CONFIG}_{FIELD}`)
-- **Testing**: nextest, llvm-cov, cargo-mutants, Jest/TypeScript integration tests
+- **Testing**: nextest, llvm-cov, cargo-mutants, Rust example-based integration tests
 - **CI**: GitHub Actions with reusable `_job-*.yml` workflow templates
 
 ## Repository Layout
@@ -77,7 +77,7 @@ client/src/                   Public client library: types, HTTP client, HMAC ut
 configs/                      Example JSON config files
 migrations/                   SQLite migration SQL files
 chopsticks/                   Chopsticks (Substrate fork simulator) Docker setup
-tests/                        Integration test suite (Jest/TypeScript)
+daemon/examples/              Integration test examples (crud, webhook)
 ```
 
 ## Essential Commands

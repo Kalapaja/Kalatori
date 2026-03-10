@@ -27,19 +27,18 @@ Note that the RPCs are not real, so the changes made on one chopsticks instance 
 
 ## Running tests locally
 
-While having the kalatori app running. You can run the tests locally by running the following command:
-
+Unit tests:
 ```bash
-cd tests/kalatori-api-test-suite
-yarn
-yarn test
+make cargo-test
 ```
 
-You can run specific test similarly to the following command:
-
+Integration tests (requires a running daemon with Chopsticks):
 ```bash
-cd tests/kalatori-api-test-suite
-yarn test -t "should create, repay, and automatically withdraw an order in USDC"
+# Terminal 1: Start daemon with Chopsticks
+make run
+
+# Terminal 2: Run integration examples
+make run-test-examples
 ```
 
 ## Version Bumping and Release Process
