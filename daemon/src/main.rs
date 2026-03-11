@@ -41,6 +41,7 @@ use configs::{
     PaymentsConfig,
     chains_config_with_prefix,
     database_config_with_prefix,
+    etherscan_client_config_with_prefix,
     logger_config_with_prefix,
     payments_config_with_prefix,
     secrets_config_with_prefix,
@@ -64,7 +65,7 @@ use utils::shutdown::{
 use utils::task_tracker::TaskTracker;
 
 use crate::chain::TransactionsRecorder;
-use crate::configs::etherscan_client_config_with_prefix;
+use crate::chain_client::RpcEndpointRotator;
 use crate::dao::DaoInterface;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
@@ -245,12 +246,20 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let asset_hub_client = AssetHubClient::new(asset_hub_chain_config)
-        .await
-        .map_err(|_| {
-            tracing::warn!("Failed to initialize Asset Hub client, continuing without it");
-            Error::Fatal
-        })?;
+    let endpoints_rotator = RpcEndpointRotator::new(&chains_config).map_err(|_| {
+        tracing::warn!("Failed to initialize Rpc Endpoint Rotator");
+        Error::Fatal
+    })?;
+
+    let asset_hub_client = AssetHubClient::new(
+        asset_hub_chain_config,
+        endpoints_rotator.clone(),
+    )
+    .await
+    .map_err(|_| {
+        tracing::warn!("Failed to initialize Asset Hub client, continuing without it");
+        Error::Fatal
+    })?;
 
     asset_hub_client
         .init_asset_info(asset_hub_assets)
@@ -273,12 +282,15 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let polygon_client = PolygonClient::new(polygon_chain_config)
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = ?e, "Failed to initialize Polygon client, continuing without it");
-            Error::Fatal
-        })?;
+    let polygon_client = PolygonClient::new(
+        polygon_chain_config,
+        endpoints_rotator.clone(),
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(error = ?e, "Failed to initialize Polygon client, continuing without it");
+        Error::Fatal
+    })?;
 
     polygon_client
         .init_asset_info(polygon_assets)
@@ -386,6 +398,10 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     )
     .await;
 
+    let rpc_endpoints_health_checker = endpoints_rotator
+        .periodic_health_check(shutdown_notification.token.clone())
+        .await;
+
     let shutdown_completed = CancellationToken::new();
     let mut shutdown_listener = tokio::spawn(shutdown::listener(
         shutdown_notification.token.clone(),
@@ -411,6 +427,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
                 _polygon_tracker_result,
                 _webhook_sender_result,
                 _api_server_result,
+                _rpc_endpoints_health_checker_result,
             ) = tokio::join!(
                 shutdown_listener,
                 keyring_handle,
@@ -420,6 +437,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
                 polygon_tracker_handle,
                 webhook_sender_handle,
                 api_handle,
+                rpc_endpoints_health_checker,
             );
 
             shutdown_result

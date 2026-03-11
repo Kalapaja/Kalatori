@@ -44,6 +44,7 @@ use rust_decimal::prelude::{
 };
 use tracing::instrument;
 
+use crate::chain_client::rotator::RpcEndpointRotator;
 use crate::types::ChainType;
 use crate::utils::logging::category::CHAIN_CLIENT;
 
@@ -261,6 +262,8 @@ pub struct PolygonClient {
     asset_info_store: AssetInfoStore<PolygonChainConfig>,
     provider: PolygonProvider,
     pimlico_client: PimlicoClient,
+    endpoint_rotator: RpcEndpointRotator,
+    current_endpoint: String,
 }
 
 impl PolygonClient {
@@ -269,12 +272,11 @@ impl PolygonClient {
     async fn from_config(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
+        endpoint_rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
-        let endpoint = config
-            .get_random_endpoint()
-            .ok_or(ClientError::InvalidConfiguration {
-                field: "endpoints".to_string(),
-            })?;
+        let endpoint = endpoint_rotator
+            .get_endpoint_url(Self::chain_type())
+            .await;
 
         tracing::debug!(
             url = endpoint,
@@ -297,7 +299,9 @@ impl PolygonClient {
                     "Failed to connect to Polygon RPC endpoint"
                 );
             })
-            .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+            .map_err(|_| ClientError::EndpointUnavailable {
+                endpoint_url: endpoint.clone(),
+            })?;
 
         tracing::debug!(
             url = endpoint,
@@ -329,6 +333,8 @@ impl PolygonClient {
             asset_info_store,
             provider,
             pimlico_client: PimlicoClient::new(),
+            endpoint_rotator,
+            current_endpoint: endpoint,
         })
     }
 
@@ -575,32 +581,37 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         "polygon"
     }
 
+    fn current_endpoint(&self) -> &str {
+        &self.current_endpoint
+    }
+
+    fn endpoint_rotator(&self) -> RpcEndpointRotator {
+        self.endpoint_rotator.clone()
+    }
+
+    fn chain_config(&self) -> &crate::configs::ChainConfig {
+        &self.config
+    }
+
     fn asset_info_store(&self) -> &AssetInfoStore<PolygonChainConfig> {
         &self.asset_info_store
     }
 
     #[instrument(skip(config))]
-    async fn new(config: &crate::configs::ChainConfig) -> Result<Self, ClientError> {
-        Self::from_config(config, AssetInfoStore::new()).await
+    async fn new(
+        config: &crate::configs::ChainConfig,
+        rotator: RpcEndpointRotator,
+    ) -> Result<Self, ClientError> {
+        Self::from_config(config, AssetInfoStore::new(), rotator).await
     }
 
     #[instrument(skip(config, asset_info_store))]
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
+        rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
-        Self::from_config(config, asset_info_store).await
-    }
-
-    #[instrument(skip(self))]
-    async fn recreate(&self) -> Result<Self, ClientError> {
-        // For now, just return a clone
-        // TODO: Implement proper reconnection logic
-        Self::from_config(
-            &self.config,
-            self.asset_info_store.clone(),
-        )
-        .await
+        Self::from_config(config, asset_info_store, rotator).await
     }
 
     #[instrument(skip(self))]

@@ -2,6 +2,7 @@ mod asset_hub;
 mod errors;
 mod keyring;
 mod polygon;
+mod rotator;
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -45,6 +46,8 @@ pub use polygon::{
     PolygonChainConfig,
     PolygonClient,
 };
+
+pub use rotator::RpcEndpointRotator;
 
 pub type TransfersStream<T> =
     Pin<Box<dyn stream::Stream<Item = Result<Vec<ChainTransfer<T>>, SubscriptionError>> + Send>>;
@@ -244,19 +247,24 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
 
     fn asset_info_store(&self) -> &AssetInfoStore<T>;
 
-    async fn new(config: &crate::configs::ChainConfig) -> Result<Self, ClientError>
-    where
-        Self: Sized;
+    fn current_endpoint(&self) -> &str;
 
-    #[expect(dead_code)]
-    async fn new_with_store(
+    fn endpoint_rotator(&self) -> RpcEndpointRotator;
+
+    fn chain_config(&self) -> &crate::configs::ChainConfig;
+
+    async fn new(
         config: &crate::configs::ChainConfig,
-        asset_info_store: AssetInfoStore<T>,
+        rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError>
     where
         Self: Sized;
 
-    async fn recreate(&self) -> Result<Self, ClientError>
+    async fn new_with_store(
+        config: &crate::configs::ChainConfig,
+        asset_info_store: AssetInfoStore<T>,
+        rotator: RpcEndpointRotator,
+    ) -> Result<Self, ClientError>
     where
         Self: Sized;
 
@@ -343,6 +351,23 @@ pub trait BlockChainClientExt<T: ChainConfig>: BlockChainClient<T> {
         info!(message = "Asset info initialized successfully");
 
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn recreate(&self) -> Result<Self, ClientError>
+    where
+        Self: Sized,
+    {
+        self.endpoint_rotator()
+            .mark_unhealthy(self.current_endpoint(), T::CHAIN_TYPE)
+            .await;
+
+        Self::new_with_store(
+            self.chain_config(),
+            self.asset_info_store().clone(),
+            self.endpoint_rotator(),
+        )
+        .await
     }
 }
 

@@ -14,10 +14,6 @@ use super::{
 /// Errors that occur during chain client initialization
 #[derive(Debug, Error)]
 pub enum ClientError {
-    /// All configured RPC endpoints are unreachable
-    #[error("All configured RPC endpoints are unreachable")]
-    AllEndpointsUnreachable,
-
     /// Failed to fetch chain metadata during initialization
     #[error("Failed to fetch chain metadata during initialization")]
     MetadataFetchFailed,
@@ -31,6 +27,10 @@ pub enum ClientError {
     /// Principle 1)
     #[error("Unknown asset ID in configuration: {asset_id}")]
     UnknownAssetId { asset_id: u32 },
+
+    /// Current RPC endpoint is not available
+    #[error("RPC endpoint is not available: {endpoint_url}")]
+    EndpointUnavailable { endpoint_url: String },
 }
 
 // ============================================================================

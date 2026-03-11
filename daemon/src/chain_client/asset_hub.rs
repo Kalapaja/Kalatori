@@ -29,6 +29,7 @@ use tracing::{
     warn,
 };
 
+use crate::chain_client::rotator::RpcEndpointRotator;
 use crate::types::ChainType;
 
 use super::{
@@ -157,6 +158,8 @@ pub struct AssetHubClient {
     config: crate::configs::ChainConfig,
     client: SubxtAssetHubClient,
     asset_info_store: AssetInfoStore<AssetHubChainConfig>,
+    endpoint_rotator: RpcEndpointRotator,
+    current_endpoint: String,
 }
 
 impl AssetHubClient {
@@ -164,15 +167,11 @@ impl AssetHubClient {
     async fn from_config(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<AssetHubChainConfig>,
+        endpoint_rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
-        // TODO: implement circuit breaker for endpoints
-        // (should be another wrapper structure with endpoints hidden behind sync
-        // primitives with error counters and usage timeouts)
-        let endpoint = config
-            .get_random_endpoint()
-            .ok_or(ClientError::InvalidConfiguration {
-                field: "endpoints".to_string(),
-            })?;
+        let endpoint = endpoint_rotator
+            .get_endpoint_url(Self::chain_type())
+            .await;
 
         tracing::debug!(
             url = endpoint,
@@ -195,12 +194,16 @@ impl AssetHubClient {
                 "Failed to connect to Asset Hub RPC endpoint"
             );
         })
-        .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+        .map_err(|_| ClientError::EndpointUnavailable {
+            endpoint_url: endpoint.clone(),
+        })?;
 
         Ok(AssetHubClient {
             config: config.clone(),
             client,
             asset_info_store,
+            endpoint_rotator,
+            current_endpoint: endpoint,
         })
     }
 
@@ -353,30 +356,37 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
         "statemint"
     }
 
+    fn current_endpoint(&self) -> &str {
+        &self.current_endpoint
+    }
+
+    fn endpoint_rotator(&self) -> RpcEndpointRotator {
+        self.endpoint_rotator.clone()
+    }
+
+    fn chain_config(&self) -> &crate::configs::ChainConfig {
+        &self.config
+    }
+
     fn asset_info_store(&self) -> &AssetInfoStore<AssetHubChainConfig> {
         &self.asset_info_store
     }
 
     #[instrument(skip(config))]
-    async fn new(config: &crate::configs::ChainConfig) -> Result<Self, ClientError> {
-        AssetHubClient::from_config(config, AssetInfoStore::new()).await
+    async fn new(
+        config: &crate::configs::ChainConfig,
+        rotator: RpcEndpointRotator,
+    ) -> Result<Self, ClientError> {
+        AssetHubClient::from_config(config, AssetInfoStore::new(), rotator).await
     }
 
     #[instrument(skip(config, asset_info_store))]
     async fn new_with_store(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<AssetHubChainConfig>,
+        rotator: RpcEndpointRotator,
     ) -> Result<Self, ClientError> {
-        AssetHubClient::from_config(config, asset_info_store).await
-    }
-
-    #[instrument(skip(self))]
-    async fn recreate(&self) -> Result<Self, ClientError> {
-        Self::from_config(
-            &self.config,
-            self.asset_info_store.clone(),
-        )
-        .await
+        AssetHubClient::from_config(config, asset_info_store, rotator).await
     }
 
     #[instrument(skip(self))]

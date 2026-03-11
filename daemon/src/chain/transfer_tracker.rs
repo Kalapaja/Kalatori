@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chain_client::{
     BlockChainClient,
+    BlockChainClientExt,
     ChainConfig,
     ChainTransfer,
     GeneralChainTransfer,
