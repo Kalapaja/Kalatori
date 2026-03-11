@@ -7,8 +7,10 @@ use axum::response::{
     Response,
 };
 use axum::routing::get;
-use axum::Extension;
-use axum::Router;
+use axum::{
+    Extension,
+    Router,
+};
 use serde::Serialize;
 
 use kalatori_client::types::ApiResultStructured;

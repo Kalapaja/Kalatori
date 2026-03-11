@@ -148,6 +148,7 @@ pub enum SessionError {
     #[error("Duplicate session cookies detected")]
     DuplicateCookie,
 
+    #[expect(dead_code)]
     /// Insufficient role for the requested action.
     #[error("Insufficient permissions")]
     InsufficientRole,

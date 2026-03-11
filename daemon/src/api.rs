@@ -93,9 +93,7 @@ pub trait ApiErrorExt: std::error::Error {
 
 #[cfg(not(feature = "dev_api"))]
 mod dev {
-    pub fn routes(
-        _dev_auth: Option<std::sync::Arc<()>>,
-    ) -> axum::Router<super::ApiState> {
+    pub fn routes(_dev_auth: Option<std::sync::Arc<()>>) -> axum::Router<super::ApiState> {
         axum::Router::new()
     }
 }
@@ -136,8 +134,14 @@ pub async fn api_server(
 
         // /auth/* routes — no session middleware (these ARE the login flow)
         let auth_routes = axum::Router::new()
-            .route("/login", get(auth_endpoints::login_handler))
-            .route("/callback", post(auth_endpoints::callback_handler))
+            .route(
+                "/login",
+                get(auth_endpoints::login_handler),
+            )
+            .route(
+                "/callback",
+                post(auth_endpoints::callback_handler),
+            )
             .route(
                 "/session",
                 get(auth_endpoints::session_handler),
@@ -206,8 +210,11 @@ pub async fn api_server(
 /// development of admin endpoints without needing a real auth server.
 #[cfg(feature = "dev_api")]
 fn resolve_dev_auth(
-    auth_config: Option<OAuthConfig>,
-) -> (Option<OAuthConfig>, Option<Arc<dev::DevAuthState>>) {
+    auth_config: Option<OAuthConfig>
+) -> (
+    Option<OAuthConfig>,
+    Option<Arc<dev::DevAuthState>>,
+) {
     use secrecy::SecretString;
 
     use crate::auth::token::generate_dev_keypair;

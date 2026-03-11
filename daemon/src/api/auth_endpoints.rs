@@ -68,7 +68,10 @@ pub async fn callback_handler(
     axum::Form(form): axum::Form<CallbackForm>,
 ) -> Response {
     // Step 1: Validate Origin/Referer (spec §6.4)
-    if let Err(err) = validate_callback_origin(&headers, auth.oauth_client.auth_server_url()) {
+    if let Err(err) = validate_callback_origin(
+        &headers,
+        auth.oauth_client.auth_server_url(),
+    ) {
         tracing::warn!(
             error.category = category::AUTH,
             error.operation = operation::CODE_EXCHANGE,
@@ -219,7 +222,7 @@ fn validate_callback_origin(
             headers
                 .get(header::REFERER)
                 .and_then(|v| v.to_str().ok())
-                .and_then(|r| extract_origin_from_url(r))
+                .and_then(extract_origin_from_url)
         });
 
     match actual_origin {

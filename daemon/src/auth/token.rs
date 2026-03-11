@@ -216,14 +216,18 @@ pub fn is_within_refresh_grace(claims: &TokenClaims) -> bool {
 /// Returns the keypair and the public key as a PASERK `k4.public.*` string
 /// suitable for `token_public_keys` in config.
 #[cfg(any(feature = "dev_api", test))]
-pub fn generate_dev_keypair() -> (pasetors::keys::AsymmetricKeyPair<V4>, String) {
+pub fn generate_dev_keypair() -> (
+    pasetors::keys::AsymmetricKeyPair<V4>,
+    String,
+) {
     use pasetors::keys::{
         AsymmetricKeyPair,
         Generate,
     };
     use pasetors::paserk::FormatAsPaserk;
 
-    let kp = AsymmetricKeyPair::<V4>::generate().expect("Ed25519 keypair generation should not fail");
+    let kp =
+        AsymmetricKeyPair::<V4>::generate().expect("Ed25519 keypair generation should not fail");
     let mut paserk_public = String::new();
     kp.public
         .fmt(&mut paserk_public)

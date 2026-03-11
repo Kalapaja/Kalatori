@@ -44,7 +44,10 @@ pub fn routes(dev_auth: Option<Arc<DevAuthState>>) -> axum::Router<ApiState> {
 
     if let Some(dev_auth) = dev_auth {
         let mint_routes = axum::Router::new()
-            .route("/auth/mint-token", post(mint_token_handler))
+            .route(
+                "/auth/mint-token",
+                post(mint_token_handler),
+            )
             .with_state(dev_auth);
 
         router = router.merge(mint_routes);

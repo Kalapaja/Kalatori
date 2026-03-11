@@ -380,6 +380,7 @@ impl OAuthClient {
 
 /// Opaque type holding the encrypted state from `start_auth_flow`. Passed back
 /// to `exchange_code` via the callback.
+#[expect(dead_code)]
 pub struct PkceVerifier {
     pub state: String,
 }

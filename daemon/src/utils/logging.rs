@@ -16,7 +16,6 @@ pub mod operation {
     pub const LOGIN: &str = "login";
     pub const CODE_EXCHANGE: &str = "code_exchange";
     pub const TOKEN_REFRESH: &str = "token_refresh";
-    pub const SESSION_VALIDATION: &str = "session_validation";
 
     // Chain client operations
     pub const CONNECT_CLIENT: &str = "connect_client";

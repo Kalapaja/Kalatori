@@ -202,10 +202,11 @@ pub fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
     // Parse cookies manually to find our specific cookie
     for part in cookie_header.split(';') {
         let part = part.trim();
-        if let Some(value) = part.strip_prefix(&format!("{COOKIE_NAME}=")) {
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
+
+        if let Some(value) = part.strip_prefix(&format!("{COOKIE_NAME}="))
+            && !value.is_empty()
+        {
+            return Some(value.to_string());
         }
     }
 
