@@ -205,7 +205,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let mut payments_config = payments_config_with_prefix(&configs_path, &env_prefix);
     let web_server_config = web_server_config_with_prefix(&configs_path, &env_prefix);
     let database_config = database_config_with_prefix(&configs_path, &env_prefix);
-    let shop_config = shop_config_with_prefix(&configs_path, &env_prefix);
+    let shop_config = shop_config_with_prefix(&configs_path, &env_prefix).await?;
     let etherscan_client_config = etherscan_client_config_with_prefix(&configs_path, &env_prefix);
 
     let hmac_config = HmacConfig::new(
@@ -216,7 +216,6 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
             .to_vec(),
         shop_config.signature_max_age_secs,
     );
-
     secrets_config.api_secret_key.zeroize();
 
     // Initialize DAO for SQLite database operations
@@ -382,6 +381,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         web_server_config,
         hmac_config,
         app_state,
+        shop_config.api_validator_config,
         shutdown_notification.token.clone(),
     )
     .await;

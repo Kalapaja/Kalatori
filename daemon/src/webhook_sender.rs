@@ -10,6 +10,7 @@ use tokio::time::{
     interval,
 };
 use tokio_util::sync::CancellationToken;
+use url::Url;
 use uuid::Uuid;
 
 use kalatori_client::utils::{
@@ -81,7 +82,7 @@ async fn send_webhook(
 pub struct WebhookSender<D: DaoInterface + 'static> {
     client: reqwest::Client,
     dao: D,
-    webhook_url: String,
+    webhook_url: Url,
     hmac_config: HmacConfig,
     processing_events_ids: HashSet<Uuid>,
 }
@@ -89,7 +90,7 @@ pub struct WebhookSender<D: DaoInterface + 'static> {
 impl<D: DaoInterface + 'static> WebhookSender<D> {
     pub fn new(
         dao: D,
-        webhook_url: String,
+        webhook_url: Url,
         hmac_config: HmacConfig,
     ) -> Self {
         WebhookSender {
@@ -107,7 +108,7 @@ impl<D: DaoInterface + 'static> WebhookSender<D> {
     ) -> reqwest::Request {
         let mut request = self
             .client
-            .post(&self.webhook_url)
+            .post(self.webhook_url.as_str())
             .json(&event.payload)
             .timeout(WEBHOOK_SENDER_REQUEST_TIMEOUT)
             .build()
@@ -388,7 +389,7 @@ mod tests {
 
         let sender = WebhookSender::new(
             dao,
-            "http://webhook.example.com".to_string(),
+            Url::parse("http://webhook.example.com").unwrap(),
             hmac_config,
         );
 
@@ -442,7 +443,7 @@ mod tests {
 
         let mut sender = WebhookSender::new(
             dao,
-            "http://webhook.example.com".to_string(),
+            Url::parse("http://webhook.example.com").unwrap(),
             hmac_config,
         );
 
@@ -599,7 +600,7 @@ mod tests {
 
         let mut sender = WebhookSender::new(
             dao,
-            "http://webhook.example.com".to_string(),
+            Url::parse("http://webhook.example.com").unwrap(),
             hmac_config,
         );
 

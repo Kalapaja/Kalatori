@@ -1,5 +1,7 @@
 {
   "invoices_webhook_url": "https://shop.example.com/webhooks/invoices",
+  "allowed_base_redirect_url": "https://shop.example.com/checkout/",
+  "allowed_base_image_urls": ["https://shop.example.com/assets/", "https://cdn.example.com/assets/"],
   "signature_max_age_secs": 60,
   "shop_name": "Mega Shop",
   "reown_project_id": "PLEASE SPECIFY YOUR REOWN PROJECT ID HERE"

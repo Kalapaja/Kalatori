@@ -245,11 +245,11 @@ impl Keyring {
         } = data;
 
         let Some(paymaster_data) = transaction.paymaster_data.clone() else {
-            return Err(KeyringError::SigningFailed)
+            return Err(KeyringError::SigningFailed);
         };
 
         let Some(op_hash) = transaction.op_hash else {
-            return Err(KeyringError::SigningFailed)
+            return Err(KeyringError::SigningFailed);
         };
 
         let signer = self.generate_polygon_derived_signer(derivation_params)?;

@@ -1,5 +1,8 @@
 {
-    "invoices_webhook_url": "http://localhost:8000/webhooks/invoices",
+    "invoices_webhook_url": "https://your-shop.example.com/webhooks/invoices",
+    "allowed_base_redirect_url": "https://your-shop.example.com/checkout/",
+    "allowed_base_image_urls": ["https://your-shop.example.com/assets/", "https://cdn.your-shop.example.com/assets/"],
+    "allow_insecure_urls": false,
     "shop_name": "Mega shop",
     "reown_project_id": "PLACE_YOUR_REWON_PROJECT_ID_HERE_TO_MAKE_IT_WORK"
 }

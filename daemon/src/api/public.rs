@@ -31,7 +31,7 @@ struct Params {
 
 async fn index(ExtractState(state): ExtractState<ApiState>) -> Html<String> {
     let raw_html = include_str!("../../../static/index.html");
-    let shop_meta = state.get_shop_meta();
+    let shop_meta = state.inner.get_shop_meta();
 
     let html = raw_html
         .replace(
@@ -62,6 +62,7 @@ async fn invoice(
     Query(payload): Query<Params>,
 ) -> Response {
     let invoice = state
+        .inner
         .get_invoice(payload.invoice_id)
         .await;
 
@@ -86,7 +87,7 @@ async fn invoice(
 }
 
 async fn shop_meta(ExtractState(state): ExtractState<ApiState>) -> SuccessWrapper<ShopMetaConfig> {
-    state.get_shop_meta().into()
+    state.inner.get_shop_meta().into()
 }
 
 async fn create_front_end_swap(
@@ -94,6 +95,7 @@ async fn create_front_end_swap(
     AppJson(data): AppJson<CreateFrontEndSwapParams>,
 ) -> ApiResult<CreateFrontEndSwapParams, DaoSwapError> {
     let result = state
+        .inner
         .create_front_end_swap(data)
         .await?;
 
