@@ -1,0 +1,21 @@
+---
+source: daemon/src/dao/invoice.rs
+assertion_line: 1617
+expression: result
+---
+- invoice:
+    id: "[uuid]"
+    order_id: "[uuid]"
+    asset_id: USDC
+    asset_name: USDC
+    chain: PolkadotAssetHub
+    amount: "300.00"
+    payment_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+    status: OverPaid
+    cart:
+      items: []
+    redirect_url: "http://localhost:8080/thankyou"
+    valid_till: "[timestamp]"
+    created_at: "[timestamp]"
+    updated_at: "[timestamp]"
+  total_received_amount: "325.00"

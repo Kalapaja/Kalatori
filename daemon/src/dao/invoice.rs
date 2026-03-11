@@ -1,3 +1,4 @@
+use sqlx::QueryBuilder;
 use sqlx::types::{
     Json,
     Text,
@@ -12,6 +13,7 @@ use crate::types::{
     InvoiceRow,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
+    ListInvoicesParams,
     UpdateInvoiceData,
 };
 
@@ -467,9 +469,128 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
                 DaoInvoiceError::DatabaseError
             })
     }
+
+    /// Get a paginated, filtered list of invoices with their received amounts.
+    async fn get_invoices_paginated(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError> {
+        let mut builder = QueryBuilder::new(
+            "SELECT i.*,
+                CASE
+                    WHEN COUNT(t.amount) = 0 THEN '[]'
+                    ELSE json_group_array(t.amount)
+                END as amounts
+            FROM invoices i
+            LEFT JOIN transactions t
+                ON i.id = t.invoice_id
+                AND t.transaction_type = 'Incoming'
+            WHERE 1=1",
+        );
+
+        push_invoice_filters(&mut builder, params);
+
+        let sort_order = params.sort_order.unwrap_or_default();
+
+        builder.push(" GROUP BY i.id ORDER BY i.created_at ");
+        builder.push(sort_order.as_sql());
+
+        let per_page = params.pagination.validated_per_page();
+        let offset = params.pagination.offset();
+
+        builder.push(" LIMIT ");
+        builder.push_bind(per_page);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+
+        let query = builder.build_query_as::<InvoiceWithAmountsRow>();
+
+        self.fetch_all(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.invoice",
+                    error.operation = "get_invoices_paginated",
+                    error.source = ?e,
+                    "Failed to fetch paginated invoices"
+                );
+                DaoInvoiceError::DatabaseError
+            })
+    }
+
+    /// Count invoices matching the given filters (for pagination metadata).
+    async fn count_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<u32, DaoInvoiceError> {
+        let mut builder = QueryBuilder::new("SELECT COUNT(*) as count FROM invoices i WHERE 1=1");
+
+        push_invoice_filters(&mut builder, params);
+
+        let query = builder.build_query_as::<CountRow>();
+
+        let row: CountRow = self
+            .fetch_one(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.invoice",
+                    error.operation = "count_invoices",
+                    error.source = ?e,
+                    "Failed to count invoices"
+                );
+                DaoInvoiceError::DatabaseError
+            })?;
+
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Ok(row.count as u32)
+    }
 }
 
 impl<T: DaoExecutor + 'static> DaoInvoiceMethods for T {}
+
+#[derive(sqlx::FromRow)]
+struct CountRow {
+    count: i64,
+}
+
+/// Push WHERE clause conditions to the query builder based on filter params.
+/// Shared between `get_invoices_paginated` and `count_invoices`.
+fn push_invoice_filters(
+    builder: &mut QueryBuilder<'_, sqlx::Sqlite>,
+    params: &ListInvoicesParams,
+) {
+    if let Some(statuses) = &params.status
+        && !statuses.is_empty()
+    {
+        builder.push(" AND i.status IN (");
+        let mut separated = builder.separated(", ");
+        for status in statuses {
+            separated.push_bind(status.to_string());
+        }
+        separated.push_unseparated(")");
+    }
+
+    if let Some(chain) = &params.chain {
+        builder.push(" AND i.chain = ");
+        builder.push_bind(chain.to_string());
+    }
+
+    if let Some(asset_id) = &params.asset_id {
+        builder.push(" AND i.asset_id = ");
+        builder.push_bind(asset_id.clone());
+    }
+
+    if let Some(created_from) = &params.created_from {
+        builder.push(" AND i.created_at >= ");
+        builder.push_bind(created_from.naive_utc());
+    }
+
+    if let Some(created_to) = &params.created_to {
+        builder.push(" AND i.created_at <= ");
+        builder.push_bind(created_to.naive_utc());
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -478,6 +599,12 @@ mod tests {
     use crate::dao::create_test_dao;
     use crate::dao::transaction::DaoTransactionMethods;
     use crate::types::{
+        ChainType,
+        CreateInvoiceData,
+        InvoiceCart,
+        ListInvoicesParams,
+        PaginationParams,
+        SortOrder,
         Transaction,
         TransactionType,
         default_create_invoice_data,
@@ -994,5 +1121,688 @@ mod tests {
             },
             err => panic!("Expected StatusConstraintViolation, got: {err:?}"),
         }
+    }
+
+    // ========================================================================
+    // Paginated invoice listing — snapshot tests
+    // ========================================================================
+
+    /// Helper to create an invoice with specific chain and amount.
+    fn make_invoice(
+        chain: ChainType,
+        amount: Decimal,
+        asset_id: &str,
+    ) -> CreateInvoiceData {
+        let id = Uuid::new_v4();
+        CreateInvoiceData {
+            id,
+            order_id: id.to_string(),
+            asset_id: asset_id.to_string(),
+            asset_name: if asset_id == "1984" {
+                "USDT".to_string()
+            } else {
+                "USDC".to_string()
+            },
+            chain,
+            amount,
+            payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
+            cart: InvoiceCart::empty(),
+            redirect_url: "http://localhost:8080/thankyou".to_string(),
+            #[expect(clippy::arithmetic_side_effects)]
+            valid_till: chrono::Utc::now() + chrono::Duration::hours(24),
+        }
+    }
+
+    /// Add an incoming transaction for an invoice.
+    async fn add_incoming_tx(
+        dao: &crate::dao::DAO,
+        invoice_id: Uuid,
+        amount: Decimal,
+        block_number: u32,
+    ) {
+        let mut tx = Transaction {
+            id: Uuid::new_v4(),
+            invoice_id,
+            transaction_type: TransactionType::Incoming,
+            ..default_transaction(invoice_id)
+        };
+        tx.transfer_info.amount = amount;
+        tx.transaction_id.block_number = Some(block_number);
+        tx.transaction_id.tx_hash = Some(Uuid::new_v4().to_string());
+        dao.create_transaction(tx)
+            .await
+            .unwrap();
+    }
+
+    /// Seed 8 invoices with diverse properties, return their IDs in insertion
+    /// order. A small sleep separates the first 4 from the last 4 to allow
+    /// date range filtering tests.
+    ///
+    /// | # | Chain       | Asset | Amount | Status              | Incoming Txs    |
+    /// |---|-------------|-------|--------|---------------------|-----------------|
+    /// | 1 | AssetHub    | USDT  | 100.00 | Waiting             | none            |
+    /// | 2 | Polygon     | USDC  | 250.50 | Waiting             | none            |
+    /// | 3 | AssetHub    | USDT  |  75.00 | Paid                | 75.00           |
+    /// | 4 | Polygon     | USDC  | 500.00 | PartiallyPaid       | 150.00 + 50.00  |
+    /// |   |             |       |        |                     | (sleep ~15ms)   |
+    /// | 5 | AssetHub    | USDC  | 300.00 | OverPaid            | 300.00 + 25.00  |
+    /// | 6 | Polygon     | USDT  |  42.00 | UnpaidExpired       | none            |
+    /// | 7 | AssetHub    | USDT  | 180.00 | Waiting             | 60.00           |
+    /// | 8 | Polygon     | USDC  |  99.99 | AdminCanceled       | none            |
+    #[expect(clippy::too_many_lines)]
+    async fn seed_invoices(dao: &crate::dao::DAO) -> Vec<Uuid> {
+        let mut ids = Vec::new();
+
+        // --- First batch (before the sleep) ---
+
+        // Invoice 1: AssetHub, USDT, 100.00, Waiting, no txs
+        let inv = make_invoice(
+            ChainType::PolkadotAssetHub,
+            Decimal::new(10000, 2),
+            "1984",
+        );
+        ids.push(inv.id);
+        dao.create_invoice(inv).await.unwrap();
+
+        // Invoice 2: Polygon, USDC, 250.50, Waiting, no txs
+        let inv = make_invoice(
+            ChainType::Polygon,
+            Decimal::new(25050, 2),
+            "USDC",
+        );
+        ids.push(inv.id);
+        dao.create_invoice(inv).await.unwrap();
+
+        // Invoice 3: AssetHub, USDT, 75.00, Paid, 1 incoming tx (75.00)
+        let inv = make_invoice(
+            ChainType::PolkadotAssetHub,
+            Decimal::new(7500, 2),
+            "1984",
+        );
+        let inv_id = inv.id;
+        ids.push(inv_id);
+        dao.create_invoice(inv).await.unwrap();
+        add_incoming_tx(dao, inv_id, Decimal::new(7500, 2), 100).await;
+        dao.update_invoice_status(inv_id, InvoiceStatus::Paid)
+            .await
+            .unwrap();
+
+        // Invoice 4: Polygon, USDC, 500.00, PartiallyPaid, 2 incoming txs
+        // (150.00 + 50.00 = 200.00)
+        let inv = make_invoice(
+            ChainType::Polygon,
+            Decimal::new(50000, 2),
+            "USDC",
+        );
+        let inv_id = inv.id;
+        ids.push(inv_id);
+        dao.create_invoice(inv).await.unwrap();
+        add_incoming_tx(dao, inv_id, Decimal::new(15000, 2), 200).await;
+        add_incoming_tx(dao, inv_id, Decimal::new(5000, 2), 201).await;
+        dao.update_invoice_status(inv_id, InvoiceStatus::PartiallyPaid)
+            .await
+            .unwrap();
+
+        // Sleep to create a timestamp gap between batches
+        tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
+
+        // --- Second batch (after the sleep) ---
+
+        // Invoice 5: AssetHub, USDC, 300.00, OverPaid, 2 incoming txs
+        // (300.00 + 25.00 = 325.00)
+        let inv = make_invoice(
+            ChainType::PolkadotAssetHub,
+            Decimal::new(30000, 2),
+            "USDC",
+        );
+        let inv_id = inv.id;
+        ids.push(inv_id);
+        dao.create_invoice(inv).await.unwrap();
+        add_incoming_tx(dao, inv_id, Decimal::new(30000, 2), 300).await;
+        add_incoming_tx(dao, inv_id, Decimal::new(2500, 2), 301).await;
+        dao.update_invoice_status(inv_id, InvoiceStatus::OverPaid)
+            .await
+            .unwrap();
+
+        // Invoice 6: Polygon, USDT, 42.00, UnpaidExpired, no txs
+        let inv = make_invoice(
+            ChainType::Polygon,
+            Decimal::new(4200, 2),
+            "1984",
+        );
+        let inv_id = inv.id;
+        ids.push(inv_id);
+        dao.create_invoice(inv).await.unwrap();
+        dao.update_invoice_status(inv_id, InvoiceStatus::UnpaidExpired)
+            .await
+            .unwrap();
+
+        // Invoice 7: AssetHub, USDT, 180.00, Waiting, 1 incoming tx (60.00)
+        let inv = make_invoice(
+            ChainType::PolkadotAssetHub,
+            Decimal::new(18000, 2),
+            "1984",
+        );
+        let inv_id = inv.id;
+        ids.push(inv_id);
+        dao.create_invoice(inv).await.unwrap();
+        add_incoming_tx(dao, inv_id, Decimal::new(6000, 2), 400).await;
+
+        // Invoice 8: Polygon, USDC, 99.99, AdminCanceled, no txs
+        let inv = make_invoice(
+            ChainType::Polygon,
+            Decimal::new(9999, 2),
+            "USDC",
+        );
+        let inv_id = inv.id;
+        ids.push(inv_id);
+        dao.create_invoice(inv).await.unwrap();
+        dao.update_invoice_status(inv_id, InvoiceStatus::AdminCanceled)
+            .await
+            .unwrap();
+
+        ids
+    }
+
+    #[tokio::test]
+    async fn test_paginated_no_filters() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        let params = ListInvoicesParams::default();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 8);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_filter_single_status() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        // Waiting: inv1, inv2, inv7
+        let params = ListInvoicesParams {
+            status: Some(vec![InvoiceStatus::Waiting]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 3);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_filter_multiple_statuses() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        // Paid + PartiallyPaid: inv3, inv4
+        let params = ListInvoicesParams {
+            status: Some(vec![
+                InvoiceStatus::Paid,
+                InvoiceStatus::PartiallyPaid,
+            ]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 2);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_filter_by_chain() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        // Polygon: inv2, inv4, inv6, inv8
+        let params = ListInvoicesParams {
+            chain: Some(ChainType::Polygon),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 4);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_filter_by_asset_id() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        // USDC: inv2, inv4, inv5, inv8
+        let params = ListInvoicesParams {
+            asset_id: Some("USDC".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 4);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_sort_asc() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            sort_order: Some(SortOrder::Asc),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+
+        // ASC by created_at: inv1 (100.00) should be first
+        assert_eq!(
+            result[0].invoice.amount,
+            Decimal::new(10000, 2)
+        );
+        // inv8 (99.99) should be last
+        assert_eq!(
+            result[7].invoice.amount,
+            Decimal::new(9999, 2)
+        );
+        assert_eq!(result.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_paginated_sort_desc() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            sort_order: Some(SortOrder::Desc),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+
+        // DESC by created_at: inv8 (99.99) should be first
+        assert_eq!(
+            result[0].invoice.amount,
+            Decimal::new(9999, 2)
+        );
+        // inv1 (100.00) should be last
+        assert_eq!(
+            result[7].invoice.amount,
+            Decimal::new(10000, 2)
+        );
+        assert_eq!(result.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_paginated_limit_offset() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        // Page 2 of 3 per page, ASC — should return invoices 4, 5, 6
+        let params = ListInvoicesParams {
+            pagination: PaginationParams {
+                page: Some(2),
+                per_page: Some(3),
+            },
+            sort_order: Some(SortOrder::Asc),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 8);
+        assert_eq!(result.len(), 3);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_beyond_last_page() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            pagination: PaginationParams {
+                page: Some(100),
+                per_page: Some(20),
+            },
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 8);
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_paginated_empty_status_filter() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        // CustomerCanceled — none seeded
+        let params = ListInvoicesParams {
+            status: Some(vec![InvoiceStatus::CustomerCanceled]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 0);
+        insta::assert_yaml_snapshot!(result);
+    }
+
+    #[tokio::test]
+    async fn test_paginated_received_amounts() {
+        let dao = create_test_dao().await;
+        let ids = seed_invoices(&dao).await;
+
+        // Fetch all in ASC order, check received amounts
+        let params = ListInvoicesParams {
+            sort_order: Some(SortOrder::Asc),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 8);
+
+        // inv1: no txs → 0
+        assert_eq!(result[0].invoice.id, ids[0]);
+        assert_eq!(
+            result[0].total_received_amount,
+            Decimal::ZERO
+        );
+
+        // inv3: 75.00
+        assert_eq!(result[2].invoice.id, ids[2]);
+        assert_eq!(
+            result[2].total_received_amount,
+            Decimal::new(7500, 2)
+        );
+
+        // inv4: 150.00 + 50.00 = 200.00
+        assert_eq!(result[3].invoice.id, ids[3]);
+        assert_eq!(
+            result[3].total_received_amount,
+            Decimal::new(20000, 2)
+        );
+
+        // inv5: 300.00 + 25.00 = 325.00
+        assert_eq!(result[4].invoice.id, ids[4]);
+        assert_eq!(
+            result[4].total_received_amount,
+            Decimal::new(32500, 2)
+        );
+
+        // inv7: 60.00
+        assert_eq!(result[6].invoice.id, ids[6]);
+        assert_eq!(
+            result[6].total_received_amount,
+            Decimal::new(6000, 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_paginated_filter_by_date_range() {
+        let dao = create_test_dao().await;
+        let _ids = seed_invoices(&dao).await;
+
+        // Get all invoices ASC to find the timestamp boundary
+        let all_params = ListInvoicesParams {
+            sort_order: Some(SortOrder::Asc),
+            ..Default::default()
+        };
+        let all = dao
+            .get_invoices_paginated(&all_params)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 8);
+
+        // The sleep boundary is between inv4 (index 3) and inv5 (index 4).
+        // Use inv4's created_at as `created_to` to get only the first batch.
+        let boundary = all[3].invoice.created_at;
+
+        let params = ListInvoicesParams {
+            created_to: Some(boundary),
+            sort_order: Some(SortOrder::Asc),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        // Should return first 4 invoices only
+        assert_eq!(count, 4);
+        assert_eq!(result.len(), 4);
+        insta::assert_yaml_snapshot!("date_range_before_boundary", result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+
+        // Use inv5's created_at as `created_from` to get only the second batch.
+        let after_boundary = all[4].invoice.created_at;
+
+        let params = ListInvoicesParams {
+            created_from: Some(after_boundary),
+            sort_order: Some(SortOrder::Asc),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        // Should return last 4 invoices only
+        assert_eq!(count, 4);
+        assert_eq!(result.len(), 4);
+        insta::assert_yaml_snapshot!("date_range_after_boundary", result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_combined_chain_and_status() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        // Polygon + Waiting: only inv2
+        let params = ListInvoicesParams {
+            status: Some(vec![InvoiceStatus::Waiting]),
+            chain: Some(ChainType::Polygon),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_combined_asset_and_chain() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        // AssetHub + USDC: only inv5
+        let params = ListInvoicesParams {
+            chain: Some(ChainType::PolkadotAssetHub),
+            asset_id: Some("USDC".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_all_terminal_statuses() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        // All non-active statuses: Paid(inv3), OverPaid(inv5),
+        // UnpaidExpired(inv6), AdminCanceled(inv8)
+        let params = ListInvoicesParams {
+            status: Some(vec![
+                InvoiceStatus::Paid,
+                InvoiceStatus::OverPaid,
+                InvoiceStatus::UnpaidExpired,
+                InvoiceStatus::AdminCanceled,
+            ]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 4);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.order_id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
     }
 }

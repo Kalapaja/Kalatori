@@ -43,6 +43,8 @@ use crate::types::{
     InvoiceEventType,
     InvoiceWithReceivedAmount,
     KalatoriEventExt,
+    ListInvoicesParams,
+    PaginatedResponse,
     PayoutChanges,
     PublicChangesResponse,
     RefundChanges,
@@ -344,6 +346,29 @@ impl<D: DaoInterface> AppState<D> {
         );
 
         Ok(result)
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<PaginatedResponse<PublicInvoice>, DaoInvoiceError> {
+        let (invoices, total) = tokio::join!(
+            self.dao.get_invoices_paginated(params),
+            self.dao.count_invoices(params),
+        );
+
+        let items = invoices?
+            .into_iter()
+            .map(|inv| self.invoice_to_public_invoice(inv))
+            .collect();
+
+        Ok(PaginatedResponse::new(
+            items,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
     }
 
     pub async fn get_invoice_transactions(

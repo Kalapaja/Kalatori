@@ -21,6 +21,7 @@ use crate::types::{
     Invoice,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
+    ListInvoicesParams,
     Payout,
     PayoutStatus,
     Refund,
@@ -137,6 +138,18 @@ pub trait DaoInterface: Send + Sync + 'static {
     ) -> Result<Invoice, DaoInvoiceError>;
 
     async fn get_expired_invoices(&self) -> Result<Vec<Invoice>, DaoInvoiceError>;
+
+    /// Get a paginated, filtered list of invoices with their received amounts.
+    async fn get_invoices_paginated(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError>;
+
+    /// Count invoices matching the given filters.
+    async fn count_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<u32, DaoInvoiceError>;
 
     // === Transaction Methods ===
 
@@ -300,6 +313,16 @@ pub trait DaoTransactionInterface {
 
     async fn update_invoices_expired(&self) -> Result<Vec<Invoice>, DaoInvoiceError>;
 
+    async fn get_invoices_paginated(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError>;
+
+    async fn count_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<u32, DaoInvoiceError>;
+
     // === Transaction Methods ===
 
     async fn create_transaction(
@@ -459,6 +482,20 @@ impl DaoInterface for DAO {
 
     async fn get_expired_invoices(&self) -> Result<Vec<Invoice>, DaoInvoiceError> {
         DaoInvoiceMethods::get_expired_invoices(self).await
+    }
+
+    async fn get_invoices_paginated(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError> {
+        DaoInvoiceMethods::get_invoices_paginated(self, params).await
+    }
+
+    async fn count_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<u32, DaoInvoiceError> {
+        DaoInvoiceMethods::count_invoices(self, params).await
     }
 
     async fn create_transaction(
@@ -650,6 +687,20 @@ impl DaoTransactionInterface for DaoTransaction {
 
     async fn update_invoices_expired(&self) -> Result<Vec<Invoice>, DaoInvoiceError> {
         DaoInvoiceMethods::get_expired_invoices(self).await
+    }
+
+    async fn get_invoices_paginated(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError> {
+        DaoInvoiceMethods::get_invoices_paginated(self, params).await
+    }
+
+    async fn count_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<u32, DaoInvoiceError> {
+        DaoInvoiceMethods::count_invoices(self, params).await
     }
 
     async fn create_transaction(

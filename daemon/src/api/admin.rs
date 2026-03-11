@@ -1,6 +1,7 @@
 //! Admin namespace — protected by session middleware + CSRF middleware when
 //! auth is enabled.
 
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{
     IntoResponse,
@@ -17,12 +18,38 @@ use kalatori_client::types::ApiResultStructured;
 
 use crate::auth::session::AuthenticatedUser;
 use crate::auth::token::Role;
+use crate::dao::DaoInvoiceError;
+use crate::types::{
+    ListInvoicesParams,
+    PaginatedResponse,
+    PublicInvoice,
+};
 
 use super::ApiState;
+use super::utils::{
+    ApiResult,
+    AppQuery,
+};
 
 /// Admin routes.
 pub fn routes() -> Router<ApiState> {
-    Router::new().route("/whoami", get(whoami_handler))
+    Router::new()
+        .route("/whoami", get(whoami_handler))
+        .route("/invoices", get(list_invoices_handler))
+}
+
+// ============================================================================
+// GET /admin/invoices
+// ============================================================================
+
+#[tracing::instrument(skip_all)]
+async fn list_invoices_handler(
+    State(state): State<ApiState>,
+    AppQuery(params): AppQuery<ListInvoicesParams>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> ApiResult<PaginatedResponse<PublicInvoice>, DaoInvoiceError> {
+    let result = state.list_invoices(&params).await?;
+    Ok(result.into())
 }
 
 // ============================================================================
