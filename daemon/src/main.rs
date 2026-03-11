@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod chain;
 mod chain_client;
 mod configs;
@@ -39,6 +40,7 @@ use chain_client::{
 use configs::{
     ChainsConfig,
     PaymentsConfig,
+    auth_config_with_prefix,
     chains_config_with_prefix,
     database_config_with_prefix,
     logger_config_with_prefix,
@@ -207,6 +209,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let database_config = database_config_with_prefix(&configs_path, &env_prefix);
     let shop_config = shop_config_with_prefix(&configs_path, &env_prefix);
     let etherscan_client_config = etherscan_client_config_with_prefix(&configs_path, &env_prefix);
+    let auth_config = auth_config_with_prefix(&configs_path, &env_prefix);
 
     let hmac_config = HmacConfig::new(
         secrets_config
@@ -381,6 +384,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let api_handle = api::api_server(
         web_server_config,
         hmac_config,
+        auth_config,
         app_state,
         shutdown_notification.token.clone(),
     )

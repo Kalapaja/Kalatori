@@ -20,6 +20,7 @@ use crate::types::ChainType;
 use super::consts::{
     DEFAULT_ALLOW_INSECURE_ENDPOINTS,
     DEFAULT_ASSET_HUB_ASSET_ID,
+    DEFAULT_AUTH_CLOCK_TOLERANCE_SECS,
     DEFAULT_CHAIN,
     DEFAULT_DATABASE_DIR,
     DEFAULT_ETHERSCAN_LIMIT_PER_SECOND,
@@ -364,4 +365,124 @@ pub struct EtherscanClientConfig {
     #[serde(default = "default_etherscan_limit_per_second")]
     pub requests_per_second: NonZeroU32,
     pub api_key: String,
+}
+
+// --- Auth config ---
+
+fn default_auth_clock_tolerance_secs() -> u64 {
+    DEFAULT_AUTH_CLOCK_TOLERANCE_SECS
+}
+
+/// OAuth configuration for the daemon's admin API.
+///
+/// If `auth.json` exists (or `KALATORI_AUTH_*` env vars are set), auth is
+/// enabled. If not, auth is disabled and admin paths return 404.
+#[derive(Deserialize)]
+pub struct OAuthConfigRaw {
+    /// Authorization server base URL (e.g. `https://app.kalatori.org`).
+    pub auth_server_url: String,
+    /// OAuth client identifier, assigned at daemon provisioning.
+    pub client_id: String,
+    /// Per-daemon shared secret for authenticating s2s calls.
+    pub client_secret: SecretString,
+    /// Previous secret, accepted during rotation window (see spec §10.3).
+    #[serde(default)]
+    pub previous_client_secret: Option<SecretString>,
+    /// Ed25519 public keys in PASERK format (`k4.public.<data>`), max 2.
+    pub token_public_keys: Vec<String>,
+    /// Seconds of clock skew tolerance for exp/iat validation. Default: 30.
+    #[serde(default = "default_auth_clock_tolerance_secs")]
+    pub clock_tolerance: u64,
+    /// Daemon's own public base URL (e.g. `https://bel-fantasy-01.kalatori.store`).
+    /// Used to construct the redirect URI for the OAuth callback.
+    pub base_url: String,
+}
+
+/// Validated OAuth configuration. All fields are guaranteed present and valid.
+#[derive(Clone, Debug)]
+pub struct OAuthConfig {
+    /// Authorization server base URL, normalized (lowercase host, no trailing
+    /// slash).
+    pub auth_server_url: String,
+    /// OAuth client identifier.
+    pub client_id: String,
+    /// Per-daemon shared secret for s2s calls.
+    pub client_secret: SecretString,
+    /// Previous secret during rotation window.
+    pub previous_client_secret: Option<SecretString>,
+    /// Ed25519 public keys in PASERK `k4.public.<data>` format (1 or 2).
+    pub token_public_keys: Vec<String>,
+    /// Clock skew tolerance in seconds.
+    pub clock_tolerance: u64,
+    /// Daemon's own public base URL, normalized.
+    pub base_url: String,
+}
+
+impl OAuthConfig {
+    /// Validate raw deserialized config.
+    ///
+    /// # Panics
+    ///
+    /// Panics if fields are invalid. This follows the existing config pattern
+    /// where invalid config causes a startup panic with a descriptive message.
+    pub fn from_raw(raw: OAuthConfigRaw) -> Self {
+        let token_public_keys = raw.token_public_keys;
+
+        assert!(
+            !token_public_keys.is_empty(),
+            "auth config: `token_public_keys` must contain at least one key"
+        );
+
+        assert!(
+            token_public_keys.len() <= 2,
+            "auth config: `token_public_keys` must contain at most 2 keys, got {}",
+            token_public_keys.len()
+        );
+
+        for (i, key) in token_public_keys.iter().enumerate() {
+            assert!(
+                key.starts_with("k4.public."),
+                "auth config: `token_public_keys[{i}]` must be a PASERK k4.public key, got: {key}"
+            );
+        }
+
+        Self {
+            auth_server_url: normalize_url(&raw.auth_server_url),
+            client_id: raw.client_id,
+            client_secret: raw.client_secret,
+            previous_client_secret: raw.previous_client_secret,
+            token_public_keys,
+            clock_tolerance: raw.clock_tolerance,
+            base_url: normalize_url(&raw.base_url),
+        }
+    }
+}
+
+/// Normalize a URL for consistent comparison: lowercase scheme and host, remove
+/// trailing slash, keep explicit port only if non-default.
+fn normalize_url(url: &str) -> String {
+    let url = url.trim_end_matches('/');
+
+    // Parse to normalize scheme + host casing
+    let Ok(parsed) = url::Url::parse(url) else {
+        panic!("auth config: invalid URL: {url}");
+    };
+
+    let scheme = parsed.scheme();
+    let host = parsed
+        .host_str()
+        .unwrap_or_else(|| panic!("auth config: URL has no host: {url}"));
+
+    let is_default_port = matches!(
+        (scheme, parsed.port()),
+        ("https", None | Some(443)) | ("http", None | Some(80))
+    );
+
+    if is_default_port {
+        format!("{scheme}://{host}")
+    } else if let Some(port) = parsed.port() {
+        format!("{scheme}://{host}:{port}")
+    } else {
+        format!("{scheme}://{host}")
+    }
 }

@@ -40,6 +40,7 @@ axum = { version = "0.8", default-features = false, features = [
     "http1",
     "query",
     "json",
+    "form",
     "matched-path",
     "original-uri",
     "macros",
@@ -90,8 +91,13 @@ tracing-loki = "0.2"
 
 # Utils
 config = "0.15"
+hkdf = "0.12"
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+pasetors = { version = "0.7", default-features = false, features = ["v4", "paserk", "std"] }
+url = "2"
 # Please keep reqwest version in sync with the one in kalatori-client
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "form"] }
 # Need to include it directly cause different servers/clients use different crypto providers
 # which is not allowed by rustls and we need to manually specify which one to use as default
 # See details here: https://docs.rs/rustls/latest/rustls/crypto/struct.CryptoProvider.html#using-the-per-process-default-cryptoprovider

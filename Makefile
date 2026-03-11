@@ -100,6 +100,9 @@ stop-chopsticks: # Stop chopsticks for Asset Hub in docker compose
 run: start-chopsticks # Ensure that chopsticks is started and run kalatori daemon locally
 	cargo run
 
+run-dev: start-chopsticks # Run kalatori daemon with dev_api feature (enables /dev endpoints and auto-auth)
+	cargo run --features dev_api
+
 run-release: # Run kalatori daemon with --release flag without starting chopsticks
 	cargo run --release
 
