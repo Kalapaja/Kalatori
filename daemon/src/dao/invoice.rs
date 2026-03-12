@@ -581,6 +581,11 @@ fn push_invoice_filters(
         builder.push_bind(asset_id.clone());
     }
 
+    if let Some(order_id) = &params.order_id {
+        builder.push(" AND i.order_id LIKE ");
+        builder.push_bind(format!("%{order_id}%"));
+    }
+
     if let Some(created_from) = &params.created_from {
         builder.push(" AND i.created_at >= ");
         builder.push_bind(created_from.naive_utc());
@@ -1803,5 +1808,61 @@ mod tests {
             "[].invoice.updated_at" => "[timestamp]",
             "[].invoice.valid_till" => "[timestamp]",
         });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_filter_by_order_id() {
+        let dao = create_test_dao().await;
+
+        // Create invoices with known order IDs
+        let mut inv1 = default_create_invoice_data();
+        inv1.order_id = "SHOP-2024-001".to_string();
+        dao.create_invoice(inv1).await.unwrap();
+
+        let mut inv2 = default_create_invoice_data();
+        inv2.order_id = "SHOP-2024-002".to_string();
+        dao.create_invoice(inv2).await.unwrap();
+
+        let mut inv3 = default_create_invoice_data();
+        inv3.order_id = "OTHER-ORDER-999".to_string();
+        dao.create_invoice(inv3).await.unwrap();
+
+        // Substring match "SHOP-2024" → inv1, inv2
+        let params = ListInvoicesParams {
+            order_id: Some("SHOP-2024".to_string()),
+            ..Default::default()
+        };
+        let result = dao.get_invoices_paginated(&params).await.unwrap();
+        let count = dao.count_invoices(&params).await.unwrap();
+
+        assert_eq!(count, 2);
+        insta::assert_yaml_snapshot!(result, {
+            "[].invoice.id" => "[uuid]",
+            "[].invoice.created_at" => "[timestamp]",
+            "[].invoice.updated_at" => "[timestamp]",
+            "[].invoice.valid_till" => "[timestamp]",
+        });
+
+        // Exact substring "002" → inv2 only
+        let params = ListInvoicesParams {
+            order_id: Some("002".to_string()),
+            ..Default::default()
+        };
+        let result = dao.get_invoices_paginated(&params).await.unwrap();
+        let count = dao.count_invoices(&params).await.unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result[0].invoice.order_id, "SHOP-2024-002");
+
+        // No match
+        let params = ListInvoicesParams {
+            order_id: Some("NONEXISTENT".to_string()),
+            ..Default::default()
+        };
+        let result = dao.get_invoices_paginated(&params).await.unwrap();
+        let count = dao.count_invoices(&params).await.unwrap();
+
+        assert_eq!(count, 0);
+        assert!(result.is_empty());
     }
 }

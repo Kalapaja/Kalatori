@@ -37,6 +37,9 @@ pub struct ListInvoicesParams {
     /// Filter by asset ID.
     pub asset_id: Option<String>,
 
+    /// Filter by order ID (substring match).
+    pub order_id: Option<String>,
+
     /// Filter invoices created on or after this timestamp.
     pub created_from: Option<DateTime<Utc>>,
 
