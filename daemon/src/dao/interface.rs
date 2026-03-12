@@ -22,6 +22,7 @@ use crate::types::{
     InvoiceStatus,
     InvoiceWithReceivedAmount,
     ListInvoicesParams,
+    ListPayoutsParams,
     Payout,
     PayoutStatus,
     Refund,
@@ -224,6 +225,18 @@ pub trait DaoInterface: Send + Sync + 'static {
         is_retriable: bool,
     ) -> Result<Payout, DaoPayoutError>;
 
+    /// Get a paginated, filtered list of payouts.
+    async fn get_payouts_paginated(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<Vec<Payout>, DaoPayoutError>;
+
+    /// Count payouts matching the given filters.
+    async fn count_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<u32, DaoPayoutError>;
+
     // === Webhook Event Methods ===
 
     async fn create_webhook_event(
@@ -383,6 +396,16 @@ pub trait DaoTransactionInterface {
         retry_meta: RetryMeta,
         is_retriable: bool,
     ) -> Result<Payout, DaoPayoutError>;
+
+    async fn get_payouts_paginated(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<Vec<Payout>, DaoPayoutError>;
+
+    async fn count_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<u32, DaoPayoutError>;
 
     // === Webhook Event Methods ===
 
@@ -596,6 +619,20 @@ impl DaoInterface for DAO {
         .await
     }
 
+    async fn get_payouts_paginated(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<Vec<Payout>, DaoPayoutError> {
+        DaoPayoutMethods::get_payouts_paginated(self, params).await
+    }
+
+    async fn count_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<u32, DaoPayoutError> {
+        DaoPayoutMethods::count_payouts(self, params).await
+    }
+
     async fn create_webhook_event(
         &self,
         event: WebhookEvent,
@@ -799,6 +836,20 @@ impl DaoTransactionInterface for DaoTransaction {
             is_retriable,
         )
         .await
+    }
+
+    async fn get_payouts_paginated(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<Vec<Payout>, DaoPayoutError> {
+        DaoPayoutMethods::get_payouts_paginated(self, params).await
+    }
+
+    async fn count_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<u32, DaoPayoutError> {
+        DaoPayoutMethods::count_payouts(self, params).await
     }
 
     async fn create_webhook_event(

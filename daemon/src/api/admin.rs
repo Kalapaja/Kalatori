@@ -18,10 +18,15 @@ use kalatori_client::types::ApiResultStructured;
 
 use crate::auth::session::AuthenticatedUser;
 use crate::auth::token::Role;
-use crate::dao::DaoInvoiceError;
+use crate::dao::{
+    DaoInvoiceError,
+    DaoPayoutError,
+};
 use crate::types::{
     ListInvoicesParams,
+    ListPayoutsParams,
     PaginatedResponse,
+    Payout,
     PublicInvoice,
 };
 
@@ -36,6 +41,7 @@ pub fn routes() -> Router<ApiState> {
     Router::new()
         .route("/whoami", get(whoami_handler))
         .route("/invoices", get(list_invoices_handler))
+        .route("/payouts", get(list_payouts_handler))
 }
 
 // ============================================================================
@@ -49,6 +55,20 @@ async fn list_invoices_handler(
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> ApiResult<PaginatedResponse<PublicInvoice>, DaoInvoiceError> {
     let result = state.list_invoices(&params).await?;
+    Ok(result.into())
+}
+
+// ============================================================================
+// GET /admin/payouts
+// ============================================================================
+
+#[tracing::instrument(skip_all)]
+async fn list_payouts_handler(
+    State(state): State<ApiState>,
+    AppQuery(params): AppQuery<ListPayoutsParams>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> ApiResult<PaginatedResponse<Payout>, DaoPayoutError> {
+    let result = state.list_payouts(&params).await?;
     Ok(result.into())
 }
 

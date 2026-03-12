@@ -29,6 +29,7 @@ use crate::dao::{
     DaoChangesError,
     DaoInterface,
     DaoInvoiceError,
+    DaoPayoutError,
     DaoSwapError,
     DaoTransactionError,
     DaoTransactionInterface,
@@ -44,7 +45,9 @@ use crate::types::{
     InvoiceWithReceivedAmount,
     KalatoriEventExt,
     ListInvoicesParams,
+    ListPayoutsParams,
     PaginatedResponse,
+    Payout,
     PayoutChanges,
     PublicChangesResponse,
     RefundChanges,
@@ -365,6 +368,24 @@ impl<D: DaoInterface> AppState<D> {
 
         Ok(PaginatedResponse::new(
             items,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<PaginatedResponse<Payout>, DaoPayoutError> {
+        let (payouts, total) = tokio::join!(
+            self.dao.get_payouts_paginated(params),
+            self.dao.count_payouts(params),
+        );
+
+        Ok(PaginatedResponse::new(
+            payouts?,
             total?,
             params.pagination.validated_page(),
             params.pagination.validated_per_page(),

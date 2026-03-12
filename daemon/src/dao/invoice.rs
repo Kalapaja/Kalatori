@@ -1189,7 +1189,6 @@ mod tests {
     /// | 6 | Polygon     | USDT  |  42.00 | UnpaidExpired       | none            |
     /// | 7 | AssetHub    | USDT  | 180.00 | Waiting             | 60.00           |
     /// | 8 | Polygon     | USDC  |  99.99 | AdminCanceled       | none            |
-    #[expect(clippy::too_many_lines)]
     async fn seed_invoices(dao: &crate::dao::DAO) -> Vec<Uuid> {
         let mut ids = Vec::new();
 
