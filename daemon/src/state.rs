@@ -46,8 +46,10 @@ use crate::types::{
     KalatoriEventExt,
     ListInvoicesParams,
     ListPayoutsParams,
+    ListTransactionsParams,
     PaginatedResponse,
     Payout,
+    PublicTransaction,
     PayoutChanges,
     PublicChangesResponse,
     RefundChanges,
@@ -386,6 +388,30 @@ impl<D: DaoInterface> AppState<D> {
 
         Ok(PaginatedResponse::new(
             payouts?,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<PaginatedResponse<PublicTransaction>, DaoTransactionError> {
+        let (transactions, total) = tokio::join!(
+            self.dao
+                .get_transactions_paginated(params),
+            self.dao.count_transactions(params),
+        );
+
+        let items = transactions?
+            .into_iter()
+            .map(PublicTransaction::from)
+            .collect();
+
+        Ok(PaginatedResponse::new(
+            items,
             total?,
             params.pagination.validated_page(),
             params.pagination.validated_per_page(),

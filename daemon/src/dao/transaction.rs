@@ -2,6 +2,7 @@ use chrono::{
     DateTime,
     Utc,
 };
+use sqlx::QueryBuilder;
 use sqlx::types::{
     Json,
     Text,
@@ -12,6 +13,7 @@ use uuid::Uuid;
 use crate::types::{
     ChainType,
     GeneralTransactionId,
+    ListTransactionsParams,
     Transaction,
     TransactionRow,
     TransactionStatus,
@@ -75,6 +77,80 @@ impl StatusTransitionError for TransactionStatus {
     type ErrorType = DaoTransactionError;
 
     const ERROR_TYPE_PREFIX: &'static str = "TRANSACTION_STATUS_TRANSITION|";
+}
+
+impl crate::api::ApiErrorExt for DaoTransactionError {
+    fn category(&self) -> &str {
+        match self {
+            DaoTransactionError::NotFound {
+                ..
+            } => "ENTITY_NOT_FOUND",
+            DaoTransactionError::InvoiceNotFound {
+                ..
+            } => "RELATED_ENTITY_NOT_FOUND",
+            DaoTransactionError::StatusConstraintViolation {
+                ..
+            } => "STATUS_CONSTRAINT_VIOLATION",
+            DaoTransactionError::DuplicateTransaction {
+                ..
+            } => "DUPLICATE_ENTITY",
+            DaoTransactionError::DatabaseError => "INTERNAL_SERVER_ERROR",
+        }
+    }
+
+    fn code(&self) -> &str {
+        match self {
+            DaoTransactionError::NotFound {
+                ..
+            } => "TRANSACTION_NOT_FOUND",
+            DaoTransactionError::InvoiceNotFound {
+                ..
+            } => "RELATED_INVOICE_NOT_FOUND",
+            DaoTransactionError::StatusConstraintViolation {
+                ..
+            } => "TRANSACTION_STATUS_CONSTRAINT_VIOLATION",
+            DaoTransactionError::DuplicateTransaction {
+                ..
+            } => "TRANSACTION_DUPLICATE",
+            DaoTransactionError::DatabaseError => "INTERNAL_SERVER_ERROR",
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            DaoTransactionError::NotFound {
+                ..
+            } => "The requested transaction was not found.",
+            DaoTransactionError::InvoiceNotFound {
+                ..
+            } => "The related invoice id was not found.",
+            DaoTransactionError::StatusConstraintViolation {
+                ..
+            } => "The requested status transition is not allowed.",
+            DaoTransactionError::DuplicateTransaction {
+                ..
+            } => "A transaction with the same blockchain coordinates already exists.",
+            DaoTransactionError::DatabaseError => "A database error occurred.",
+        }
+    }
+
+    fn http_status_code(&self) -> reqwest::StatusCode {
+        match self {
+            DaoTransactionError::NotFound {
+                ..
+            } => reqwest::StatusCode::NOT_FOUND,
+            DaoTransactionError::InvoiceNotFound {
+                ..
+            } => reqwest::StatusCode::BAD_REQUEST,
+            DaoTransactionError::StatusConstraintViolation {
+                ..
+            } => reqwest::StatusCode::BAD_REQUEST,
+            DaoTransactionError::DuplicateTransaction {
+                ..
+            } => reqwest::StatusCode::CONFLICT,
+            DaoTransactionError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
 }
 
 pub trait DaoTransactionMethods: DaoExecutor + 'static {
@@ -320,6 +396,72 @@ pub trait DaoTransactionMethods: DaoExecutor + 'static {
             })
     }
 
+    /// Get a paginated, filtered list of transactions.
+    async fn get_transactions_paginated(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<Vec<Transaction>, DaoTransactionError> {
+        let mut builder = QueryBuilder::new("SELECT * FROM transactions t WHERE 1=1");
+
+        push_transaction_filters(&mut builder, params);
+
+        let sort_order = params.sort_order.unwrap_or_default();
+
+        builder.push(" ORDER BY t.created_at ");
+        builder.push(sort_order.as_sql());
+
+        let per_page = params.pagination.validated_per_page();
+        let offset = params.pagination.offset();
+
+        builder.push(" LIMIT ");
+        builder.push_bind(per_page);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+
+        let query = builder.build_query_as::<TransactionRow>();
+
+        self.fetch_all(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.transaction",
+                    error.operation = "get_transactions_paginated",
+                    error.source = ?e,
+                    "Failed to fetch paginated transactions"
+                );
+                DaoTransactionError::DatabaseError
+            })
+    }
+
+    /// Count transactions matching the given filters (for pagination metadata).
+    async fn count_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<u32, DaoTransactionError> {
+        let mut builder =
+            QueryBuilder::new("SELECT COUNT(*) as count FROM transactions t WHERE 1=1");
+
+        push_transaction_filters(&mut builder, params);
+
+        let query = builder.build_query_as::<CountRow>();
+
+        let row: CountRow = self
+            .fetch_one(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.transaction",
+                    error.operation = "count_transactions",
+                    error.source = ?e,
+                    "Failed to count transactions"
+                );
+                DaoTransactionError::DatabaseError
+            })?;
+
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Ok(row.count as u32)
+    }
+
     async fn get_invoice_transactions(
         &self,
         invoice_id: Uuid,
@@ -348,6 +490,59 @@ pub trait DaoTransactionMethods: DaoExecutor + 'static {
 }
 
 impl<T: DaoExecutor + 'static> DaoTransactionMethods for T {}
+
+#[derive(sqlx::FromRow)]
+struct CountRow {
+    count: i64,
+}
+
+/// Push WHERE clause conditions to the query builder based on filter params.
+/// Shared between `get_transactions_paginated` and `count_transactions`.
+fn push_transaction_filters(
+    builder: &mut QueryBuilder<'_, sqlx::Sqlite>,
+    params: &ListTransactionsParams,
+) {
+    if let Some(statuses) = &params.status
+        && !statuses.is_empty()
+    {
+        builder.push(" AND t.status IN (");
+        let mut separated = builder.separated(", ");
+        for status in statuses {
+            separated.push_bind(status.to_string());
+        }
+        separated.push_unseparated(")");
+    }
+
+    if let Some(transaction_type) = &params.transaction_type {
+        builder.push(" AND t.transaction_type = ");
+        builder.push_bind(transaction_type.to_string());
+    }
+
+    if let Some(chain) = &params.chain {
+        builder.push(" AND t.chain = ");
+        builder.push_bind(chain.to_string());
+    }
+
+    if let Some(asset_id) = &params.asset_id {
+        builder.push(" AND t.asset_id = ");
+        builder.push_bind(asset_id.clone());
+    }
+
+    if let Some(invoice_id) = &params.invoice_id {
+        builder.push(" AND t.invoice_id = ");
+        builder.push_bind(*invoice_id);
+    }
+
+    if let Some(created_from) = &params.created_from {
+        builder.push(" AND t.created_at >= ");
+        builder.push_bind(created_from.naive_utc());
+    }
+
+    if let Some(created_to) = &params.created_to {
+        builder.push(" AND t.created_at <= ");
+        builder.push_bind(created_to.naive_utc());
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1000,5 +1195,642 @@ mod tests {
             updated2.status,
             TransactionStatus::Completed
         );
+    }
+
+    // ========================================================================
+    // Paginated / filtered snapshot tests
+    // ========================================================================
+
+    use crate::types::{
+        CreateInvoiceData,
+        InvoiceCart,
+        TransferInfo,
+    };
+    use rust_decimal::Decimal;
+
+    fn make_invoice(
+        chain: ChainType,
+        asset_id: &str,
+    ) -> CreateInvoiceData {
+        let id = Uuid::new_v4();
+        CreateInvoiceData {
+            id,
+            order_id: id.to_string(),
+            asset_id: asset_id.to_string(),
+            asset_name: if asset_id == "1984" {
+                "USDT".to_string()
+            } else {
+                "USDC".to_string()
+            },
+            chain,
+            amount: Decimal::new(10000, 2),
+            payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
+            cart: InvoiceCart::empty(),
+            redirect_url: "http://localhost:8080/thankyou".to_string(),
+            #[expect(clippy::arithmetic_side_effects)]
+            valid_till: chrono::Utc::now() + chrono::Duration::hours(24),
+        }
+    }
+
+    fn make_transaction(
+        invoice_id: Uuid,
+        chain: ChainType,
+        asset_id: &str,
+        amount: Decimal,
+        tx_type: TransactionType,
+    ) -> Transaction {
+        let id = Uuid::new_v4();
+        Transaction {
+            id,
+            transfer_info: TransferInfo {
+                chain,
+                asset_id: asset_id.to_string(),
+                asset_name: if asset_id == "1984" {
+                    "USDT".to_string()
+                } else {
+                    "USDC".to_string()
+                },
+                amount,
+                source_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
+                destination_address: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+            },
+            transaction_id: GeneralTransactionId {
+                block_number: None,
+                position_in_block: None,
+                tx_hash: Some(id.to_string()),
+            },
+            transaction_type: tx_type,
+            ..default_transaction(invoice_id)
+        }
+    }
+
+    /// Seed 8 transactions with diverse properties, return their IDs in
+    /// insertion order. A small sleep separates the first 4 from the last 4
+    /// to allow date range filtering tests.
+    ///
+    /// | # | Chain    | Asset | Amount | Type     | Status      |
+    /// |---|----------|-------|--------|----------|-------------|
+    /// | 1 | AssetHub | USDT  | 100.00 | Incoming | Waiting     |
+    /// | 2 | Polygon  | USDC  | 250.50 | Incoming | Waiting     |
+    /// | 3 | AssetHub | USDT  |  75.00 | Outgoing | Completed   |
+    /// | 4 | Polygon  | USDC  | 500.00 | Incoming | InProgress  |
+    /// | 5 | AssetHub | USDC  | 300.00 | Outgoing | Failed      |
+    /// | 6 | Polygon  | USDT  |  42.00 | Incoming | Completed   |
+    /// | 7 | AssetHub | USDT  | 180.00 | Incoming | Waiting     |
+    /// | 8 | Polygon  | USDC  |  99.99 | Outgoing | Completed   |
+    async fn seed_transactions(dao: &crate::dao::DAO) -> (Vec<Uuid>, Vec<Uuid>) {
+        let mut tx_ids = Vec::new();
+
+        // Create 2 invoices (one per chain) to parent the transactions
+        let inv_ah = make_invoice(ChainType::PolkadotAssetHub, "1984");
+        let inv_ah_id = inv_ah.id;
+        dao.create_invoice(inv_ah)
+            .await
+            .unwrap();
+
+        let inv_poly = make_invoice(ChainType::Polygon, "USDC");
+        let inv_poly_id = inv_poly.id;
+        dao.create_invoice(inv_poly)
+            .await
+            .unwrap();
+
+        let invoice_ids = vec![inv_ah_id, inv_poly_id];
+
+        // --- First batch (before the sleep) ---
+
+        // Tx 1: AssetHub, USDT, 100.00, Incoming, Waiting
+        let t = make_transaction(
+            inv_ah_id,
+            ChainType::PolkadotAssetHub,
+            "1984",
+            Decimal::new(10000, 2),
+            TransactionType::Incoming,
+        );
+        tx_ids.push(t.id);
+        dao.create_transaction(t).await.unwrap();
+
+        // Tx 2: Polygon, USDC, 250.50, Incoming, Waiting
+        let t = make_transaction(
+            inv_poly_id,
+            ChainType::Polygon,
+            "USDC",
+            Decimal::new(25050, 2),
+            TransactionType::Incoming,
+        );
+        tx_ids.push(t.id);
+        dao.create_transaction(t).await.unwrap();
+
+        // Tx 3: AssetHub, USDT, 75.00, Outgoing, Completed (Waiting -> InProgress ->
+        // Completed)
+        let t = make_transaction(
+            inv_ah_id,
+            ChainType::PolkadotAssetHub,
+            "1984",
+            Decimal::new(7500, 2),
+            TransactionType::Outgoing,
+        );
+        tx_ids.push(t.id);
+        let mut created = dao.create_transaction(t).await.unwrap();
+        created.status = TransactionStatus::InProgress;
+        let mut created = dao
+            .update_transaction(created)
+            .await
+            .unwrap();
+        created.status = TransactionStatus::Completed;
+        dao.update_transaction(created)
+            .await
+            .unwrap();
+
+        // Tx 4: Polygon, USDC, 500.00, Incoming, InProgress (Waiting -> InProgress)
+        let t = make_transaction(
+            inv_poly_id,
+            ChainType::Polygon,
+            "USDC",
+            Decimal::new(50000, 2),
+            TransactionType::Incoming,
+        );
+        tx_ids.push(t.id);
+        let mut created = dao.create_transaction(t).await.unwrap();
+        created.status = TransactionStatus::InProgress;
+        dao.update_transaction(created)
+            .await
+            .unwrap();
+
+        // Sleep to create a timestamp gap between batches
+        tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
+
+        // --- Second batch (after the sleep) ---
+
+        // Tx 5: AssetHub, USDC, 300.00, Outgoing, Failed (Waiting -> InProgress ->
+        // Failed)
+        let t = make_transaction(
+            inv_ah_id,
+            ChainType::PolkadotAssetHub,
+            "USDC",
+            Decimal::new(30000, 2),
+            TransactionType::Outgoing,
+        );
+        tx_ids.push(t.id);
+        let mut created = dao.create_transaction(t).await.unwrap();
+        created.status = TransactionStatus::InProgress;
+        let mut created = dao
+            .update_transaction(created)
+            .await
+            .unwrap();
+        created.status = TransactionStatus::Failed;
+        dao.update_transaction(created)
+            .await
+            .unwrap();
+
+        // Tx 6: Polygon, USDT, 42.00, Incoming, Completed (Waiting -> InProgress ->
+        // Completed)
+        let t = make_transaction(
+            inv_poly_id,
+            ChainType::Polygon,
+            "1984",
+            Decimal::new(4200, 2),
+            TransactionType::Incoming,
+        );
+        tx_ids.push(t.id);
+        let mut created = dao.create_transaction(t).await.unwrap();
+        created.status = TransactionStatus::InProgress;
+        let mut created = dao
+            .update_transaction(created)
+            .await
+            .unwrap();
+        created.status = TransactionStatus::Completed;
+        dao.update_transaction(created)
+            .await
+            .unwrap();
+
+        // Tx 7: AssetHub, USDT, 180.00, Incoming, Waiting
+        let t = make_transaction(
+            inv_ah_id,
+            ChainType::PolkadotAssetHub,
+            "1984",
+            Decimal::new(18000, 2),
+            TransactionType::Incoming,
+        );
+        tx_ids.push(t.id);
+        dao.create_transaction(t).await.unwrap();
+
+        // Tx 8: Polygon, USDC, 99.99, Outgoing, Completed (Waiting -> InProgress ->
+        // Completed)
+        let t = make_transaction(
+            inv_poly_id,
+            ChainType::Polygon,
+            "USDC",
+            Decimal::new(9999, 2),
+            TransactionType::Outgoing,
+        );
+        tx_ids.push(t.id);
+        let mut created = dao.create_transaction(t).await.unwrap();
+        created.status = TransactionStatus::InProgress;
+        let mut created = dao
+            .update_transaction(created)
+            .await
+            .unwrap();
+        created.status = TransactionStatus::Completed;
+        dao.update_transaction(created)
+            .await
+            .unwrap();
+
+        (tx_ids, invoice_ids)
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_no_filters() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        let params = ListTransactionsParams::default();
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 8);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_single_status() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        // Waiting: tx1, tx2, tx7
+        let params = ListTransactionsParams {
+            status: Some(vec![TransactionStatus::Waiting]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 3);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_multiple_statuses() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        // Completed: tx3, tx6, tx8 + InProgress: tx4
+        let params = ListTransactionsParams {
+            status: Some(vec![
+                TransactionStatus::Completed,
+                TransactionStatus::InProgress,
+            ]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 4);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_by_type() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        // Outgoing: tx3, tx5, tx8
+        let params = ListTransactionsParams {
+            transaction_type: Some(TransactionType::Outgoing),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 3);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_by_chain() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        // AssetHub: tx1, tx3, tx5, tx7
+        let params = ListTransactionsParams {
+            chain: Some(ChainType::PolkadotAssetHub),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 4);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_by_asset_id() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        // USDC: tx2, tx4, tx5, tx8
+        let params = ListTransactionsParams {
+            asset_id: Some("USDC".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 4);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_by_invoice_id() {
+        let dao = create_test_dao().await;
+        let (_tx_ids, invoice_ids) = seed_transactions(&dao).await;
+
+        // Polygon invoice: tx2, tx4, tx6, tx8
+        let params = ListTransactionsParams {
+            invoice_id: Some(invoice_ids[1]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 4);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_sort_asc() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        let params = ListTransactionsParams {
+            sort_order: Some(crate::types::SortOrder::Asc),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 8);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_pagination() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        use crate::types::PaginationParams;
+
+        // Page 1, size 3
+        let params = ListTransactionsParams {
+            pagination: PaginationParams {
+                page: Some(1),
+                per_page: Some(3),
+            },
+            ..Default::default()
+        };
+        let page1 = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let total = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(total, 8);
+        assert_eq!(page1.len(), 3);
+        insta::assert_yaml_snapshot!("pagination_page1", page1, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+
+        // Page 2
+        let params2 = ListTransactionsParams {
+            pagination: PaginationParams {
+                page: Some(2),
+                per_page: Some(3),
+            },
+            ..Default::default()
+        };
+        let page2 = dao
+            .get_transactions_paginated(&params2)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 3);
+        insta::assert_yaml_snapshot!("pagination_page2", page2, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+
+        // Page 3 (last, partial)
+        let params3 = ListTransactionsParams {
+            pagination: PaginationParams {
+                page: Some(3),
+                per_page: Some(3),
+            },
+            ..Default::default()
+        };
+        let page3 = dao
+            .get_transactions_paginated(&params3)
+            .await
+            .unwrap();
+        assert_eq!(page3.len(), 2);
+        insta::assert_yaml_snapshot!("pagination_page3", page3, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_date_range() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        // All transactions were created "now"-ish — get those in the first batch
+        // by filtering up to a moment before the second batch.
+        let cutoff = chrono::Utc::now() - chrono::Duration::milliseconds(5);
+        let params = ListTransactionsParams {
+            created_to: Some(cutoff),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        // Should get first batch (tx1-tx4)
+        assert_eq!(count, 4);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_combined_filters() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        // AssetHub + Incoming + Waiting => tx1, tx7
+        let params = ListTransactionsParams {
+            chain: Some(ChainType::PolkadotAssetHub),
+            transaction_type: Some(TransactionType::Incoming),
+            status: Some(vec![TransactionStatus::Waiting]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 2);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_empty_result() {
+        let dao = create_test_dao().await;
+        seed_transactions(&dao).await;
+
+        // No transactions with Incoming + Failed
+        let params = ListTransactionsParams {
+            transaction_type: Some(TransactionType::Incoming),
+            status: Some(vec![TransactionStatus::Failed]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 0);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].invoice_id" => "[uuid]",
+            "[].tx_hash" => "[tx_hash]",
+            "[].created_at" => "[timestamp]",
+            "[].updated_at" => "[timestamp]",
+        });
     }
 }

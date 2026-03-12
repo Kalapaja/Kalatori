@@ -23,6 +23,7 @@ use crate::types::{
     InvoiceWithReceivedAmount,
     ListInvoicesParams,
     ListPayoutsParams,
+    ListTransactionsParams,
     Payout,
     PayoutStatus,
     Refund,
@@ -185,6 +186,18 @@ pub trait DaoInterface: Send + Sync + 'static {
         &self,
         invoice_id: Uuid,
     ) -> Result<Vec<Transaction>, DaoTransactionError>;
+
+    /// Get a paginated, filtered list of transactions.
+    async fn get_transactions_paginated(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<Vec<Transaction>, DaoTransactionError>;
+
+    /// Count transactions matching the given filters.
+    async fn count_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<u32, DaoTransactionError>;
 
     // === Payout Methods ===
 
@@ -364,6 +377,16 @@ pub trait DaoTransactionInterface {
         &self,
         invoice_id: Uuid,
     ) -> Result<Vec<Transaction>, DaoTransactionError>;
+
+    async fn get_transactions_paginated(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<Vec<Transaction>, DaoTransactionError>;
+
+    async fn count_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<u32, DaoTransactionError>;
 
     // === Payout Methods ===
 
@@ -569,6 +592,20 @@ impl DaoInterface for DAO {
         invoice_id: Uuid,
     ) -> Result<Vec<Transaction>, DaoTransactionError> {
         DaoTransactionMethods::get_invoice_transactions(self, invoice_id).await
+    }
+
+    async fn get_transactions_paginated(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<Vec<Transaction>, DaoTransactionError> {
+        DaoTransactionMethods::get_transactions_paginated(self, params).await
+    }
+
+    async fn count_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<u32, DaoTransactionError> {
+        DaoTransactionMethods::count_transactions(self, params).await
     }
 
     async fn create_payout(
@@ -788,6 +825,20 @@ impl DaoTransactionInterface for DaoTransaction {
         invoice_id: Uuid,
     ) -> Result<Vec<Transaction>, DaoTransactionError> {
         DaoTransactionMethods::get_invoice_transactions(self, invoice_id).await
+    }
+
+    async fn get_transactions_paginated(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<Vec<Transaction>, DaoTransactionError> {
+        DaoTransactionMethods::get_transactions_paginated(self, params).await
+    }
+
+    async fn count_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<u32, DaoTransactionError> {
+        DaoTransactionMethods::count_transactions(self, params).await
     }
 
     async fn create_payout(

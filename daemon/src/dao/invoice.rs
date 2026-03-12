@@ -1832,8 +1832,14 @@ mod tests {
             order_id: Some("SHOP-2024".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 2);
         insta::assert_yaml_snapshot!(result, {
@@ -1848,19 +1854,34 @@ mod tests {
             order_id: Some("002".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 1);
-        assert_eq!(result[0].invoice.order_id, "SHOP-2024-002");
+        assert_eq!(
+            result[0].invoice.order_id,
+            "SHOP-2024-002"
+        );
 
         // No match
         let params = ListInvoicesParams {
             order_id: Some("NONEXISTENT".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 0);
         assert!(result.is_empty());
