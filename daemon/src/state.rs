@@ -1,3 +1,5 @@
+#[cfg(feature = "dev_api")]
+mod dev_api;
 mod swaps;
 
 use std::collections::HashMap;
