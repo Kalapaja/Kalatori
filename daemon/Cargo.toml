@@ -114,7 +114,7 @@ mockall = "0.14"
 mockall_double = "0.3"
 httpmock = "0.8"
 indoc = "2"
-serial_test = "3.2"
+serial_test = "3.4"
 tracing-test = "0.2"
 
 [build-dependencies]
