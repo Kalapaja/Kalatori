@@ -175,10 +175,9 @@ impl BungeeClient {
             "Got parsed response from Bungee"
         );
 
-        if response.success && response.result.is_some() {
-            Ok(response.result.unwrap())
-        } else {
-            Err(response.into())
+        match response.result {
+            Some(result) if response.success => Ok(result),
+            _ => Err(response.into()),
         }
     }
 

@@ -34,6 +34,7 @@ pub fn default_across_raw_transaction() -> AcrossRawTransaction {
             chain_id: 8453,
             contract_address: "".to_string(),
             data: "".to_string(),
+            value: 100,
             gas: 100,
             max_fee_per_gas: 100,
             max_priority_fee_per_gas: 100,

@@ -98,7 +98,6 @@ impl DaoTransaction {
         lock.commit().await
     }
 
-    #[expect(dead_code)]
     pub async fn rollback(self) -> DaoResult<()> {
         let lock = self.transaction.into_inner();
         lock.rollback().await
