@@ -12,6 +12,11 @@ use types::*;
 
 pub use types::AcrossSwapStatus;
 
+use crate::configs::{
+    IntegratorFees,
+    SwapsConfig,
+};
+
 const ACROSS_BASE_URL: &str = "https://app.across.to";
 const ACROSS_CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -64,12 +69,15 @@ impl From<reqwest::Error> for AcrossClientError {
 #[derive(Clone)]
 pub struct AcrossClient {
     client: reqwest::Client,
+    #[expect(dead_code)]
+    fees: Option<IntegratorFees>,
 }
 
 impl AcrossClient {
-    pub fn new() -> Self {
+    pub fn new(swaps_config: &SwapsConfig) -> Self {
         Self {
             client: reqwest::Client::new(),
+            fees: swaps_config.fees.clone(),
         }
     }
 

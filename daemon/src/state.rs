@@ -543,10 +543,12 @@ mod tests {
     use mockall::predicate::eq;
 
     use crate::chain_client::KeyringError;
+    use crate::configs::SwapsConfig;
     use crate::dao::{
         MockDaoInterface,
         MockDaoTransactionInterface,
     };
+    use crate::swaps::SwapsClients;
     use crate::types::{
         Invoice,
         InvoiceCart,
@@ -580,12 +582,17 @@ mod tests {
             shop_name: "Mega shop".to_string(),
             logo_url: None,
             reown_project_id: "test".to_string(),
+            ankr_api_token: None,
         };
 
         let keyring = KeyringClient::default();
         let dao = MockDaoInterface::default();
         let registry = InvoiceRegistry::new();
-        let swaps_executor = SwapsExecutor::new(MockDaoInterface::default());
+        let swaps_clients = SwapsClients::new(SwapsConfig::default());
+        let swaps_executor = SwapsExecutor::new(
+            MockDaoInterface::default(),
+            swaps_clients,
+        );
 
         AppState::new(
             keyring,

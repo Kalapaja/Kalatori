@@ -332,6 +332,7 @@ pub struct ShopMetaConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logo_url: Option<String>,
     pub reown_project_id: String,
+    pub ankr_api_token: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -364,4 +365,28 @@ pub struct EtherscanClientConfig {
     #[serde(default = "default_etherscan_limit_per_second")]
     pub requests_per_second: NonZeroU32,
     pub api_key: String,
+}
+
+#[expect(dead_code)]
+#[derive(Deserialize, Clone, Debug)]
+pub struct IntegratorFees {
+    // The address that will receive the collected fees
+    fee_taker_address: String,
+    // The percentage of the transfer amount to charge as a fee (in basis points - 1 basis point =
+    // 0.01%)
+    fee_bps: u16,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct BungeeApiConfig {
+    pub api_key: SecretString,
+    pub affiliate: SecretString,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+pub struct SwapsConfig {
+    #[serde(default)]
+    pub bungee: Option<BungeeApiConfig>,
+    #[serde(default)]
+    pub fees: Option<IntegratorFees>,
 }

@@ -6,9 +6,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::clients::{
-    AcrossClient,
     AcrossSwapStatus,
-    BungeeClient,
     BungeeSwapStatus,
 };
 use crate::dao::DaoInterface;
@@ -17,6 +15,8 @@ use crate::types::{
     Swap,
     SwapExecutorType,
 };
+
+use super::SwapsClients;
 
 const SWAPS_EXECUTOR_API_POLLING_INTERVAL_MILLIS: u64 = 3000;
 const SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS: u64 = 100;
@@ -60,8 +60,7 @@ impl TrackedSwaps {
 pub struct SwapsTracker<D: DaoInterface + 'static> {
     dao: D,
     store: TrackedSwaps,
-    across_client: AcrossClient,
-    bungee_client: BungeeClient,
+    clients: SwapsClients,
 }
 
 #[derive(Debug)]
@@ -71,15 +70,13 @@ pub enum SwapsTrackerError {
 }
 
 impl<D: DaoInterface + 'static> SwapsTracker<D> {
-    pub fn new(dao: D) -> Self {
-        // TODO: create in main, share with Executor
-        let across_client = AcrossClient::new();
-        let bungee_client = BungeeClient::new();
-
+    pub fn new(
+        dao: D,
+        clients: SwapsClients,
+    ) -> Self {
         Self {
             dao,
-            across_client,
-            bungee_client,
+            clients,
             store: TrackedSwaps::new(),
         }
     }
@@ -98,6 +95,7 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
 
         if let Some(tx_hash) = details.transaction_hash.as_ref() {
             let result = self
+                .clients
                 .across_client
                 .get_swap_status(tx_hash.as_str().into())
                 .await
@@ -179,6 +177,7 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
 
         if let Some(tx_hash) = details.transaction_hash.as_ref() {
             let result = self
+                .clients
                 .bungee_client
                 .get_swap_status(tx_hash.as_str().into())
                 .await

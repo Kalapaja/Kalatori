@@ -8,7 +8,6 @@ mod pimlico_client;
 
 use std::str::FromStr;
 
-use alloy::eips::BlockNumberOrTag;
 use alloy::eips::eip7702::Authorization;
 use alloy::primitives::{
     Address,

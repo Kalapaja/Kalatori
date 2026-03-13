@@ -8,13 +8,13 @@ use crate::types::InvoiceWithReceivedAmount;
 
 use super::ApiState;
 use super::utils::{
+    SuccessWrapper,
     fallback_handler,
     method_not_allowed_fallback_handler,
-    SuccessWrapper,
 };
 
 async fn get_invoices_registry_state(
-    State(state): State<ApiState>,
+    State(state): State<ApiState>
 ) -> SuccessWrapper<HashMap<Uuid, InvoiceWithReceivedAmount>> {
     let result = state
         .get_invoices_registry_state()
@@ -25,7 +25,10 @@ async fn get_invoices_registry_state(
 
 pub fn routes() -> axum::Router<ApiState> {
     axum::Router::new()
-        .route("/invoices-registry", get(get_invoices_registry_state))
+        .route(
+            "/invoices-registry",
+            get(get_invoices_registry_state),
+        )
         .fallback(fallback_handler)
         .method_not_allowed_fallback(method_not_allowed_fallback_handler)
 }

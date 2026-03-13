@@ -29,6 +29,7 @@ use zeroize::Zeroize;
 
 use chain::{
     InvoiceRegistry,
+    TransactionsRecorder,
     TransfersExecutor,
     TransfersTracker,
 };
@@ -43,13 +44,18 @@ use configs::{
     PaymentsConfig,
     chains_config_with_prefix,
     database_config_with_prefix,
+    etherscan_client_config_with_prefix,
     logger_config_with_prefix,
     payments_config_with_prefix,
     secrets_config_with_prefix,
     shop_config_with_prefix,
+    swaps_config_with_prefix,
     web_server_config_with_prefix,
 };
-use dao::DAO;
+use dao::{
+    DAO,
+    DaoInterface,
+};
 use error::{
     Error,
     PrettyCause,
@@ -57,6 +63,10 @@ use error::{
 use etherscan_client::EtherscanClient;
 use expiration_detector::ExpirationDetector;
 use state::AppState;
+use swaps::{
+    SwapsExecutor,
+    SwapsTracker,
+};
 use utils::logger;
 use utils::shutdown::{
     self,
@@ -65,13 +75,7 @@ use utils::shutdown::{
 };
 use utils::task_tracker::TaskTracker;
 
-use crate::chain::TransactionsRecorder;
-use crate::configs::etherscan_client_config_with_prefix;
-use crate::dao::DaoInterface;
-use crate::swaps::{
-    SwapsExecutor,
-    SwapsTracker,
-};
+use crate::swaps::SwapsClients;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
 
@@ -213,6 +217,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let database_config = database_config_with_prefix(&configs_path, &env_prefix);
     let shop_config = shop_config_with_prefix(&configs_path, &env_prefix);
     let etherscan_client_config = etherscan_client_config_with_prefix(&configs_path, &env_prefix);
+    let swaps_config = swaps_config_with_prefix(&configs_path, &env_prefix);
 
     let hmac_config = HmacConfig::new(
         secrets_config
@@ -375,9 +380,11 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let webhook_sender_handle = webhook_sender.ignite(shutdown_notification.token.clone());
 
-    let swaps_executor = SwapsExecutor::new(dao.clone());
+    let swaps_clients = SwapsClients::new(swaps_config);
 
-    let swaps_tracker = SwapsTracker::new(dao.clone());
+    let swaps_executor = SwapsExecutor::new(dao.clone(), swaps_clients.clone());
+
+    let swaps_tracker = SwapsTracker::new(dao.clone(), swaps_clients);
     let swaps_tracker_handle = swaps_tracker.ignite(shutdown_notification.token.clone());
 
     let app_state = AppState::new(

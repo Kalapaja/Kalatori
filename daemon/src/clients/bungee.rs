@@ -2,6 +2,12 @@ mod types;
 
 use std::time::Duration;
 
+use reqwest::header::{
+    HeaderMap,
+    HeaderName,
+    HeaderValue,
+};
+use secrecy::ExposeSecret;
 use serde::de::DeserializeOwned;
 use serde::{
     Deserialize,
@@ -12,7 +18,16 @@ use types::*;
 
 pub use types::BungeeSwapStatus;
 
-const BUNGEE_BASE_URL: &str = "https://public-backend.bungee.exchange";
+use crate::configs::{
+    BungeeApiConfig,
+    IntegratorFees,
+    SwapsConfig,
+};
+
+// Use without API Key
+const BUNGEE_PUBLIC_BASE_URL: &str = "https://public-backend.bungee.exchange";
+// Use when have API Key
+const BUNGEE_PRIVATE_BASE_URL: &str = "https://dedicated-backend.bungee.exchange";
 const BUNGEE_CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 // Although it's a copy of `QuoteAutoRoute` structure, it's better
@@ -69,12 +84,17 @@ impl From<reqwest::Error> for BungeeClientError {
 #[derive(Clone)]
 pub struct BungeeClient {
     client: reqwest::Client,
+    #[expect(dead_code)]
+    fees: Option<IntegratorFees>,
+    api_access: Option<BungeeApiConfig>,
 }
 
 impl BungeeClient {
-    pub fn new() -> Self {
+    pub fn new(config: &SwapsConfig) -> Self {
         Self {
             client: reqwest::Client::new(),
+            fees: config.fees.clone(),
+            api_access: config.bungee.clone(),
         }
     }
 
@@ -89,7 +109,13 @@ impl BungeeClient {
         T: Serialize + std::fmt::Debug,
         R: DeserializeOwned + std::fmt::Debug,
     {
-        let full_url = format!("{BUNGEE_BASE_URL}{url}");
+        let base_url = if self.api_access.is_some() {
+            BUNGEE_PRIVATE_BASE_URL
+        } else {
+            BUNGEE_PUBLIC_BASE_URL
+        };
+
+        let full_url = format!("{base_url}{url}");
 
         let request = self
             .client
@@ -100,6 +126,21 @@ impl BungeeClient {
             request.json(&params)
         } else {
             request.query(&params)
+        };
+
+        let request = if let Some(api_access) = self.api_access.as_ref() {
+            request.headers(HeaderMap::from_iter([
+                (
+                    HeaderName::from_static("x-api-key"),
+                    HeaderValue::from_str(api_access.api_key.expose_secret()).unwrap(),
+                ),
+                (
+                    HeaderName::from_static("affiliate"),
+                    HeaderValue::from_str(api_access.affiliate.expose_secret()).unwrap(),
+                ),
+            ]))
+        } else {
+            request
         };
 
         let raw_response = request

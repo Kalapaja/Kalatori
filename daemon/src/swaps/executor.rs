@@ -1,9 +1,7 @@
 use uuid::Uuid;
 
 use crate::clients::{
-    AcrossClient,
     AcrossClientError,
-    BungeeClient,
     BungeeClientError,
 };
 use crate::dao::{
@@ -20,6 +18,8 @@ use crate::types::{
     SwapQuote,
     SwapSignatureParams,
 };
+
+use super::SwapsClients;
 
 #[expect(dead_code)]
 pub enum SwapsExecutorError {
@@ -47,19 +47,17 @@ impl From<BungeeClientError> for SwapsExecutorError {
 #[derive(Clone)]
 pub struct SwapsExecutor<D: DaoInterface + 'static = DAO> {
     dao: D,
-    across_client: AcrossClient,
-    bungee_client: BungeeClient,
+    clients: SwapsClients,
 }
 
 impl<D: DaoInterface + 'static> SwapsExecutor<D> {
-    pub fn new(dao: D) -> Self {
-        let across_client = AcrossClient::new();
-        let bungee_client = BungeeClient::new();
-
+    pub fn new(
+        dao: D,
+        clients: SwapsClients,
+    ) -> Self {
         Self {
             dao,
-            across_client,
-            bungee_client,
+            clients,
         }
     }
 
@@ -71,11 +69,13 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
 
         let quote: SwapQuote = match data.swap_executor {
             SwapExecutorType::Across => self
+                .clients
                 .across_client
                 .get_swap_approval(quote_request_data.into())
                 .await?
                 .into(),
             SwapExecutorType::Bungee => self
+                .clients
                 .bungee_client
                 .get_swap_quote(quote_request_data.into())
                 .await?
@@ -131,6 +131,7 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
         };
 
         let response = self
+            .clients
             .bungee_client
             .submit_signed_request(details.into())
             // TODO: In case of error need to check an error thoroughly.

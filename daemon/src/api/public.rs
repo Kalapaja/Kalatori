@@ -9,6 +9,10 @@ use axum::response::{
     IntoResponse,
     Response,
 };
+use chrono::{
+    TimeDelta,
+    Utc,
+};
 use serde::Deserialize;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
@@ -50,7 +54,7 @@ async fn index(ExtractState(state): ExtractState<ApiState>) -> Html<String> {
             &shop_meta.logo_url.unwrap_or_default(),
         )
         .replace(
-            "%VITE_REWON_PROJECT_ID%",
+            "%VITE_REOWN_PROJECT_ID%",
             &shop_meta.reown_project_id,
         )
         .replace(
@@ -59,6 +63,12 @@ async fn index(ExtractState(state): ExtractState<ApiState>) -> Html<String> {
                 "{} Payment | Kalatori",
                 &shop_meta.shop_name
             ),
+        )
+        .replace(
+            "%VITE_ANKR_API_TOKEN%",
+            &shop_meta
+                .ankr_api_token
+                .unwrap_or_default(),
         );
 
     Html(html)
@@ -72,9 +82,14 @@ async fn invoice(
         .get_invoice(payload.invoice_id)
         .await;
 
+    // TODO: rename var, move value to const
+    let response_if = Utc::now() - TimeDelta::days(30);
+
     match invoice {
         // If the invoice exists and is active, return it
-        Ok(Some(invoice)) if invoice.invoice.status.is_active() => {
+        Ok(Some(invoice))
+            if invoice.invoice.status.is_active() || invoice.invoice.updated_at >= response_if =>
+        {
             (StatusCode::OK, Json(invoice)).into_response()
         },
         // TODO: update errors
