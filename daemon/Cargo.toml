@@ -22,6 +22,7 @@ rust_decimal = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
+serde_with = "3.17"
 secrecy = { version = "0.10", features = ["serde"] }
 base58 = "0.2.0"
 blake2b_simd = "1.0"
@@ -75,6 +76,7 @@ alloy = { version = "1.5", features = [
     "network",
     "consensus",
     "signer-mnemonic",
+    "eip712",
 ] }
 # Subxt-signer uses bip39 and moreover re-exports it, but for some reason it doesn't have zeroize feature enabled
 bip39 = { version = "2", features = ["zeroize"] }

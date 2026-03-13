@@ -128,6 +128,11 @@ impl InvoiceRegistry {
         let invoices = self.invoices.read().await;
         invoices.len()
     }
+
+    #[cfg(feature = "dev_api")]
+    pub async fn state(&self) -> HashMap<Uuid, InvoiceWithReceivedAmount> {
+        self.invoices.read().await.clone()
+    }
 }
 
 #[cfg(test)]

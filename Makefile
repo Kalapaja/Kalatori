@@ -16,7 +16,7 @@ llvm_cov_version := 0.8.4
 mutants_version := 26.2.0
 
 # Front end release version compatible with current daemon version
-front_end_version := 0.0.4
+front_end_version := 0.0.10
 
 help: # Show help for each of the Makefile recipes
 	@grep -E '^[a-zA-Z0-9 -]+:.*#'  Makefile | sort | while read -r l; do printf "\033[1;32m$$(echo $$l | cut -f 1 -d':')\033[00m:$$(echo $$l | cut -f 2- -d'#')\n"; done
@@ -99,6 +99,9 @@ stop-chopsticks: # Stop chopsticks for Asset Hub in docker compose
 # TODO: add some health check for chopsticks to avoid errors on connection while it's not initialized
 run: start-chopsticks # Ensure that chopsticks is started and run kalatori daemon locally
 	cargo run
+
+run-dev: start-chopsticks
+	cargo run --all-features
 
 run-release: # Run kalatori daemon with --release flag without starting chopsticks
 	cargo run --release
