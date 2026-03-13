@@ -90,6 +90,9 @@ pub struct SwapTransactionInternal {
     pub chain_id: u64,
     pub to: String,
     pub data: String,
+    #[serde(default)]
+    #[serde_as(as = "DisplayFromStr")]
+    pub value: u128,
     #[serde_as(as = "DisplayFromStr")]
     pub gas: u128,
     #[serde(default)]
@@ -106,6 +109,9 @@ pub struct SwapTransaction {
     pub chain_id: u64,
     pub contract_address: String,
     pub data: String,
+    #[serde(default)]
+    #[serde_as(as = "DisplayFromStr")]
+    pub value: u128,
     #[serde_as(as = "DisplayFromStr")]
     pub gas: u128,
     #[serde_as(as = "DisplayFromStr")]
@@ -120,6 +126,7 @@ impl From<SwapTransactionInternal> for SwapTransaction {
             chain_id: value.chain_id,
             contract_address: value.to,
             data: value.data,
+            value: value.value,
             gas: value.gas,
             max_fee_per_gas: value.max_fee_per_gas,
             max_priority_fee_per_gas: value.max_priority_fee_per_gas,
