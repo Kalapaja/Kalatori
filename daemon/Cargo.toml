@@ -1,6 +1,6 @@
 [package]
 name = "kalatori"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 description = "A non-castodial crypto payment-gateway daemon."
 homepage = "https://github.com/Kalapaja/Kalatori"
@@ -22,6 +22,7 @@ rust_decimal = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
+serde_with = "3.17"
 secrecy = { version = "0.10", features = ["serde"] }
 base58 = "0.2.0"
 blake2b_simd = "1.0"
@@ -75,6 +76,7 @@ alloy = { version = "1.5", features = [
     "network",
     "consensus",
     "signer-mnemonic",
+    "eip712",
 ] }
 # Subxt-signer uses bip39 and moreover re-exports it, but for some reason it doesn't have zeroize feature enabled
 bip39 = { version = "2", features = ["zeroize"] }
@@ -103,12 +105,17 @@ thiserror = "2"
 trait-variant = "0.1"
 hmac = "0.12"
 sha2 = "0.10"
+# Let's add some random and fun to financial operations :) (it's a joke, we don't really do anything like that)
+rand = "0.10"
+governor = "0.10"
 
 [dev-dependencies]
 mockall = "0.14"
 mockall_double = "0.3"
+httpmock = "0.8"
 indoc = "2"
 serial_test = "3.2"
+tracing-test = "0.2"
 
 [build-dependencies]
 # Don't forget to update me in `[dependencies]`!

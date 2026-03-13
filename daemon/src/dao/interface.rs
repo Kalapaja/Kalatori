@@ -25,6 +25,7 @@ use crate::types::{
     PayoutStatus,
     Refund,
     RetryMeta,
+    Swap,
     Transaction,
     UpdateInvoiceData,
     WebhookEvent,
@@ -136,7 +137,7 @@ pub trait DaoInterface: Send + Sync + 'static {
         data: UpdateInvoiceData,
     ) -> Result<Invoice, DaoInvoiceError>;
 
-    async fn update_invoices_expired(&self) -> Result<Vec<Invoice>, DaoInvoiceError>;
+    async fn get_expired_invoices(&self) -> Result<Vec<Invoice>, DaoInvoiceError>;
 
     // === Transaction Methods ===
 
@@ -245,6 +246,43 @@ pub trait DaoInterface: Send + Sync + 'static {
     ) -> Result<FrontEndSwap, DaoSwapError>;
 
     async fn get_all_front_end_swaps(&self) -> Result<Vec<FrontEndSwap>, DaoSwapError>;
+
+    async fn create_swap(
+        &self,
+        swap: Swap,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn get_submitted_swaps(&self) -> Result<Vec<Swap>, DaoSwapError>;
+
+    async fn get_pending_swaps(&self) -> Result<Vec<Swap>, DaoSwapError>;
+
+    async fn update_swap_set_signature(
+        &self,
+        swap_id: Uuid,
+        signature: String,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn update_swap_submitted(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn update_across_swap_submitted(
+        &self,
+        swap_id: Uuid,
+        transaction_hash: String,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn update_swap_completed(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn update_swap_failed(
+        &self,
+        swap_id: Uuid,
+        error_message: String,
+    ) -> Result<Swap, DaoSwapError>;
 
     // === Refund Methods ===
 
@@ -387,6 +425,43 @@ pub trait DaoTransactionInterface {
 
     async fn get_all_front_end_swaps(&self) -> Result<Vec<FrontEndSwap>, DaoSwapError>;
 
+    async fn create_swap(
+        &self,
+        swap: Swap,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn get_submitted_swaps(&self) -> Result<Vec<Swap>, DaoSwapError>;
+
+    async fn get_pending_swaps(&self) -> Result<Vec<Swap>, DaoSwapError>;
+
+    async fn update_swap_set_signature(
+        &self,
+        swap_id: Uuid,
+        signature: String,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn update_swap_submitted(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn update_across_swap_submitted(
+        &self,
+        swap_id: Uuid,
+        transaction_hash: String,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn update_swap_completed(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Swap, DaoSwapError>;
+
+    async fn update_swap_failed(
+        &self,
+        swap_id: Uuid,
+        error_message: String,
+    ) -> Result<Swap, DaoSwapError>;
+
     // === Refund Methods ===
 
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError>;
@@ -457,8 +532,8 @@ impl DaoInterface for DAO {
         DaoInvoiceMethods::update_invoice_data(self, data).await
     }
 
-    async fn update_invoices_expired(&self) -> Result<Vec<Invoice>, DaoInvoiceError> {
-        DaoInvoiceMethods::update_invoices_expired(self).await
+    async fn get_expired_invoices(&self) -> Result<Vec<Invoice>, DaoInvoiceError> {
+        DaoInvoiceMethods::get_expired_invoices(self).await
     }
 
     async fn create_transaction(
@@ -598,6 +673,59 @@ impl DaoInterface for DAO {
         DaoSwapMethods::get_all_front_end_swaps(self).await
     }
 
+    async fn create_swap(
+        &self,
+        swap: Swap,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::create_swap(self, swap).await
+    }
+
+    async fn get_submitted_swaps(&self) -> Result<Vec<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_submitted_swaps(self).await
+    }
+
+    async fn get_pending_swaps(&self) -> Result<Vec<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_pending_swaps(self).await
+    }
+
+    async fn update_swap_set_signature(
+        &self,
+        swap_id: Uuid,
+        signature: String,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_swap_set_signature(self, swap_id, signature).await
+    }
+
+    async fn update_swap_submitted(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_swap_submitted(self, swap_id).await
+    }
+
+    async fn update_across_swap_submitted(
+        &self,
+        swap_id: Uuid,
+        transaction_hash: String,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_across_swap_submitted(self, swap_id, transaction_hash).await
+    }
+
+    async fn update_swap_completed(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_swap_completed(self, swap_id).await
+    }
+
+    async fn update_swap_failed(
+        &self,
+        swap_id: Uuid,
+        error_message: String,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_swap_failed(self, swap_id, error_message).await
+    }
+
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError> {
         DaoRefundMethods::get_all_refunds(self).await
     }
@@ -649,7 +777,7 @@ impl DaoTransactionInterface for DaoTransaction {
     }
 
     async fn update_invoices_expired(&self) -> Result<Vec<Invoice>, DaoInvoiceError> {
-        DaoInvoiceMethods::update_invoices_expired(self).await
+        DaoInvoiceMethods::get_expired_invoices(self).await
     }
 
     async fn create_transaction(
@@ -780,6 +908,59 @@ impl DaoTransactionInterface for DaoTransaction {
 
     async fn get_all_front_end_swaps(&self) -> Result<Vec<FrontEndSwap>, DaoSwapError> {
         DaoSwapMethods::get_all_front_end_swaps(self).await
+    }
+
+    async fn create_swap(
+        &self,
+        swap: Swap,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::create_swap(self, swap).await
+    }
+
+    async fn get_submitted_swaps(&self) -> Result<Vec<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_submitted_swaps(self).await
+    }
+
+    async fn get_pending_swaps(&self) -> Result<Vec<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_pending_swaps(self).await
+    }
+
+    async fn update_swap_set_signature(
+        &self,
+        swap_id: Uuid,
+        signature: String,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_swap_set_signature(self, swap_id, signature).await
+    }
+
+    async fn update_swap_submitted(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_swap_submitted(self, swap_id).await
+    }
+
+    async fn update_across_swap_submitted(
+        &self,
+        swap_id: Uuid,
+        transaction_hash: String,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_across_swap_submitted(self, swap_id, transaction_hash).await
+    }
+
+    async fn update_swap_completed(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_swap_completed(self, swap_id).await
+    }
+
+    async fn update_swap_failed(
+        &self,
+        swap_id: Uuid,
+        error_message: String,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_swap_failed(self, swap_id, error_message).await
     }
 
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError> {

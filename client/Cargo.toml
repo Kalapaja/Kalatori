@@ -50,3 +50,6 @@ workspace = true
 [[example]]
 name = "webhook"
 required-features = ["axum-middleware"]
+
+[[example]]
+name = "generate_hmac_test_vectors"

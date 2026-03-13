@@ -632,6 +632,8 @@ mod tests {
             refund_id: None,
             internal_transfer_id: None,
         };
+        outgoing_tx.transaction_id.block_number = Some(100);
+        outgoing_tx.transaction_id.tx_hash = Some(Uuid::new_v4().to_string());
         outgoing_tx.status = TransactionStatus::Completed;
         dao.create_transaction(outgoing_tx.clone())
             .await

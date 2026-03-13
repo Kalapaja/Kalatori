@@ -1,0 +1,17 @@
+name: Setup Rust Build Environment
+description: Install subxt-cli, download chain metadata, and download front-end
+
+runs:
+  using: composite
+  steps:
+    - name: Install subxt-cli
+      shell: bash
+      run: make install-subxt-cli
+
+    - name: Download chain metadata
+      shell: bash
+      run: make download-node-metadata-ci
+
+    - name: Download front-end
+      shell: bash
+      run: make download-front-end

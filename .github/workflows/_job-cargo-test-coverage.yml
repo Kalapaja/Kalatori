@@ -1,0 +1,43 @@
+name: Cargo test with coverage
+
+on:
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        required: true
+
+jobs:
+  test-coverage:
+    name: Run unit tests with coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Setup SQLite
+        uses: ./.github/actions/setup-sqlite
+
+      - name: Setup Rust build environment
+        uses: ./.github/actions/setup-rust-build-env
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.8.2
+
+      - name: Install cargo-nextest
+        run: make install-nextest
+
+      - name: Install cargo-llvm-cov
+        run: make install-llvm-cov
+
+      - name: Install llvm-tools-preview
+        run: rustup component add llvm-tools-preview
+
+      - name: Run tests with coverage
+        run: make generate-coverage-report
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false

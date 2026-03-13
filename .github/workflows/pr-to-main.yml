@@ -1,0 +1,31 @@
+name: PR to main
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  semantic-pr:
+    uses: ./.github/workflows/_job-semantic-pr.yml
+    secrets: inherit
+
+  fmt:
+    uses: ./.github/workflows/_job-fmt.yml
+
+  clippy:
+    uses: ./.github/workflows/_job-clippy.yml
+
+  cargo-deny:
+    uses: ./.github/workflows/_job-cargo-deny.yml
+
+  cargo-test:
+    uses: ./.github/workflows/_job-cargo-test-coverage.yml
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  integration-test:
+    uses: ./.github/workflows/_job-integration-test.yml
+
+  release-validate:
+    uses: ./.github/workflows/_job-release-validate.yml

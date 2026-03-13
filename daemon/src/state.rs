@@ -1,3 +1,7 @@
+#[cfg(feature = "dev_api")]
+mod dev_api;
+mod swaps;
+
 use std::collections::HashMap;
 
 use chrono::{
@@ -33,6 +37,7 @@ use crate::dao::{
     DaoTransactionError,
     DaoTransactionInterface,
 };
+use crate::swaps::SwapsExecutor;
 use crate::types::{
     ChainType,
     ChangesResponse,
@@ -50,10 +55,13 @@ use crate::types::{
     UpdateInvoiceData,
 };
 
+pub use swaps::SwapRequestError;
+
 pub struct AppState<D: DaoInterface = DAO> {
     keyring: KeyringClient,
     dao: D,
     registry: InvoiceRegistry,
+    swaps_executor: SwapsExecutor<D>,
     asset_names_map: HashMap<String, String>,
     payments_config: PaymentsConfig,
     shop_meta: ShopMetaConfig,
@@ -64,6 +72,7 @@ impl<D: DaoInterface> AppState<D> {
         keyring: KeyringClient,
         dao: D,
         registry: InvoiceRegistry,
+        swaps_executor: SwapsExecutor<D>,
         asset_names_map: HashMap<String, String>,
         payments_config: PaymentsConfig,
         shop_meta: ShopMetaConfig,
@@ -72,6 +81,7 @@ impl<D: DaoInterface> AppState<D> {
             keyring,
             dao,
             registry,
+            swaps_executor,
             asset_names_map,
             payments_config,
             shop_meta,
@@ -90,6 +100,7 @@ impl<D: DaoInterface> AppState<D> {
         &self,
         invoice_id: Uuid,
     ) -> Result<Option<InvoiceWithReceivedAmount>, DaoInvoiceError> {
+        // TODO: try to search invoice in registry first?
         self.dao
             .get_invoice_with_received_amount_by_id(invoice_id)
             .await
@@ -532,10 +543,12 @@ mod tests {
     use mockall::predicate::eq;
 
     use crate::chain_client::KeyringError;
+    use crate::configs::SwapsConfig;
     use crate::dao::{
         MockDaoInterface,
         MockDaoTransactionInterface,
     };
+    use crate::swaps::SwapsClients;
     use crate::types::{
         Invoice,
         InvoiceCart,
@@ -569,16 +582,23 @@ mod tests {
             shop_name: "Mega shop".to_string(),
             logo_url: None,
             reown_project_id: "test".to_string(),
+            ankr_api_token: None,
         };
 
         let keyring = KeyringClient::default();
         let dao = MockDaoInterface::default();
         let registry = InvoiceRegistry::new();
+        let swaps_clients = SwapsClients::new(SwapsConfig::default());
+        let swaps_executor = SwapsExecutor::new(
+            MockDaoInterface::default(),
+            swaps_clients,
+        );
 
         AppState::new(
             keyring,
             dao,
             registry,
+            swaps_executor,
             asset_names_map,
             config,
             shop_meta,

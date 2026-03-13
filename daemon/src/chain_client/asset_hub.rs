@@ -154,6 +154,7 @@ impl AnyTransferExtrinsic {
 
 #[derive(Clone)]
 pub struct AssetHubClient {
+    config: crate::configs::ChainConfig,
     client: SubxtAssetHubClient,
     asset_info_store: AssetInfoStore<AssetHubChainConfig>,
 }
@@ -164,27 +165,32 @@ impl AssetHubClient {
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<AssetHubChainConfig>,
     ) -> Result<Self, ClientError> {
-        // TODO: get random endpoint
         // TODO: implement circuit breaker for endpoints
         // (should be another wrapper structure with endpoints hidden behind sync
         // primitives with error counters and usage timeouts)
         let endpoint = config
-            .endpoints
-            .first()
+            .get_random_endpoint()
             .ok_or(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
             })?;
 
+        tracing::debug!(
+            url = endpoint,
+            chain = %Self::chain_type(),
+            "Trying to connect to endpoint...",
+        );
+
         let client = if config.allow_insecure_endpoints {
-            SubxtAssetHubClient::from_insecure_url(endpoint).await
+            SubxtAssetHubClient::from_insecure_url(&endpoint).await
         } else {
-            SubxtAssetHubClient::from_url(endpoint).await
+            SubxtAssetHubClient::from_url(&endpoint).await
         }
         .inspect_err(|e| {
             tracing::debug!(
                 error.category = crate::utils::logging::category::CHAIN_CLIENT,
                 error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
                 error.source = ?e,
+                chain = %Self::chain_type(),
                 endpoint = %endpoint,
                 "Failed to connect to Asset Hub RPC endpoint"
             );
@@ -192,6 +198,7 @@ impl AssetHubClient {
         .map_err(|_| ClientError::AllEndpointsUnreachable)?;
 
         Ok(AssetHubClient {
+            config: config.clone(),
             client,
             asset_info_store,
         })
@@ -365,8 +372,11 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
 
     #[instrument(skip(self))]
     async fn recreate(&self) -> Result<Self, ClientError> {
-        // TODO: implement recreation
-        Ok(self.clone())
+        Self::from_config(
+            &self.config,
+            self.asset_info_store.clone(),
+        )
+        .await
     }
 
     #[instrument(skip(self))]
@@ -874,61 +884,5 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
             #[expect(clippy::cast_sign_loss)]
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::str::FromStr;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn test_polkadot_client() {
-        let client = AssetHubClient {
-            client: SubxtAssetHubClient::from_url("wss://asset-hub-polkadot-rpc.n.dwellir.com")
-                .await
-                .unwrap(),
-            asset_info_store: AssetInfoStore::new(),
-        };
-
-        let assets = vec![1337.to_string(), 1984.to_string()];
-
-        let () = client
-            .init_asset_info(&assets)
-            .await
-            .unwrap();
-
-        let amount = client
-            .fetch_asset_balance(
-                &1337,
-                &AssetHubAccountId::from_str("15dikXxF1QwijxxU7wZBFmHy7HeCotHXa1LxzVu44KVKXCRC")
-                    .unwrap(),
-            )
-            .await;
-
-        println!("Result: {amount:?}");
-
-        // let mut transfer_stream =
-        // client.subscribe_transfers(&assets).await.unwrap();
-
-        // println!("Got stream");
-
-        // while let Some(result) = transfer_stream.next().await {
-        //     println!("Recevied processed block result");
-
-        //     match result {
-        //         Ok(transfers) => {
-        //             for transfer in transfers {
-        //                 println!("Transfer: {:?}", transfer);
-        //             }
-        //         }
-        //         Err(e) => {
-        //             println!("Error in transfer stream: {:?}", e);
-        //         }
-        //     }
-        // }
-
-        // println!("Stream has been closed");
     }
 }

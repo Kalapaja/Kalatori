@@ -36,6 +36,8 @@ pub use payout::DaoPayoutError;
 pub use refund::DaoRefundError;
 pub use swap::DaoSwapError;
 pub use transaction::DaoTransactionError;
+#[cfg_attr(not(test), expect(unused_imports))]
+pub use webhook_event::DaoWebhookEventError;
 
 // Export high-level interface traits
 pub use interface::{
@@ -96,7 +98,6 @@ impl DaoTransaction {
         lock.commit().await
     }
 
-    #[expect(dead_code)]
     pub async fn rollback(self) -> DaoResult<()> {
         let lock = self.transaction.into_inner();
         lock.rollback().await

@@ -16,6 +16,7 @@ use tracing::{
     info,
     instrument,
 };
+use uuid::Uuid;
 
 use crate::types::{
     ChainType,
@@ -84,6 +85,7 @@ pub struct AssetInfo<T: ChainConfig> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneralChainTransfer {
+    pub id: Uuid,
     pub chain: ChainType,
     pub asset_id: String,
     pub asset_name: String,
@@ -118,6 +120,23 @@ impl GeneralChainTransfer {
     }
 }
 
+#[cfg(test)]
+pub fn default_general_chain_transfer() -> GeneralChainTransfer {
+    GeneralChainTransfer {
+        id: Uuid::new_v4(),
+        chain: ChainType::PolkadotAssetHub,
+        asset_id: 1984.to_string(),
+        asset_name: "USDT".to_string(),
+        amount: Decimal::new(10, 0),
+        sender: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
+        recipient: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+        block_number: Some(1000),
+        position_in_block: Some(2),
+        transaction_hash: Some("0x1234567890abcdef".to_string()),
+        timestamp: chrono::Utc::now().timestamp() as u64,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChainTransfer<T: ChainConfig> {
     pub asset_id: T::AssetId,
@@ -134,6 +153,7 @@ impl<T: ChainConfig> From<ChainTransfer<T>> for GeneralChainTransfer {
         let trans_id: GeneralTransactionId = transfer.transaction_id.into();
 
         Self {
+            id: Uuid::new_v4(),
             chain: T::CHAIN_TYPE,
             asset_id: transfer.asset_id.to_string(),
             asset_name: transfer.asset_name,
@@ -216,6 +236,10 @@ impl<T: ChainConfig> SignedTransactionUtils for SignedTransaction<T> {
 #[cfg_attr(test, mockall::automock)]
 #[trait_variant::make(Send)]
 pub trait BlockChainClient<T: ChainConfig>: Sync {
+    fn chain_type() -> ChainType {
+        T::CHAIN_TYPE
+    }
+
     fn chain_name(&self) -> &'static str;
 
     fn asset_info_store(&self) -> &AssetInfoStore<T>;

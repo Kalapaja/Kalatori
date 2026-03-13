@@ -1,15 +1,14 @@
 .git
 .github
 .gitignore
-.idea
 
 chopsticks
 docs
 target
-tests
 bin
 static
 database
+tools
 
 Dockerfile
 

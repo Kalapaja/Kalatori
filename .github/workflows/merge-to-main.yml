@@ -1,0 +1,15 @@
+name: Merge to main
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  cargo-test:
+    uses: ./.github/workflows/_job-cargo-test-coverage.yml
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  integration-test:
+    uses: ./.github/workflows/_job-integration-test.yml

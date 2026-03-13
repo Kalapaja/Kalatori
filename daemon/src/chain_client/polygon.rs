@@ -8,7 +8,6 @@ mod pimlico_client;
 
 use std::str::FromStr;
 
-use alloy::eips::BlockNumberOrTag;
 use alloy::eips::eip7702::Authorization;
 use alloy::primitives::{
     Address,
@@ -257,6 +256,7 @@ type PolygonProvider = FillProvider<JoinedRecommendedFillers, RootProvider>;
 /// Client for interacting with Polygon PoS network
 #[derive(Clone)]
 pub struct PolygonClient {
+    config: crate::configs::ChainConfig,
     asset_info_store: AssetInfoStore<PolygonChainConfig>,
     provider: PolygonProvider,
     pimlico_client: PimlicoClient,
@@ -270,12 +270,16 @@ impl PolygonClient {
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
     ) -> Result<Self, ClientError> {
         let endpoint = config
-            .endpoints
-            .first()
+            .get_random_endpoint()
             .ok_or(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
-            })?
-            .clone();
+            })?;
+
+        tracing::debug!(
+            url = endpoint,
+            chain = %Self::chain_type(),
+            "Trying to connect to endpoint...",
+        );
 
         // Test connection and get chain ID
         let ws_connect = WsConnect::new(&endpoint);
@@ -288,10 +292,17 @@ impl PolygonClient {
                     error.operation = "connect_client",
                     error.source = ?e,
                     endpoint = %endpoint,
+                    chain = %Self::chain_type(),
                     "Failed to connect to Polygon RPC endpoint"
                 );
             })
             .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+
+        tracing::debug!(
+            url = endpoint,
+            chain = %Self::chain_type(),
+            "Connection successful"
+        );
 
         // Get chain ID for transaction signing
         let chain_id = provider
@@ -313,6 +324,7 @@ impl PolygonClient {
         );
 
         Ok(Self {
+            config: config.clone(),
             asset_info_store,
             provider,
             pimlico_client: PimlicoClient::new(),
@@ -583,7 +595,11 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
     async fn recreate(&self) -> Result<Self, ClientError> {
         // For now, just return a clone
         // TODO: Implement proper reconnection logic
-        Ok(self.clone())
+        Self::from_config(
+            &self.config,
+            self.asset_info_store.clone(),
+        )
+        .await
     }
 
     #[instrument(skip(self))]
@@ -703,8 +719,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         // Build filter for Transfer events from all tracked ERC-20 contracts
         let filter = Filter::new()
             .address(asset_ids.to_vec())
-            .event_signature(IERC20::Transfer::SIGNATURE_HASH)
-            .from_block(BlockNumberOrTag::Latest);
+            .event_signature(IERC20::Transfer::SIGNATURE_HASH);
 
         let client = self.clone();
 
@@ -738,13 +753,13 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                         let event = decoded.inner.data;
                         match client.log_to_transfer(&log, &event).await {
                             Ok(transfer) => {
-                                // tracing::trace!(
-                                //     from = %transfer.sender,
-                                //     to = %transfer.recipient,
-                                //     amount = %transfer.amount,
-                                //     asset = %transfer.asset_name,
-                                //     "Detected ERC-20 transfer"
-                                // );
+                                tracing::trace!(
+                                    from = %transfer.sender,
+                                    to = %transfer.recipient,
+                                    amount = %transfer.amount,
+                                    asset = %transfer.asset_name,
+                                    "Detected ERC-20 transfer"
+                                );
                                 yield vec![transfer];
                             }
                             Err(e) => {
