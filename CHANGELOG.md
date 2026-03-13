@@ -44,7 +44,7 @@ This is a public beta release of the Kalatori daemon. While it adheres to the [A
 - docs/mcp-tooling.md, doc-update-triggers.md
 - docs/DATABASE.md updated with swap schema
 
-### 🎨 Frontend (Kassette v0.0.15)
+### 🎨 Frontend (Kassette v0.0.16)
 
 - Angular 21 SPA with signal-based state management
 - Internationalization (English and Spanish)
