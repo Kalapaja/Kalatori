@@ -383,10 +383,17 @@ pub struct BungeeApiConfig {
     pub affiliate: SecretString,
 }
 
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct ZeroExApiConfig {
+    pub api_key: SecretString,
+    pub rpc_url: String,
+}
+
 #[derive(Deserialize, Default, Clone, Debug)]
 pub struct SwapsConfig {
     #[serde(default)]
     pub bungee: Option<BungeeApiConfig>,
+    pub zero_ex: ZeroExApiConfig,
     #[serde(default)]
     pub fees: Option<IntegratorFees>,
 }

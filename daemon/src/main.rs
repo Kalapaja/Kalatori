@@ -380,7 +380,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let webhook_sender_handle = webhook_sender.ignite(shutdown_notification.token.clone());
 
-    let swaps_clients = SwapsClients::new(swaps_config);
+    let swaps_clients = SwapsClients::new(swaps_config).await;
 
     let swaps_executor = SwapsExecutor::new(dao.clone(), swaps_clients.clone());
 

@@ -441,10 +441,10 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             .map_err(|e| {
                 tracing::debug!(
                     error.category = "dao.swap",
-                    error.operation = "update_across_swap_submitted",
+                    error.operation = "update_swap_set_signature",
                     %swap_id,
                     error.source = ?e,
-                    "Failed to update swap as submitted with transaction"
+                    "Failed to update swap signature"
                 );
 
                 if let Some(error) = SwapStatus::from_sqlx_error(&e) {
@@ -468,7 +468,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
     //     data: T,
     // }
     // ```
-    async fn update_across_swap_submitted(
+    async fn update_swap_submitted_with_hash(
         &self,
         swap_id: Uuid,
         transaction_hash: String,
@@ -492,7 +492,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             .map_err(|e| {
                 tracing::debug!(
                     error.category = "dao.swap",
-                    error.operation = "update_across_swap_submitted",
+                    error.operation = "update_swap_submitted_with_hash",
                     %swap_id,
                     error.source = ?e,
                     "Failed to update swap as submitted with transaction"
@@ -726,7 +726,7 @@ mod tests {
         assert!(pending.is_empty());
 
         let mut submitted = dao
-            .update_across_swap_submitted(
+            .update_swap_submitted_with_hash(
                 swap_id,
                 "transaction_hash123".to_string(),
             )
