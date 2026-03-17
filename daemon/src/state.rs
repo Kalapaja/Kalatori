@@ -51,11 +51,13 @@ use crate::types::{
     KalatoriEventExt,
     ListInvoicesParams,
     ListPayoutsParams,
+    ListSwapsParams,
     ListTransactionsParams,
     PaginatedResponse,
     Payout,
     PayoutChanges,
     PublicChangesResponse,
+    PublicSwap,
     PublicTransaction,
     RefundChanges,
     Transaction,
@@ -419,6 +421,29 @@ impl<D: DaoInterface> AppState<D> {
         let items = transactions?
             .into_iter()
             .map(PublicTransaction::from)
+            .collect();
+
+        Ok(PaginatedResponse::new(
+            items,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<PaginatedResponse<PublicSwap>, DaoSwapError> {
+        let (swaps, total) = tokio::join!(
+            self.dao.get_swaps_paginated(params),
+            self.dao.count_swaps(params),
+        );
+
+        let items = swaps?
+            .into_iter()
+            .map(PublicSwap::from)
             .collect();
 
         Ok(PaginatedResponse::new(

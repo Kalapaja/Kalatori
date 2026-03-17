@@ -21,15 +21,18 @@ use crate::auth::token::Role;
 use crate::dao::{
     DaoInvoiceError,
     DaoPayoutError,
+    DaoSwapError,
     DaoTransactionError,
 };
 use crate::types::{
     ListInvoicesParams,
     ListPayoutsParams,
+    ListSwapsParams,
     ListTransactionsParams,
     PaginatedResponse,
     Payout,
     PublicInvoice,
+    PublicSwap,
     PublicTransaction,
 };
 
@@ -49,6 +52,7 @@ pub fn routes() -> Router<ApiState> {
             "/transactions",
             get(list_transactions_handler),
         )
+        .route("/swaps", get(list_swaps_handler))
 }
 
 // ============================================================================
@@ -90,6 +94,20 @@ async fn list_transactions_handler(
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> ApiResult<PaginatedResponse<PublicTransaction>, DaoTransactionError> {
     let result = state.list_transactions(&params).await?;
+    Ok(result.into())
+}
+
+// ============================================================================
+// GET /admin/swaps
+// ============================================================================
+
+#[tracing::instrument(skip_all)]
+async fn list_swaps_handler(
+    State(state): State<ApiState>,
+    AppQuery(params): AppQuery<ListSwapsParams>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> ApiResult<PaginatedResponse<PublicSwap>, DaoSwapError> {
+    let result = state.list_swaps(&params).await?;
     Ok(result.into())
 }
 

@@ -147,9 +147,12 @@ impl SortOrder {
 }
 
 /// Pagination parameters extracted from query string.
+#[serde_with::serde_as]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PaginationParams {
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     pub page: Option<u32>,
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     pub per_page: Option<u32>,
 }
 

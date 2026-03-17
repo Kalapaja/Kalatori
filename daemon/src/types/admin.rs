@@ -18,6 +18,8 @@ use super::{
     PaginationParams,
     PayoutStatus,
     SortOrder,
+    SwapExecutorType,
+    SwapStatus,
     TransactionStatus,
     TransactionType,
 };
@@ -77,6 +79,34 @@ pub struct ListPayoutsParams {
     pub created_from: Option<DateTime<Utc>>,
 
     /// Filter payouts created on or before this timestamp.
+    pub created_to: Option<DateTime<Utc>>,
+
+    /// Sort direction for `created_at` (default: `desc`).
+    pub sort_order: Option<SortOrder>,
+}
+
+/// Query parameters for `GET /admin/swaps`.
+#[serde_as]
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ListSwapsParams {
+    #[serde(flatten)]
+    pub pagination: PaginationParams,
+
+    /// Comma-separated list of statuses to filter by (e.g.
+    /// `Created,Completed`).
+    #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, SwapStatus>>")]
+    pub status: Option<Vec<SwapStatus>>,
+
+    /// Filter by swap executor type (`Across` or `Bungee`).
+    pub swap_executor: Option<SwapExecutorType>,
+
+    /// Filter by parent invoice ID.
+    pub invoice_id: Option<Uuid>,
+
+    /// Filter swaps created on or after this timestamp.
+    pub created_from: Option<DateTime<Utc>>,
+
+    /// Filter swaps created on or before this timestamp.
     pub created_to: Option<DateTime<Utc>>,
 
     /// Sort direction for `created_at` (default: `desc`).

@@ -23,6 +23,7 @@ use crate::types::{
     InvoiceWithReceivedAmount,
     ListInvoicesParams,
     ListPayoutsParams,
+    ListSwapsParams,
     ListTransactionsParams,
     Payout,
     PayoutStatus,
@@ -323,6 +324,18 @@ pub trait DaoInterface: Send + Sync + 'static {
         error_message: String,
     ) -> Result<Swap, DaoSwapError>;
 
+    /// Get a paginated, filtered list of swaps.
+    async fn get_swaps_paginated(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<Vec<Swap>, DaoSwapError>;
+
+    /// Count swaps matching the given filters.
+    async fn count_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<u32, DaoSwapError>;
+
     // === Refund Methods ===
 
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError>;
@@ -530,6 +543,16 @@ pub trait DaoTransactionInterface {
         swap_id: Uuid,
         error_message: String,
     ) -> Result<Swap, DaoSwapError>;
+
+    async fn get_swaps_paginated(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<Vec<Swap>, DaoSwapError>;
+
+    async fn count_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<u32, DaoSwapError>;
 
     // === Refund Methods ===
 
@@ -837,6 +860,20 @@ impl DaoInterface for DAO {
         DaoSwapMethods::update_swap_failed(self, swap_id, error_message).await
     }
 
+    async fn get_swaps_paginated(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<Vec<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_swaps_paginated(self, params).await
+    }
+
+    async fn count_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<u32, DaoSwapError> {
+        DaoSwapMethods::count_swaps(self, params).await
+    }
+
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError> {
         DaoRefundMethods::get_all_refunds(self).await
     }
@@ -1114,6 +1151,20 @@ impl DaoTransactionInterface for DaoTransaction {
         error_message: String,
     ) -> Result<Swap, DaoSwapError> {
         DaoSwapMethods::update_swap_failed(self, swap_id, error_message).await
+    }
+
+    async fn get_swaps_paginated(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<Vec<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_swaps_paginated(self, params).await
+    }
+
+    async fn count_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<u32, DaoSwapError> {
+        DaoSwapMethods::count_swaps(self, params).await
     }
 
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError> {
