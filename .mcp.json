@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "exa": {
+      "type": "http",
       "url": "https://mcp.exa.ai/mcp"
     },
     "mcp-server-git": {

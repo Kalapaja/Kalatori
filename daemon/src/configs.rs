@@ -125,6 +125,15 @@ pub fn auth_config_with_prefix(
     config
 }
 
+pub fn swaps_config_with_prefix(
+    config_dir_path: &str,
+    prefix: &str,
+) -> SwapsConfig {
+    let config_path = format_config_path(config_dir_path, "swaps.json");
+    let env_prefix = format_prefix(prefix, "SWAPS");
+    config_from_file_or_env(&config_path, &env_prefix)
+}
+
 // #[cfg(test)]
 // mod tests {
 //     use super::*;

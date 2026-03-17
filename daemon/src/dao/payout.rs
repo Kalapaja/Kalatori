@@ -202,7 +202,6 @@ pub trait DaoPayoutMethods: DaoExecutor + 'static {
             })
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     async fn get_payout_by_id(
         &self,
         payout_id: Uuid,

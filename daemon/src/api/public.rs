@@ -9,13 +9,24 @@ use axum::response::{
     IntoResponse,
     Response,
 };
+use chrono::{
+    TimeDelta,
+    Utc,
+};
 use serde::Deserialize;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 
 use crate::configs::ShopMetaConfig;
 use crate::dao::DaoSwapError;
-use crate::types::CreateFrontEndSwapParams;
+use crate::state::SwapRequestError;
+use crate::types::{
+    CreateFrontEndSwapParams,
+    CreateSwapParams,
+    PublicSwap,
+    SubmittedSwapParams,
+    SwapSignatureParams,
+};
 
 use super::ApiState;
 use super::utils::{
@@ -43,7 +54,7 @@ async fn index(ExtractState(state): ExtractState<ApiState>) -> Html<String> {
             &shop_meta.logo_url.unwrap_or_default(),
         )
         .replace(
-            "%VITE_REWON_PROJECT_ID%",
+            "%VITE_REOWN_PROJECT_ID%",
             &shop_meta.reown_project_id,
         )
         .replace(
@@ -52,6 +63,12 @@ async fn index(ExtractState(state): ExtractState<ApiState>) -> Html<String> {
                 "{} Payment | Kalatori",
                 &shop_meta.shop_name
             ),
+        )
+        .replace(
+            "%VITE_ANKR_API_TOKEN%",
+            &shop_meta
+                .ankr_api_token
+                .unwrap_or_default(),
         );
 
     Html(html)
@@ -65,9 +82,14 @@ async fn invoice(
         .get_invoice(payload.invoice_id)
         .await;
 
+    // TODO: rename var, move value to const
+    let response_if = Utc::now() - TimeDelta::days(30);
+
     match invoice {
         // If the invoice exists and is active, return it
-        Ok(Some(invoice)) if invoice.invoice.status.is_active() => {
+        Ok(Some(invoice))
+            if invoice.invoice.status.is_active() || invoice.invoice.updated_at >= response_if =>
+        {
             (StatusCode::OK, Json(invoice)).into_response()
         },
         // TODO: update errors
@@ -108,6 +130,42 @@ async fn create_front_end_swap(
     Ok(response.into())
 }
 
+async fn create_swap(
+    ExtractState(state): ExtractState<ApiState>,
+    AppJson(data): AppJson<CreateSwapParams>,
+) -> ApiResult<PublicSwap, SwapRequestError> {
+    let result = state
+        .create_swap(data)
+        .await?
+        .into_public();
+
+    Ok(result.into())
+}
+
+async fn update_swap_submitted(
+    ExtractState(state): ExtractState<ApiState>,
+    AppJson(data): AppJson<SubmittedSwapParams>,
+) -> ApiResult<PublicSwap, SwapRequestError> {
+    let result = state
+        .update_swap_submitted(data)
+        .await?
+        .into_public();
+
+    Ok(result.into())
+}
+
+async fn submit_with_signature(
+    ExtractState(state): ExtractState<ApiState>,
+    AppJson(data): AppJson<SwapSignatureParams>,
+) -> ApiResult<PublicSwap, SwapRequestError> {
+    let result = state
+        .submit_swap_with_signature(data)
+        .await?
+        .into_public();
+
+    Ok(result.into())
+}
+
 pub fn routes() -> axum::Router<ApiState> {
     axum::Router::new()
         .route("/", axum::routing::get(index))
@@ -116,6 +174,18 @@ pub fn routes() -> axum::Router<ApiState> {
         .route(
             "/swap/register",
             axum::routing::post(create_front_end_swap),
+        )
+        .route(
+            "/swap/create",
+            axum::routing::post(create_swap),
+        )
+        .route(
+            "/swap/submitted",
+            axum::routing::post(update_swap_submitted),
+        )
+        .route(
+            "/swap/signature",
+            axum::routing::post(submit_with_signature),
         )
         .nest_service(
             "/assets",

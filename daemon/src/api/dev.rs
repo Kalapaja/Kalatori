@@ -3,6 +3,7 @@
 //! Feature-gated behind `dev_api`. These endpoints expose sensitive internals
 //! and must never be used in production.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -10,12 +11,16 @@ use axum::response::{
     IntoResponse,
     Response,
 };
-use axum::routing::post;
+use axum::routing::{
+    get,
+    post,
+};
 use chrono::Utc;
 use serde::{
     Deserialize,
     Serialize,
 };
+use uuid::Uuid;
 
 use kalatori_client::types::ApiResultStructured;
 
@@ -26,8 +31,11 @@ use crate::auth::token::{
     sign_token,
 };
 
+use crate::types::InvoiceWithReceivedAmount;
+
 use super::ApiState;
 use super::utils::{
+    SuccessWrapper,
     fallback_handler,
     method_not_allowed_fallback_handler,
 };
@@ -39,23 +47,14 @@ pub struct DevAuthState {
     pub audience: String,
 }
 
-pub fn routes(dev_auth: Option<Arc<DevAuthState>>) -> axum::Router<ApiState> {
-    let mut router = axum::Router::new();
+async fn get_invoices_registry_state(
+    State(state): State<ApiState>
+) -> SuccessWrapper<HashMap<Uuid, InvoiceWithReceivedAmount>> {
+    let result = state
+        .get_invoices_registry_state()
+        .await;
 
-    if let Some(dev_auth) = dev_auth {
-        let mint_routes = axum::Router::new()
-            .route(
-                "/auth/mint-token",
-                post(mint_token_handler),
-            )
-            .with_state(dev_auth);
-
-        router = router.merge(mint_routes);
-    }
-
-    router
-        .fallback(fallback_handler)
-        .method_not_allowed_fallback(method_not_allowed_fallback_handler)
+    result.into()
 }
 
 // ============================================================================
@@ -157,4 +156,27 @@ async fn mint_token_handler(
         }),
     )
         .into_response()
+}
+
+pub fn routes(dev_auth: Option<Arc<DevAuthState>>) -> axum::Router<ApiState> {
+    let mut router = axum::Router::new()
+        .route(
+            "/invoices-registry",
+            get(get_invoices_registry_state),
+        )
+        .fallback(fallback_handler)
+        .method_not_allowed_fallback(method_not_allowed_fallback_handler);
+
+    if let Some(dev_auth) = dev_auth {
+        let mint_routes = axum::Router::new()
+            .route(
+                "/auth/mint-token",
+                post(mint_token_handler),
+            )
+            .with_state(dev_auth);
+
+        router = router.merge(mint_routes);
+    }
+
+    router
 }

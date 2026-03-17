@@ -8,7 +8,6 @@ mod pimlico_client;
 
 use std::str::FromStr;
 
-use alloy::eips::BlockNumberOrTag;
 use alloy::eips::eip7702::Authorization;
 use alloy::primitives::{
     Address,
@@ -720,8 +719,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         // Build filter for Transfer events from all tracked ERC-20 contracts
         let filter = Filter::new()
             .address(asset_ids.to_vec())
-            .event_signature(IERC20::Transfer::SIGNATURE_HASH)
-            .from_block(BlockNumberOrTag::Latest);
+            .event_signature(IERC20::Transfer::SIGNATURE_HASH);
 
         let client = self.clone();
 
@@ -755,13 +753,13 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                         let event = decoded.inner.data;
                         match client.log_to_transfer(&log, &event).await {
                             Ok(transfer) => {
-                                // tracing::trace!(
-                                //     from = %transfer.sender,
-                                //     to = %transfer.recipient,
-                                //     amount = %transfer.amount,
-                                //     asset = %transfer.asset_name,
-                                //     "Detected ERC-20 transfer"
-                                // );
+                                tracing::trace!(
+                                    from = %transfer.sender,
+                                    to = %transfer.recipient,
+                                    amount = %transfer.amount,
+                                    asset = %transfer.asset_name,
+                                    "Detected ERC-20 transfer"
+                                );
                                 yield vec![transfer];
                             }
                             Err(e) => {

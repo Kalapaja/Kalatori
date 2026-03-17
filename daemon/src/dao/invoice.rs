@@ -264,7 +264,6 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
             })
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     async fn get_invoice_by_id(
         &self,
         invoice_id: Uuid,
