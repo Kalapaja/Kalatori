@@ -694,7 +694,6 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
         Ok(row.count as u32)
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     async fn get_swap_by_id(
         &self,
         swap_id: Uuid,
@@ -949,7 +948,10 @@ mod tests {
     // ========================================================================
 
     /// Helper to create an invoice for seeding.
-    fn make_invoice(chain: ChainType, asset_id: &str) -> CreateInvoiceData {
+    fn make_invoice(
+        chain: ChainType,
+        asset_id: &str,
+    ) -> CreateInvoiceData {
         let id = Uuid::new_v4();
         CreateInvoiceData {
             id,
@@ -958,8 +960,7 @@ mod tests {
             asset_name: "USDC".to_string(),
             chain,
             amount: Decimal::new(10000, 2),
-            payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
-                .to_string(),
+            payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
             cart: InvoiceCart::empty(),
             redirect_url: "http://localhost:8080/thankyou".to_string(),
             #[expect(clippy::arithmetic_side_effects)]
@@ -1016,34 +1017,62 @@ mod tests {
         // --- First batch ---
 
         // Swap 1: Across, Base→Polygon, Created, inv_1
-        let s = make_swap(inv_1_id, SwapExecutorType::Across, SwapChainType::Base, SwapChainType::Polygon);
+        let s = make_swap(
+            inv_1_id,
+            SwapExecutorType::Across,
+            SwapChainType::Base,
+            SwapChainType::Polygon,
+        );
         swap_ids.push(s.id);
         dao.create_swap(s).await.unwrap();
 
         // Swap 2: Bungee, Ethereum→Polygon, Submitted, inv_1
-        let s = make_swap(inv_1_id, SwapExecutorType::Bungee, SwapChainType::Ethereum, SwapChainType::Polygon);
+        let s = make_swap(
+            inv_1_id,
+            SwapExecutorType::Bungee,
+            SwapChainType::Ethereum,
+            SwapChainType::Polygon,
+        );
         let s_id = s.id;
         swap_ids.push(s_id);
         dao.create_swap(s).await.unwrap();
-        dao.update_swap_submitted(s_id).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
 
         // Swap 3: Across, Arbitrum→Polygon, Pending, inv_2
-        let s = make_swap(inv_2_id, SwapExecutorType::Across, SwapChainType::Arbitrum, SwapChainType::Polygon);
+        let s = make_swap(
+            inv_2_id,
+            SwapExecutorType::Across,
+            SwapChainType::Arbitrum,
+            SwapChainType::Polygon,
+        );
         let s_id = s.id;
         swap_ids.push(s_id);
         dao.create_swap(s).await.unwrap();
-        dao.update_swap_submitted(s_id).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
         // get_submitted_swaps transitions Submitted → Pending
         dao.get_submitted_swaps().await.unwrap();
 
         // Swap 4: Bungee, Base→Polygon, Completed, inv_2
-        let s = make_swap(inv_2_id, SwapExecutorType::Bungee, SwapChainType::Base, SwapChainType::Polygon);
+        let s = make_swap(
+            inv_2_id,
+            SwapExecutorType::Bungee,
+            SwapChainType::Base,
+            SwapChainType::Polygon,
+        );
         let s_id = s.id;
         swap_ids.push(s_id);
         dao.create_swap(s).await.unwrap();
-        dao.update_swap_submitted(s_id).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
         dao.get_submitted_swaps().await.unwrap();
-        dao.update_swap_completed(s_id).await.unwrap();
+        dao.update_swap_completed(s_id)
+            .await
+            .unwrap();
 
         // Sleep to create a timestamp gap between batches
         tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
@@ -1051,32 +1080,60 @@ mod tests {
         // --- Second batch ---
 
         // Swap 5: Across, Ethereum→Polygon, Failed, inv_1
-        let s = make_swap(inv_1_id, SwapExecutorType::Across, SwapChainType::Ethereum, SwapChainType::Polygon);
+        let s = make_swap(
+            inv_1_id,
+            SwapExecutorType::Across,
+            SwapChainType::Ethereum,
+            SwapChainType::Polygon,
+        );
         let s_id = s.id;
         swap_ids.push(s_id);
         dao.create_swap(s).await.unwrap();
-        dao.update_swap_failed(s_id, "Network error".to_string()).await.unwrap();
+        dao.update_swap_failed(s_id, "Network error".to_string())
+            .await
+            .unwrap();
 
         // Swap 6: Bungee, Arbitrum→Polygon, Created, inv_2
-        let s = make_swap(inv_2_id, SwapExecutorType::Bungee, SwapChainType::Arbitrum, SwapChainType::Polygon);
+        let s = make_swap(
+            inv_2_id,
+            SwapExecutorType::Bungee,
+            SwapChainType::Arbitrum,
+            SwapChainType::Polygon,
+        );
         swap_ids.push(s.id);
         dao.create_swap(s).await.unwrap();
 
         // Swap 7: Across, Base→Polygon, Completed, inv_1
-        let s = make_swap(inv_1_id, SwapExecutorType::Across, SwapChainType::Base, SwapChainType::Polygon);
+        let s = make_swap(
+            inv_1_id,
+            SwapExecutorType::Across,
+            SwapChainType::Base,
+            SwapChainType::Polygon,
+        );
         let s_id = s.id;
         swap_ids.push(s_id);
         dao.create_swap(s).await.unwrap();
-        dao.update_swap_submitted(s_id).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
         dao.get_submitted_swaps().await.unwrap();
-        dao.update_swap_completed(s_id).await.unwrap();
+        dao.update_swap_completed(s_id)
+            .await
+            .unwrap();
 
         // Swap 8: Bungee, Ethereum→Polygon, Pending, inv_2
-        let s = make_swap(inv_2_id, SwapExecutorType::Bungee, SwapChainType::Ethereum, SwapChainType::Polygon);
+        let s = make_swap(
+            inv_2_id,
+            SwapExecutorType::Bungee,
+            SwapChainType::Ethereum,
+            SwapChainType::Polygon,
+        );
         let s_id = s.id;
         swap_ids.push(s_id);
         dao.create_swap(s).await.unwrap();
-        dao.update_swap_submitted(s_id).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
         dao.get_submitted_swaps().await.unwrap();
 
         (swap_ids, invoice_ids)
@@ -1088,7 +1145,10 @@ mod tests {
         seed_swaps(&dao).await;
 
         let params = ListSwapsParams::default();
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 8);
@@ -1113,7 +1173,10 @@ mod tests {
             status: Some(vec![SwapStatus::Created]),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 2);
@@ -1130,10 +1193,16 @@ mod tests {
 
         // Created + Completed: s1, s4, s6, s7
         let params = ListSwapsParams {
-            status: Some(vec![SwapStatus::Created, SwapStatus::Completed]),
+            status: Some(vec![
+                SwapStatus::Created,
+                SwapStatus::Completed,
+            ]),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 4);
@@ -1150,13 +1219,19 @@ mod tests {
             swap_executor: Some(SwapExecutorType::Across),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 4);
         assert_eq!(result.len(), 4);
         for swap in &result {
-            assert_eq!(swap.request.swap_executor, SwapExecutorType::Across);
+            assert_eq!(
+                swap.request.swap_executor,
+                SwapExecutorType::Across
+            );
         }
 
         // Bungee: s2, s4, s6, s8
@@ -1164,13 +1239,19 @@ mod tests {
             swap_executor: Some(SwapExecutorType::Bungee),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 4);
         assert_eq!(result.len(), 4);
         for swap in &result {
-            assert_eq!(swap.request.swap_executor, SwapExecutorType::Bungee);
+            assert_eq!(
+                swap.request.swap_executor,
+                SwapExecutorType::Bungee
+            );
         }
     }
 
@@ -1184,7 +1265,10 @@ mod tests {
             invoice_id: Some(invoice_ids[0]),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 4);
@@ -1203,7 +1287,10 @@ mod tests {
             sort_order: Some(SortOrder::Asc),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 8);
         for i in 1..result.len() {
@@ -1224,7 +1311,10 @@ mod tests {
             },
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 8);
@@ -1238,7 +1328,10 @@ mod tests {
             },
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 2);
 
         // Beyond last page
@@ -1249,7 +1342,10 @@ mod tests {
             },
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -1272,7 +1368,10 @@ mod tests {
             created_to: Some(boundary),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 4);
@@ -1290,13 +1389,19 @@ mod tests {
             invoice_id: Some(invoice_ids[0]),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 3);
         assert_eq!(result.len(), 3);
         for swap in &result {
-            assert_eq!(swap.request.swap_executor, SwapExecutorType::Across);
+            assert_eq!(
+                swap.request.swap_executor,
+                SwapExecutorType::Across
+            );
             assert_eq!(swap.request.invoice_id, invoice_ids[0]);
         }
     }
@@ -1311,7 +1416,10 @@ mod tests {
             status: Some(vec![SwapStatus::Abandoned]),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 0);
@@ -1328,12 +1436,18 @@ mod tests {
             status: Some(vec![SwapStatus::Failed]),
             ..Default::default()
         };
-        let result = dao.get_swaps_paginated(&params).await.unwrap();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
         let count = dao.count_swaps(&params).await.unwrap();
 
         assert_eq!(count, 1);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].status, SwapStatus::Failed);
-        assert_eq!(result[0].error_message, Some("Network error".to_string()));
+        assert_eq!(
+            result[0].error_message,
+            Some("Network error".to_string())
+        );
     }
 }

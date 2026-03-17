@@ -183,6 +183,12 @@ pub trait DaoInterface: Send + Sync + 'static {
         failed_at: DateTime<Utc>,
     ) -> Result<Transaction, DaoTransactionError>;
 
+    /// Get a transaction by its ID.
+    async fn get_transaction_by_id(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError>;
+
     /// Get all transactions for a specific invoice.
     async fn get_invoice_transactions(
         &self,
@@ -324,6 +330,12 @@ pub trait DaoInterface: Send + Sync + 'static {
         error_message: String,
     ) -> Result<Swap, DaoSwapError>;
 
+    /// Get a swap by its ID.
+    async fn get_swap_by_id(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError>;
+
     /// Get a paginated, filtered list of swaps.
     async fn get_swaps_paginated(
         &self,
@@ -423,6 +435,11 @@ pub trait DaoTransactionInterface {
         failure_message: String,
         failed_at: DateTime<Utc>,
     ) -> Result<Transaction, DaoTransactionError>;
+
+    async fn get_transaction_by_id(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError>;
 
     async fn get_invoice_transactions(
         &self,
@@ -543,6 +560,11 @@ pub trait DaoTransactionInterface {
         swap_id: Uuid,
         error_message: String,
     ) -> Result<Swap, DaoSwapError>;
+
+    async fn get_swap_by_id(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError>;
 
     async fn get_swaps_paginated(
         &self,
@@ -683,6 +705,13 @@ impl DaoInterface for DAO {
             failed_at,
         )
         .await
+    }
+
+    async fn get_transaction_by_id(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError> {
+        DaoTransactionMethods::get_transaction_by_id(self, transaction_id).await
     }
 
     async fn get_invoice_transactions(
@@ -860,6 +889,13 @@ impl DaoInterface for DAO {
         DaoSwapMethods::update_swap_failed(self, swap_id, error_message).await
     }
 
+    async fn get_swap_by_id(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_swap_by_id(self, swap_id).await
+    }
+
     async fn get_swaps_paginated(
         &self,
         params: &ListSwapsParams,
@@ -983,6 +1019,13 @@ impl DaoTransactionInterface for DaoTransaction {
             failed_at,
         )
         .await
+    }
+
+    async fn get_transaction_by_id(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError> {
+        DaoTransactionMethods::get_transaction_by_id(self, transaction_id).await
     }
 
     async fn get_invoice_transactions(
@@ -1151,6 +1194,13 @@ impl DaoTransactionInterface for DaoTransaction {
         error_message: String,
     ) -> Result<Swap, DaoSwapError> {
         DaoSwapMethods::update_swap_failed(self, swap_id, error_message).await
+    }
+
+    async fn get_swap_by_id(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_swap_by_id(self, swap_id).await
     }
 
     async fn get_swaps_paginated(

@@ -60,6 +60,7 @@ use crate::types::{
     PublicSwap,
     PublicTransaction,
     RefundChanges,
+    Swap,
     Transaction,
     UpdateInvoiceData,
 };
@@ -389,6 +390,15 @@ impl<D: DaoInterface> AppState<D> {
         ))
     }
 
+    pub async fn get_payout(
+        &self,
+        payout_id: Uuid,
+    ) -> Result<Option<Payout>, DaoPayoutError> {
+        self.dao
+            .get_payout_by_id(payout_id)
+            .await
+    }
+
     #[tracing::instrument(skip_all)]
     pub async fn list_payouts(
         &self,
@@ -405,6 +415,15 @@ impl<D: DaoInterface> AppState<D> {
             params.pagination.validated_page(),
             params.pagination.validated_per_page(),
         ))
+    }
+
+    pub async fn get_transaction(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError> {
+        self.dao
+            .get_transaction_by_id(transaction_id)
+            .await
     }
 
     #[tracing::instrument(skip_all)]
@@ -429,6 +448,13 @@ impl<D: DaoInterface> AppState<D> {
             params.pagination.validated_page(),
             params.pagination.validated_per_page(),
         ))
+    }
+
+    pub async fn get_swap(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError> {
+        self.dao.get_swap_by_id(swap_id).await
     }
 
     #[tracing::instrument(skip_all)]

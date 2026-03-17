@@ -239,6 +239,31 @@ pub trait DaoTransactionMethods: DaoExecutor + 'static {
             })
     }
 
+    async fn get_transaction_by_id(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError> {
+        let query = sqlx::query_as::<_, TransactionRow>(
+            "SELECT *
+            FROM transactions
+            WHERE id = ?",
+        )
+        .bind(transaction_id);
+
+        self.fetch_optional(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.transaction",
+                    error.operation = "get_transaction_by_id",
+                    %transaction_id,
+                    error.source = ?e,
+                    "Failed to fetch transaction"
+                );
+                DaoTransactionError::DatabaseError
+            })
+    }
+
     async fn update_transaction_successful(
         &self,
         transaction_id: Uuid,
