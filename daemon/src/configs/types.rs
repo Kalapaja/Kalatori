@@ -158,7 +158,7 @@ fn default_invoice_lifetime_millis() -> u64 {
 // similar. Also, later we'll probably add some minimal invoice amount. We'll
 // have to ensure that tolerance doesn't allow to avoid invoice payment at all
 // (or pay just the very minimal amount).
-#[derive(Deserialize, Clone, Copy, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub struct SlippageParams {
     /// Maximum amount below the expected payment that will still be accepted.
     /// If set to 0, will require exact amount or more. By default is 0.
@@ -330,6 +330,7 @@ fn default_signature_max_age_secs() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShopMetaConfig {
     pub shop_name: String,
+    pub shop_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logo_url: Option<String>,
     pub reown_project_id: String,
@@ -341,6 +342,8 @@ pub struct ShopConfig {
     pub invoices_webhook_url: String,
     #[serde(default = "default_signature_max_age_secs")]
     pub signature_max_age_secs: u64,
+    #[serde(default)]
+    pub private_api_base_url: Option<String>,
     #[serde(flatten)]
     pub meta: ShopMetaConfig,
 }

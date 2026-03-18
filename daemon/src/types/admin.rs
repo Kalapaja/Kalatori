@@ -1,16 +1,23 @@
 //! Admin-specific request types for list/filter endpoints.
 
+use std::collections::HashMap;
+
 use chrono::{
     DateTime,
     Utc,
 };
-use serde::Deserialize;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use serde_with::formats::CommaSeparator;
 use serde_with::{
     StringWithSeparator,
     serde_as,
 };
 use uuid::Uuid;
+
+use crate::configs::SlippageParams;
 
 use super::{
     ChainType,
@@ -145,4 +152,33 @@ pub struct ListTransactionsParams {
 
     /// Sort direction for `created_at` (default: `desc`).
     pub sort_order: Option<SortOrder>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicAssetDescription {
+    pub asset_id: String,
+    pub asset_name: String,
+    // TODO: add asset decimals and specify chain
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KalatoriSettings {
+    pub shop_url: String,
+    pub shop_name: String,
+    pub logo_url: Option<String>,
+    pub recipient_addresses: HashMap<ChainType, String>,
+    pub invoice_lifetime_millis: u64,
+    pub default_chain: ChainType,
+    pub default_asset_id: HashMap<ChainType, String>,
+    pub payment_url_base: String,
+    pub slippage_params: HashMap<ChainType, HashMap<String, SlippageParams>>,
+    pub assets_description: HashMap<String, PublicAssetDescription>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KalatoriIntegrationSettings {
+    pub invoices_webhook_url: String,
+    pub signature_max_age_secs: u64,
+    pub private_api_base_url: String,
+    pub api_secret_key: String,
 }

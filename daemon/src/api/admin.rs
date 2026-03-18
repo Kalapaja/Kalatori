@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use kalatori_client::types::ApiResultStructured;
 
+use crate::api::utils::SuccessWrapper;
 use crate::auth::session::AuthenticatedUser;
 use crate::auth::token::Role;
 use crate::dao::{
@@ -29,6 +30,8 @@ use crate::dao::{
     DaoTransactionError,
 };
 use crate::types::{
+    KalatoriIntegrationSettings,
+    KalatoriSettings,
     ListInvoicesParams,
     ListPayoutsParams,
     ListSwapsParams,
@@ -240,6 +243,23 @@ async fn whoami_handler(Extension(user): Extension<AuthenticatedUser>) -> Respon
         .into_response()
 }
 
+async fn kalatori_settings_handler(
+    State(state): State<ApiState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> SuccessWrapper<KalatoriSettings> {
+    state.get_kalatori_settings().into()
+}
+
+async fn kalatori_integration_settings_handler(
+    State(state): State<ApiState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> SuccessWrapper<KalatoriIntegrationSettings> {
+    // TODO: restrict visibility by user's role
+    state
+        .get_kalatori_integration_settings()
+        .into()
+}
+
 /// Admin routes.
 pub fn routes() -> Router<ApiState> {
     Router::new()
@@ -264,4 +284,12 @@ pub fn routes() -> Router<ApiState> {
         )
         .route("/swap/list", get(list_swaps_handler))
         .route("/swap/get", get(get_swap_handler))
+        .route(
+            "/settings",
+            get(kalatori_settings_handler),
+        )
+        .route(
+            "/integration-settings",
+            get(kalatori_integration_settings_handler),
+        )
 }
