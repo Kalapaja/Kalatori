@@ -81,7 +81,7 @@ async fn send_webhook(
 pub struct WebhookSender<D: DaoInterface + 'static> {
     client: reqwest::Client,
     dao: D,
-    webhook_url: String,
+    webhook_url: Option<String>,
     hmac_config: HmacConfig,
     processing_events_ids: HashSet<Uuid>,
 }
@@ -89,7 +89,7 @@ pub struct WebhookSender<D: DaoInterface + 'static> {
 impl<D: DaoInterface + 'static> WebhookSender<D> {
     pub fn new(
         dao: D,
-        webhook_url: String,
+        webhook_url: Option<String>,
         hmac_config: HmacConfig,
     ) -> Self {
         WebhookSender {
@@ -103,11 +103,12 @@ impl<D: DaoInterface + 'static> WebhookSender<D> {
 
     fn build_request(
         &self,
+        url: &str,
         event: WebhookEvent,
     ) -> reqwest::Request {
         let mut request = self
             .client
-            .post(&self.webhook_url)
+            .post(url)
             .json(&event.payload)
             .timeout(WEBHOOK_SENDER_REQUEST_TIMEOUT)
             .build()
@@ -133,13 +134,28 @@ impl<D: DaoInterface + 'static> WebhookSender<D> {
         event: WebhookEvent,
     ) -> Pin<Box<dyn Future<Output = SendWebhookResult> + Send + 'static>> {
         let event_id = event.id;
-        let request = self.build_request(event);
 
-        Box::pin(send_webhook(
-            self.client.clone(),
-            request,
-            event_id,
-        ))
+        if let Some(url) = self.webhook_url.as_ref() {
+            let request = self.build_request(url, event);
+
+            Box::pin(send_webhook(
+                self.client.clone(),
+                request,
+                event_id,
+            ))
+        } else {
+            Box::pin(async move {
+                tracing::trace!(
+                    %event_id,
+                    "Webhook url is not configured, event will not be sent but will be marked as delivered"
+                );
+
+                SendWebhookResult {
+                    event_id,
+                    is_ok: true,
+                }
+            })
+        }
     }
 
     async fn prepare_webhook_events(
@@ -296,6 +312,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_build_future() {
+        let server = MockServer::start();
+
+        let ok_mock = server.mock(|when, then| {
+            when.method(POST);
+
+            then.status(200);
+        });
+
+        let dao = MockDaoInterface::default();
+        let hmac_config = HmacConfig::new(b"test".to_vec(), 10);
+
+        let mut sender = WebhookSender::new(
+            dao,
+            Some(server.base_url()),
+            hmac_config,
+        );
+
+        let mut events = generate_events(2);
+        let (event_1, event_2) = (events.remove(1), events.remove(0));
+        let event_1_id = event_1.id;
+        let event_2_id = event_2.id;
+
+        let result = sender.build_future(event_1).await;
+        assert!(result.is_ok);
+        assert_eq!(result.event_id, event_1_id);
+        ok_mock.assert_calls(1);
+
+        sender.webhook_url = None;
+        let result = sender.build_future(event_2).await;
+        assert!(result.is_ok);
+        assert_eq!(result.event_id, event_2_id);
+        ok_mock.assert_calls(1);
+    }
+
+    #[tokio::test]
     async fn test_send_webhook() {
         let server = MockServer::start();
         let client = reqwest::Client::new();
@@ -388,7 +440,7 @@ mod tests {
 
         let sender = WebhookSender::new(
             dao,
-            "http://webhook.example.com".to_string(),
+            Some("http://webhook.example.com".to_string()),
             hmac_config,
         );
 
@@ -400,7 +452,7 @@ mod tests {
 
         let expected_body_string = event.payload.to_string();
 
-        let result = sender.build_request(event);
+        let result = sender.build_request("http://webhook.example.com", event);
         assert!(matches!(
             *result.method(),
             reqwest::Method::POST
@@ -442,7 +494,7 @@ mod tests {
 
         let mut sender = WebhookSender::new(
             dao,
-            "http://webhook.example.com".to_string(),
+            Some("http://webhook.example.com".to_string()),
             hmac_config,
         );
 
@@ -599,7 +651,7 @@ mod tests {
 
         let mut sender = WebhookSender::new(
             dao,
-            "http://webhook.example.com".to_string(),
+            Some("http://webhook.example.com".to_string()),
             hmac_config,
         );
 

@@ -337,7 +337,8 @@ pub struct ShopMetaConfig {
 
 #[derive(Deserialize, Clone)]
 pub struct ShopConfig {
-    pub invoices_webhook_url: String,
+    #[serde(default)]
+    pub invoices_webhook_url: Option<String>,
     #[serde(default = "default_signature_max_age_secs")]
     pub signature_max_age_secs: u64,
     #[serde(flatten)]
