@@ -707,9 +707,7 @@ impl<D: DaoInterface> AppState<D> {
                 .shop_config
                 .invoices_webhook_url
                 .clone(),
-            signature_max_age_secs: self
-                .shop_config
-                .signature_max_age_secs,
+            signature_max_age_secs: self.shop_config.signature_max_age_secs,
             private_api_base_url: self
                 .shop_config
                 .private_api_base_url

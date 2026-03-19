@@ -16,6 +16,10 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use tower_http::services::{
+    ServeDir,
+    ServeFile,
+};
 use uuid::Uuid;
 
 use kalatori_client::types::ApiResultStructured;
@@ -263,33 +267,53 @@ async fn kalatori_integration_settings_handler(
 /// Admin routes.
 pub fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/whoami", get(whoami_handler))
+        .route("/api/whoami", get(whoami_handler))
         .route(
-            "/invoice/list",
+            "/api/invoice/list",
             get(list_invoices_handler),
         )
-        .route("/invoice/get", get(get_invoice_handler))
         .route(
-            "/payout/list",
+            "/api/invoice/get",
+            get(get_invoice_handler),
+        )
+        .route(
+            "/api/payout/list",
             get(list_payouts_handler),
         )
-        .route("/payout/get", get(get_payout_handler))
         .route(
-            "/transaction/list",
+            "/api/payout/get",
+            get(get_payout_handler),
+        )
+        .route(
+            "/api/transaction/list",
             get(list_transactions_handler),
         )
         .route(
-            "/transaction/get",
+            "/api/transaction/get",
             get(get_transaction_handler),
         )
-        .route("/swap/list", get(list_swaps_handler))
-        .route("/swap/get", get(get_swap_handler))
         .route(
-            "/settings",
+            "/api/swap/list",
+            get(list_swaps_handler),
+        )
+        .route("/api/swap/get", get(get_swap_handler))
+        .route(
+            "/api/settings",
             get(kalatori_settings_handler),
         )
         .route(
-            "/integration-settings",
+            "/api/integration-settings",
             get(kalatori_integration_settings_handler),
+        )
+        .route_service(
+            "/",
+            ServeFile::new("static/admin/index.html"),
+        )
+        .fallback_service(ServeFile::new(
+            "static/admin/index.html",
+        ))
+        .nest_service(
+            "/assets",
+            ServeDir::new("static/admin/assets"),
         )
 }
