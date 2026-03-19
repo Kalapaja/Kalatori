@@ -169,7 +169,7 @@ impl AssetHubClient {
         // (should be another wrapper structure with endpoints hidden behind sync
         // primitives with error counters and usage timeouts)
         let endpoint = config
-            .get_random_endpoint()
+            .get_random_requests_endpoint()
             .ok_or(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
             })?;

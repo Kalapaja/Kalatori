@@ -47,12 +47,28 @@ fn default_allow_insecure_endpoints() -> bool {
     DEFAULT_ALLOW_INSECURE_ENDPOINTS
 }
 
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EndpointAllowedOperation {
+    Subscriptions,
+    Requests,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum ChainEndpoint {
+    Universal(String),
+    Specific {
+        url: String,
+        operations: Vec<EndpointAllowedOperation>,
+    },
+}
+
 // TODO: add some docs for fields, their purpose might be not obvious
 #[derive(Deserialize, Clone, Debug, Default)]
 pub struct ChainConfig {
     /// RPC endpoints for the chain node. Can be left empty to use defaults.
     #[serde(default)]
-    pub endpoints: Vec<String>,
+    pub endpoints: Vec<ChainEndpoint>,
     /// List of asset IDs to monitor on this chain. Can be left empty. By
     /// default the default asset ID for the chain will be added. If the
     /// default asset ID is changed in PaymentsConfig but in database there
@@ -66,9 +82,36 @@ pub struct ChainConfig {
 }
 
 impl ChainConfig {
-    pub fn get_random_endpoint(&self) -> Option<String> {
+    fn get_endpoints_with_allowed_operation(
+        &self,
+        op: EndpointAllowedOperation,
+    ) -> impl Iterator<Item = &String> {
+        self.endpoints
+            .iter()
+            .flat_map(move |ep| match ep {
+                ChainEndpoint::Universal(url) => Some(url),
+                ChainEndpoint::Specific {
+                    url,
+                    operations,
+                } if operations.contains(&op) => Some(url),
+                _ => None,
+            })
+    }
+
+    pub fn get_random_requests_endpoint(&self) -> Option<String> {
         let mut rng = rand::rng();
-        self.endpoints.choose(&mut rng).cloned()
+
+        self.get_endpoints_with_allowed_operation(EndpointAllowedOperation::Requests)
+            .choose(&mut rng)
+            .cloned()
+    }
+
+    pub fn get_random_subscriptions_endpoint(&self) -> Option<String> {
+        let mut rng = rand::rng();
+
+        self.get_endpoints_with_allowed_operation(EndpointAllowedOperation::Subscriptions)
+            .choose(&mut rng)
+            .cloned()
     }
 }
 
@@ -137,7 +180,7 @@ impl ChainsConfig {
 
                 chain_config.endpoints = endpoints
                     .iter()
-                    .map(|s| s.to_string())
+                    .map(|s| ChainEndpoint::Universal(s.to_string()))
                     .collect();
             }
         }
