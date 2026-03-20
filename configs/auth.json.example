@@ -1,7 +1,0 @@
-{
-    "auth_server_url": "https://app.kalatori.org",
-    "client_id": "d_my-merchant-01",
-    "client_secret": "sk_live_replace_me",
-    "token_public_keys": ["k4.public.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"],
-    "base_url": "https://my-merchant-01.kalatori.store"
-}
