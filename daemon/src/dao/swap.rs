@@ -11,11 +11,14 @@ use sqlx::types::{
 use thiserror::Error;
 use uuid::Uuid;
 
+use sqlx::QueryBuilder;
+
 use crate::types::{
     CreateFrontEndSwapParams,
     CreateSwapData,
     FrontEndSwap,
     InternalSwapDetails,
+    ListSwapsParams,
     Swap,
     SwapChainType,
     SwapDirection,
@@ -218,6 +221,47 @@ impl crate::api::ApiErrorExt for DaoSwapError {
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct CountRow {
+    count: i64,
+}
+
+fn push_swap_filters(
+    builder: &mut QueryBuilder<'_, sqlx::Sqlite>,
+    params: &ListSwapsParams,
+) {
+    if let Some(statuses) = &params.status
+        && !statuses.is_empty()
+    {
+        builder.push(" AND s.status IN (");
+        let mut separated = builder.separated(", ");
+        for status in statuses {
+            separated.push_bind(status.to_string());
+        }
+        separated.push_unseparated(")");
+    }
+
+    if let Some(executor) = &params.swap_executor {
+        builder.push(" AND s.swap_executor = ");
+        builder.push_bind(executor.to_string());
+    }
+
+    if let Some(invoice_id) = &params.invoice_id {
+        builder.push(" AND s.invoice_id = ");
+        builder.push_bind(*invoice_id);
+    }
+
+    if let Some(created_from) = &params.created_from {
+        builder.push(" AND s.created_at >= ");
+        builder.push_bind(created_from.naive_utc());
+    }
+
+    if let Some(created_to) = &params.created_to {
+        builder.push(" AND s.created_at <= ");
+        builder.push_bind(created_to.naive_utc());
+    }
+}
+
 pub trait DaoSwapMethods: DaoExecutor + 'static {
     async fn create_front_end_swap(
         &self,
@@ -310,8 +354,8 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
         .bind(swap.status)
         .bind(Text(swap.estimated_to_amount))
         .bind(Json(swap.swap_details))
-        .bind(swap.created_at.to_rfc3339())
-        .bind(swap.valid_till.to_rfc3339());
+        .bind(swap.created_at.naive_utc())
+        .bind(swap.valid_till.naive_utc());
 
         self.fetch_one(query)
             .await
@@ -585,7 +629,71 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             })
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// Get a paginated, filtered list of swaps.
+    async fn get_swaps_paginated(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<Vec<Swap>, DaoSwapError> {
+        let mut builder = QueryBuilder::new("SELECT * FROM swaps s WHERE 1=1");
+
+        push_swap_filters(&mut builder, params);
+
+        let sort_order = params.sort_order.unwrap_or_default();
+
+        builder.push(" ORDER BY s.created_at ");
+        builder.push(sort_order.as_sql());
+
+        let per_page = params.pagination.validated_per_page();
+        let offset = params.pagination.offset();
+
+        builder.push(" LIMIT ");
+        builder.push_bind(per_page);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+
+        let query = builder.build_query_as::<SwapRow>();
+
+        self.fetch_all(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.swap",
+                    error.operation = "get_swaps_paginated",
+                    error.source = ?e,
+                    "Failed to fetch paginated swaps"
+                );
+                DaoSwapError::DatabaseError
+            })
+    }
+
+    /// Count swaps matching the given filters (for pagination metadata).
+    async fn count_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<u32, DaoSwapError> {
+        let mut builder = QueryBuilder::new("SELECT COUNT(*) as count FROM swaps s WHERE 1=1");
+
+        push_swap_filters(&mut builder, params);
+
+        let query = builder.build_query_as::<CountRow>();
+
+        let row: CountRow = self
+            .fetch_one(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.swap",
+                    error.operation = "count_swaps",
+                    error.source = ?e,
+                    "Failed to count swaps"
+                );
+                DaoSwapError::DatabaseError
+            })?;
+
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Ok(row.count as u32)
+    }
+
     async fn get_swap_by_id(
         &self,
         swap_id: Uuid,
@@ -617,9 +725,17 @@ impl<T: DaoExecutor + 'static> DaoSwapMethods for T {}
 
 #[cfg(test)]
 mod tests {
+    use rust_decimal::Decimal;
+
     use crate::dao::create_test_dao;
     use crate::dao::invoice::DaoInvoiceMethods;
     use crate::types::{
+        ChainType,
+        CreateInvoiceData,
+        InvoiceCart,
+        ListSwapsParams,
+        PaginationParams,
+        SortOrder,
         default_create_invoice_data,
         default_swap,
     };
@@ -824,6 +940,514 @@ mod tests {
             DaoSwapError::InvoiceNotFound {
                 invoice_id
             }
+        );
+    }
+
+    // ========================================================================
+    // Paginated swap listing — snapshot tests
+    // ========================================================================
+
+    /// Helper to create an invoice for seeding.
+    fn make_invoice(
+        chain: ChainType,
+        asset_id: &str,
+    ) -> CreateInvoiceData {
+        let id = Uuid::new_v4();
+        CreateInvoiceData {
+            id,
+            order_id: id.to_string(),
+            asset_id: asset_id.to_string(),
+            asset_name: "USDC".to_string(),
+            chain,
+            amount: Decimal::new(10000, 2),
+            payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
+            cart: InvoiceCart::empty(),
+            redirect_url: "http://localhost:8080/thankyou".to_string(),
+            #[expect(clippy::arithmetic_side_effects)]
+            valid_till: chrono::Utc::now() + chrono::Duration::hours(24),
+        }
+    }
+
+    /// Helper to create a swap with specific properties.
+    fn make_swap(
+        invoice_id: Uuid,
+        executor: SwapExecutorType,
+        from_chain: SwapChainType,
+        to_chain: SwapChainType,
+    ) -> Swap {
+        Swap {
+            request: CreateSwapData {
+                swap_executor: executor,
+                from_chain,
+                to_chain,
+                ..crate::types::default_create_swap_data(invoice_id)
+            },
+            ..default_swap(invoice_id)
+        }
+    }
+
+    /// Seed 8 swaps with diverse properties, return their IDs in insertion
+    /// order. A small sleep separates the first 4 from the last 4 to allow
+    /// date range filtering tests.
+    ///
+    /// | # | Executor | From      | To      | Status    | Invoice |
+    /// |---|----------|-----------|---------|-----------|---------|
+    /// | 1 | Across   | Base      | Polygon | Created   | inv_1   |
+    /// | 2 | Bungee   | Ethereum  | Polygon | Submitted | inv_1   |
+    /// | 3 | Across   | Arbitrum  | Polygon | Pending   | inv_2   |
+    /// | 4 | Bungee   | Base      | Polygon | Completed | inv_2   |
+    /// |   |          |           |         | (sleep)   |         |
+    /// | 5 | Across   | Ethereum  | Polygon | Failed    | inv_1   |
+    /// | 6 | Bungee   | Arbitrum  | Polygon | Created   | inv_2   |
+    /// | 7 | Across   | Base      | Polygon | Completed | inv_1   |
+    /// | 8 | Bungee   | Ethereum  | Polygon | Pending   | inv_2   |
+    async fn seed_swaps(dao: &crate::dao::DAO) -> (Vec<Uuid>, Vec<Uuid>) {
+        let mut swap_ids = Vec::new();
+
+        let inv_1 = make_invoice(ChainType::PolkadotAssetHub, "1984");
+        let inv_1_id = inv_1.id;
+        dao.create_invoice(inv_1).await.unwrap();
+
+        let inv_2 = make_invoice(ChainType::Polygon, "USDC");
+        let inv_2_id = inv_2.id;
+        dao.create_invoice(inv_2).await.unwrap();
+
+        let invoice_ids = vec![inv_1_id, inv_2_id];
+
+        // --- First batch ---
+
+        // Swap 1: Across, Base→Polygon, Created, inv_1
+        let s = make_swap(
+            inv_1_id,
+            SwapExecutorType::Across,
+            SwapChainType::Base,
+            SwapChainType::Polygon,
+        );
+        swap_ids.push(s.id);
+        dao.create_swap(s).await.unwrap();
+
+        // Swap 2: Bungee, Ethereum→Polygon, Submitted, inv_1
+        let s = make_swap(
+            inv_1_id,
+            SwapExecutorType::Bungee,
+            SwapChainType::Ethereum,
+            SwapChainType::Polygon,
+        );
+        let s_id = s.id;
+        swap_ids.push(s_id);
+        dao.create_swap(s).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
+
+        // Swap 3: Across, Arbitrum→Polygon, Pending, inv_2
+        let s = make_swap(
+            inv_2_id,
+            SwapExecutorType::Across,
+            SwapChainType::Arbitrum,
+            SwapChainType::Polygon,
+        );
+        let s_id = s.id;
+        swap_ids.push(s_id);
+        dao.create_swap(s).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
+        // get_submitted_swaps transitions Submitted → Pending
+        dao.get_submitted_swaps().await.unwrap();
+
+        // Swap 4: Bungee, Base→Polygon, Completed, inv_2
+        let s = make_swap(
+            inv_2_id,
+            SwapExecutorType::Bungee,
+            SwapChainType::Base,
+            SwapChainType::Polygon,
+        );
+        let s_id = s.id;
+        swap_ids.push(s_id);
+        dao.create_swap(s).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
+        dao.get_submitted_swaps().await.unwrap();
+        dao.update_swap_completed(s_id)
+            .await
+            .unwrap();
+
+        // Sleep to create a timestamp gap between batches
+        tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
+
+        // --- Second batch ---
+
+        // Swap 5: Across, Ethereum→Polygon, Failed, inv_1
+        let s = make_swap(
+            inv_1_id,
+            SwapExecutorType::Across,
+            SwapChainType::Ethereum,
+            SwapChainType::Polygon,
+        );
+        let s_id = s.id;
+        swap_ids.push(s_id);
+        dao.create_swap(s).await.unwrap();
+        dao.update_swap_failed(s_id, "Network error".to_string())
+            .await
+            .unwrap();
+
+        // Swap 6: Bungee, Arbitrum→Polygon, Created, inv_2
+        let s = make_swap(
+            inv_2_id,
+            SwapExecutorType::Bungee,
+            SwapChainType::Arbitrum,
+            SwapChainType::Polygon,
+        );
+        swap_ids.push(s.id);
+        dao.create_swap(s).await.unwrap();
+
+        // Swap 7: Across, Base→Polygon, Completed, inv_1
+        let s = make_swap(
+            inv_1_id,
+            SwapExecutorType::Across,
+            SwapChainType::Base,
+            SwapChainType::Polygon,
+        );
+        let s_id = s.id;
+        swap_ids.push(s_id);
+        dao.create_swap(s).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
+        dao.get_submitted_swaps().await.unwrap();
+        dao.update_swap_completed(s_id)
+            .await
+            .unwrap();
+
+        // Swap 8: Bungee, Ethereum→Polygon, Pending, inv_2
+        let s = make_swap(
+            inv_2_id,
+            SwapExecutorType::Bungee,
+            SwapChainType::Ethereum,
+            SwapChainType::Polygon,
+        );
+        let s_id = s.id;
+        swap_ids.push(s_id);
+        dao.create_swap(s).await.unwrap();
+        dao.update_swap_submitted(s_id)
+            .await
+            .unwrap();
+        dao.get_submitted_swaps().await.unwrap();
+
+        (swap_ids, invoice_ids)
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_no_filters() {
+        let dao = create_test_dao().await;
+        seed_swaps(&dao).await;
+
+        let params = ListSwapsParams::default();
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 8);
+        assert_eq!(result.len(), 8);
+        insta::assert_yaml_snapshot!(result, {
+            "[].id" => "[uuid]",
+            "[].request.invoice_id" => "[uuid]",
+            "[].created_at" => "[timestamp]",
+            "[].submitted_at" => "[timestamp]",
+            "[].finished_at" => "[timestamp]",
+            "[].valid_till" => "[timestamp]",
+        });
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_filter_single_status() {
+        let dao = create_test_dao().await;
+        seed_swaps(&dao).await;
+
+        // Created: s1, s6
+        let params = ListSwapsParams {
+            status: Some(vec![SwapStatus::Created]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 2);
+        assert_eq!(result.len(), 2);
+        for swap in &result {
+            assert_eq!(swap.status, SwapStatus::Created);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_filter_multiple_statuses() {
+        let dao = create_test_dao().await;
+        seed_swaps(&dao).await;
+
+        // Created + Completed: s1, s4, s6, s7
+        let params = ListSwapsParams {
+            status: Some(vec![
+                SwapStatus::Created,
+                SwapStatus::Completed,
+            ]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 4);
+        assert_eq!(result.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_filter_by_executor() {
+        let dao = create_test_dao().await;
+        seed_swaps(&dao).await;
+
+        // Across: s1, s3, s5, s7
+        let params = ListSwapsParams {
+            swap_executor: Some(SwapExecutorType::Across),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 4);
+        assert_eq!(result.len(), 4);
+        for swap in &result {
+            assert_eq!(
+                swap.request.swap_executor,
+                SwapExecutorType::Across
+            );
+        }
+
+        // Bungee: s2, s4, s6, s8
+        let params = ListSwapsParams {
+            swap_executor: Some(SwapExecutorType::Bungee),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 4);
+        assert_eq!(result.len(), 4);
+        for swap in &result {
+            assert_eq!(
+                swap.request.swap_executor,
+                SwapExecutorType::Bungee
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_filter_by_invoice_id() {
+        let dao = create_test_dao().await;
+        let (_, invoice_ids) = seed_swaps(&dao).await;
+
+        // inv_1: s1, s2, s5, s7
+        let params = ListSwapsParams {
+            invoice_id: Some(invoice_ids[0]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 4);
+        assert_eq!(result.len(), 4);
+        for swap in &result {
+            assert_eq!(swap.request.invoice_id, invoice_ids[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_sort_asc() {
+        let dao = create_test_dao().await;
+        seed_swaps(&dao).await;
+
+        let params = ListSwapsParams {
+            sort_order: Some(SortOrder::Asc),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 8);
+        for i in 1..result.len() {
+            assert!(result[i].created_at >= result[i - 1].created_at);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_pagination() {
+        let dao = create_test_dao().await;
+        seed_swaps(&dao).await;
+
+        // Page 1, 3 per page
+        let params = ListSwapsParams {
+            pagination: PaginationParams {
+                page: Some(1),
+                per_page: Some(3),
+            },
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 8);
+        assert_eq!(result.len(), 3);
+
+        // Page 3, 3 per page (last page, 2 items)
+        let params = ListSwapsParams {
+            pagination: PaginationParams {
+                page: Some(3),
+                per_page: Some(3),
+            },
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2);
+
+        // Beyond last page
+        let params = ListSwapsParams {
+            pagination: PaginationParams {
+                page: Some(10),
+                per_page: Some(3),
+            },
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_date_range() {
+        let dao = create_test_dao().await;
+        seed_swaps(&dao).await;
+
+        // Fetch all in DESC order to find the boundary
+        let all = dao
+            .get_swaps_paginated(&ListSwapsParams::default())
+            .await
+            .unwrap();
+        // In DESC order, items 0-3 are batch 2 (newer), items 4-7 are batch 1
+        // (older). Use the created_at of item at index 3 (newest of batch 2)
+        // as created_to to only get batch 1 items.
+        let boundary = all[4].created_at;
+
+        let params = ListSwapsParams {
+            created_to: Some(boundary),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 4);
+        assert_eq!(result.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_combined_filters() {
+        let dao = create_test_dao().await;
+        let (_, invoice_ids) = seed_swaps(&dao).await;
+
+        // Across + inv_1: s1, s5, s7
+        let params = ListSwapsParams {
+            swap_executor: Some(SwapExecutorType::Across),
+            invoice_id: Some(invoice_ids[0]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 3);
+        assert_eq!(result.len(), 3);
+        for swap in &result {
+            assert_eq!(
+                swap.request.swap_executor,
+                SwapExecutorType::Across
+            );
+            assert_eq!(swap.request.invoice_id, invoice_ids[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_empty_result() {
+        let dao = create_test_dao().await;
+        seed_swaps(&dao).await;
+
+        // Abandoned status doesn't exist in seed data
+        let params = ListSwapsParams {
+            status: Some(vec![SwapStatus::Abandoned]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 0);
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_paginated_swaps_failed_status() {
+        let dao = create_test_dao().await;
+        seed_swaps(&dao).await;
+
+        // Failed: s5
+        let params = ListSwapsParams {
+            status: Some(vec![SwapStatus::Failed]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_swaps_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao.count_swaps(&params).await.unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, SwapStatus::Failed);
+        assert_eq!(
+            result[0].error_message,
+            Some("Network error".to_string())
         );
     }
 }

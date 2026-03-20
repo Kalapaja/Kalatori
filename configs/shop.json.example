@@ -1,5 +1,6 @@
 {
     "invoices_webhook_url": "http://localhost:8000/webhooks/invoices",
     "shop_name": "Mega shop",
+    "shop_url": "https://mega.shop",
     "reown_project_id": "PLACE_YOUR_REWON_PROJECT_ID_HERE_TO_MAKE_IT_WORK"
 }

@@ -9,6 +9,10 @@ use chrono::{
     Utc,
 };
 use rust_decimal::Decimal;
+use secrecy::{
+    ExposeSecret,
+    SecretString,
+};
 use uuid::Uuid;
 
 use kalatori_client::types::{
@@ -26,6 +30,7 @@ use crate::chain_client::{
 };
 use crate::configs::{
     PaymentsConfig,
+    ShopConfig,
     ShopMetaConfig,
 };
 use crate::dao::{
@@ -33,6 +38,7 @@ use crate::dao::{
     DaoChangesError,
     DaoInterface,
     DaoInvoiceError,
+    DaoPayoutError,
     DaoSwapError,
     DaoTransactionError,
     DaoTransactionInterface,
@@ -48,9 +54,21 @@ use crate::types::{
     InvoiceEventType,
     InvoiceWithReceivedAmount,
     KalatoriEventExt,
+    KalatoriIntegrationSettings,
+    KalatoriSettings,
+    ListInvoicesParams,
+    ListPayoutsParams,
+    ListSwapsParams,
+    ListTransactionsParams,
+    PaginatedResponse,
+    Payout,
     PayoutChanges,
+    PublicAssetDescription,
     PublicChangesResponse,
+    PublicSwap,
+    PublicTransaction,
     RefundChanges,
+    Swap,
     Transaction,
     UpdateInvoiceData,
 };
@@ -64,10 +82,12 @@ pub struct AppState<D: DaoInterface = DAO> {
     swaps_executor: SwapsExecutor<D>,
     asset_names_map: HashMap<String, String>,
     payments_config: PaymentsConfig,
-    shop_meta: ShopMetaConfig,
+    shop_config: ShopConfig,
+    api_secret_key: SecretString,
 }
 
 impl<D: DaoInterface> AppState<D> {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         keyring: KeyringClient,
         dao: D,
@@ -75,7 +95,8 @@ impl<D: DaoInterface> AppState<D> {
         swaps_executor: SwapsExecutor<D>,
         asset_names_map: HashMap<String, String>,
         payments_config: PaymentsConfig,
-        shop_meta: ShopMetaConfig,
+        shop_config: ShopConfig,
+        api_secret_key: SecretString,
     ) -> Self {
         Self {
             keyring,
@@ -84,7 +105,8 @@ impl<D: DaoInterface> AppState<D> {
             swaps_executor,
             asset_names_map,
             payments_config,
-            shop_meta,
+            shop_config,
+            api_secret_key,
         }
     }
 
@@ -357,6 +379,119 @@ impl<D: DaoInterface> AppState<D> {
         Ok(result)
     }
 
+    #[tracing::instrument(skip_all)]
+    pub async fn list_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<PaginatedResponse<PublicInvoice>, DaoInvoiceError> {
+        let (invoices, total) = tokio::join!(
+            self.dao.get_invoices_paginated(params),
+            self.dao.count_invoices(params),
+        );
+
+        let items = invoices?
+            .into_iter()
+            .map(|inv| self.invoice_to_public_invoice(inv))
+            .collect();
+
+        Ok(PaginatedResponse::new(
+            items,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
+    pub async fn get_payout(
+        &self,
+        payout_id: Uuid,
+    ) -> Result<Option<Payout>, DaoPayoutError> {
+        self.dao
+            .get_payout_by_id(payout_id)
+            .await
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<PaginatedResponse<Payout>, DaoPayoutError> {
+        let (payouts, total) = tokio::join!(
+            self.dao.get_payouts_paginated(params),
+            self.dao.count_payouts(params),
+        );
+
+        Ok(PaginatedResponse::new(
+            payouts?,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
+    pub async fn get_transaction(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError> {
+        self.dao
+            .get_transaction_by_id(transaction_id)
+            .await
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<PaginatedResponse<PublicTransaction>, DaoTransactionError> {
+        let (transactions, total) = tokio::join!(
+            self.dao
+                .get_transactions_paginated(params),
+            self.dao.count_transactions(params),
+        );
+
+        let items = transactions?
+            .into_iter()
+            .map(PublicTransaction::from)
+            .collect();
+
+        Ok(PaginatedResponse::new(
+            items,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
+    pub async fn get_swap(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError> {
+        self.dao.get_swap_by_id(swap_id).await
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<PaginatedResponse<PublicSwap>, DaoSwapError> {
+        let (swaps, total) = tokio::join!(
+            self.dao.get_swaps_paginated(params),
+            self.dao.count_swaps(params),
+        );
+
+        let items = swaps?
+            .into_iter()
+            .map(PublicSwap::from)
+            .collect();
+
+        Ok(PaginatedResponse::new(
+            items,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
     pub async fn get_invoice_transactions(
         &self,
         invoice_id: Uuid,
@@ -523,7 +658,67 @@ impl<D: DaoInterface> AppState<D> {
     }
 
     pub fn get_shop_meta(&self) -> ShopMetaConfig {
-        self.shop_meta.clone()
+        self.shop_config.meta.clone()
+    }
+
+    pub fn get_kalatori_settings(&self) -> KalatoriSettings {
+        let assets_description = self
+            .asset_names_map
+            .iter()
+            .map(|(asset_id, asset_name)| {
+                (
+                    asset_id.clone(),
+                    PublicAssetDescription {
+                        asset_id: asset_id.clone(),
+                        asset_name: asset_name.clone(),
+                    },
+                )
+            })
+            .collect();
+
+        KalatoriSettings {
+            shop_url: self.shop_config.meta.shop_url.clone(),
+            shop_name: self.shop_config.meta.shop_name.clone(),
+            logo_url: self.shop_config.meta.logo_url.clone(),
+            recipient_addresses: self.payments_config.recipient.clone(),
+            invoice_lifetime_millis: self
+                .payments_config
+                .invoice_lifetime_millis,
+            default_chain: self.payments_config.default_chain,
+            default_asset_id: self
+                .payments_config
+                .default_asset_id
+                .clone(),
+            payment_url_base: self
+                .payments_config
+                .payment_url_base
+                .clone(),
+            slippage_params: self
+                .payments_config
+                .slippage_params
+                .clone(),
+            assets_description,
+        }
+    }
+
+    pub fn get_kalatori_integration_settings(&self) -> KalatoriIntegrationSettings {
+        KalatoriIntegrationSettings {
+            invoices_webhook_url: self
+                .shop_config
+                .invoices_webhook_url
+                .clone(),
+            signature_max_age_secs: self.shop_config.signature_max_age_secs,
+            private_api_base_url: self
+                .shop_config
+                .private_api_base_url
+                .as_ref()
+                .unwrap_or(&self.payments_config.payment_url_base)
+                .clone(),
+            api_secret_key: self
+                .api_secret_key
+                .expose_secret()
+                .to_string(),
+        }
     }
 
     pub async fn create_front_end_swap(
@@ -578,11 +773,19 @@ mod tests {
             slippage_params: HashMap::new(),
         };
 
-        let shop_meta = ShopMetaConfig {
+        let meta = ShopMetaConfig {
             shop_name: "Mega shop".to_string(),
+            shop_url: "mega.shop".to_string(),
             logo_url: None,
             reown_project_id: "test".to_string(),
             ankr_api_token: None,
+        };
+
+        let shop_config = ShopConfig {
+            invoices_webhook_url: Some("http://test.com/webhook".to_string()),
+            signature_max_age_secs: 300,
+            private_api_base_url: None,
+            meta,
         };
 
         let keyring = KeyringClient::default();
@@ -601,7 +804,8 @@ mod tests {
             swaps_executor,
             asset_names_map,
             config,
-            shop_meta,
+            shop_config,
+            SecretString::from("secret"),
         )
     }
 

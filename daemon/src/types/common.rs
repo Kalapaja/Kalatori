@@ -121,3 +121,87 @@ impl RetryMeta {
         self.failure_message = Some(failure_message);
     }
 }
+
+// ── Pagination & sorting ─────────────────────────────────────────────
+
+const DEFAULT_PAGE: u32 = 1;
+const DEFAULT_PER_PAGE: u32 = 20;
+const MAX_PER_PAGE: u32 = 100;
+
+/// Sort direction for list queries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrder {
+    Asc,
+    #[default]
+    Desc,
+}
+
+impl SortOrder {
+    pub fn as_sql(&self) -> &'static str {
+        match self {
+            Self::Asc => "ASC",
+            Self::Desc => "DESC",
+        }
+    }
+}
+
+/// Pagination parameters extracted from query string.
+#[serde_with::serde_as]
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PaginationParams {
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    pub page: Option<u32>,
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    pub per_page: Option<u32>,
+}
+
+impl PaginationParams {
+    pub fn validated_page(&self) -> u32 {
+        self.page.unwrap_or(DEFAULT_PAGE).max(1)
+    }
+
+    pub fn validated_per_page(&self) -> u32 {
+        self.per_page
+            .unwrap_or(DEFAULT_PER_PAGE)
+            .clamp(1, MAX_PER_PAGE)
+    }
+
+    #[expect(clippy::arithmetic_side_effects)]
+    pub fn offset(&self) -> u32 {
+        (self.validated_page() - 1) * self.validated_per_page()
+    }
+}
+
+/// Paginated response wrapper for list endpoints.
+#[derive(Debug, Clone, Serialize)]
+pub struct PaginatedResponse<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: u32,
+    pub page: u32,
+    pub per_page: u32,
+    pub total_pages: u32,
+}
+
+impl<T: Serialize> PaginatedResponse<T> {
+    pub fn new(
+        items: Vec<T>,
+        total: u32,
+        page: u32,
+        per_page: u32,
+    ) -> Self {
+        let total_pages = if per_page == 0 {
+            0
+        } else {
+            total.div_ceil(per_page)
+        };
+
+        Self {
+            items,
+            total,
+            page,
+            per_page,
+            total_pages,
+        }
+    }
+}

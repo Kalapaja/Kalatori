@@ -15,6 +15,8 @@ llvm_cov_version := 0.8.4
 
 mutants_version := 26.2.0
 
+insta_version := 1.46.3
+
 # Front end release version compatible with current daemon version
 front_end_version := 0.0.18
 
@@ -39,6 +41,9 @@ install-llvm-cov: # Install llvm-cov into the project directory
 
 install-mutants: # Install cargo-mutants into the project directory
 	cargo install --root $(mkfile_path) --version $(mutants_version) --locked cargo-mutants
+
+install-insta: # Install cargo-insta for snapshot test review
+	cargo install --root $(mkfile_path) --version $(insta_version) --locked cargo-insta
 
 # TODO: read URL from json config and/or env var instead of hardcode
 download-node-metadata: # Download metadata of configured Asset Hub node. Required for subxt compilation. By default use ws://localhost:9000 url.
@@ -69,8 +74,8 @@ download-front-end: # Download front-end release and unpack it into static folde
 setup: install-subxt-cli download-node-metadata copy-configs # Sets up the project for local run
 	echo "Make sure you have SQLite installed. Check README.md for the instructions"
 
-setup-utils: install-nextest install-llvm-cov install-mutants # Sets up different utilities for running tests, coverage etc which are not required for the project run
-	echo "Installed nextest, llvm-cov and cargo-mutants"
+setup-utils: install-nextest install-llvm-cov install-insta install-mutants # Sets up different utilities for running tests, coverage etc which are not required for the project run
+	echo "Installed nextest, llvm-cov, insta and cargo-mutants"
 
 #####################
 ### Build and run ###
@@ -100,8 +105,8 @@ stop-chopsticks: # Stop chopsticks for Asset Hub in docker compose
 run: start-chopsticks # Ensure that chopsticks is started and run kalatori daemon locally
 	cargo run
 
-run-dev: start-chopsticks
-	cargo run --all-features
+run-dev: start-chopsticks # Run kalatori daemon with dev_api feature (enables /dev endpoints and auto-auth)
+	cargo run --features dev_api
 
 run-release: # Run kalatori daemon with --release flag without starting chopsticks
 	cargo run --release
@@ -139,6 +144,15 @@ cargo-mutants-for-diff: # Run cargo mutants for git diff
 
 cargo-fmt-apply: # Apply cargo fmt style changes
 	cargo +nightly fmt --all
+
+insta-review: # Interactively review pending snapshots
+	PATH="${PWD}/bin:${PATH}" cargo insta review
+
+insta-accept: # Accept all pending snapshots
+	PATH="${PWD}/bin:${PATH}" cargo insta accept
+
+insta-test: # Run tests and review pending snapshots
+	PATH="${PWD}/bin:${PATH}" cargo insta test --review
 
 generate-hmac-test-vectors: # Generate HMAC test vectors for the webhook simulator
 	cargo run --example generate_hmac_test_vectors -p kalatori-client

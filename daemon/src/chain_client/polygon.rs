@@ -259,6 +259,7 @@ pub struct PolygonClient {
     config: crate::configs::ChainConfig,
     asset_info_store: AssetInfoStore<PolygonChainConfig>,
     provider: PolygonProvider,
+    subscription_provider: PolygonProvider,
     pimlico_client: PimlicoClient,
 }
 
@@ -270,7 +271,7 @@ impl PolygonClient {
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
     ) -> Result<Self, ClientError> {
         let endpoint = config
-            .get_random_endpoint()
+            .get_random_requests_endpoint()
             .ok_or(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
             })?;
@@ -317,6 +318,29 @@ impl PolygonClient {
             })
             .map_err(|_| ClientError::MetadataFetchFailed)?;
 
+        let endpoint = config
+            .get_random_subscriptions_endpoint()
+            .ok_or(ClientError::InvalidConfiguration {
+                field: "endpoints".to_string(),
+            })?;
+
+        // Test connection and get chain ID
+        let ws_connect = WsConnect::new(&endpoint);
+        let subscription_provider = ProviderBuilder::new()
+            .connect_ws(ws_connect)
+            .await
+            .inspect_err(|e| {
+                tracing::debug!(
+                    error.category = CHAIN_CLIENT,
+                    error.operation = "connect_client",
+                    error.source = ?e,
+                    endpoint = %endpoint,
+                    chain = %Self::chain_type(),
+                    "Failed to connect to Polygon RPC endpoint"
+                );
+            })
+            .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+
         tracing::info!(
             chain_id = chain_id,
             endpoint = %endpoint,
@@ -327,6 +351,7 @@ impl PolygonClient {
             config: config.clone(),
             asset_info_store,
             provider,
+            subscription_provider,
             pimlico_client: PimlicoClient::new(),
         })
     }
@@ -725,7 +750,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         // Subscribe to logs
         let subscription = client
-            .provider
+            .subscription_provider
             .subscribe_logs(&filter)
             .await
             .inspect_err(|e| {

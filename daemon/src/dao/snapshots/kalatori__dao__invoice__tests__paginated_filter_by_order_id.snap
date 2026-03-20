@@ -1,0 +1,36 @@
+---
+source: daemon/src/dao/invoice.rs
+expression: result
+---
+- invoice:
+    id: "[uuid]"
+    order_id: SHOP-2024-002
+    asset_id: "1984"
+    asset_name: USDT
+    chain: PolkadotAssetHub
+    amount: "100.00"
+    payment_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+    status: Waiting
+    cart:
+      items: []
+    redirect_url: "http://localhost:8080/thankyou"
+    valid_till: "[timestamp]"
+    created_at: "[timestamp]"
+    updated_at: "[timestamp]"
+  total_received_amount: "0"
+- invoice:
+    id: "[uuid]"
+    order_id: SHOP-2024-001
+    asset_id: "1984"
+    asset_name: USDT
+    chain: PolkadotAssetHub
+    amount: "100.00"
+    payment_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+    status: Waiting
+    cart:
+      items: []
+    redirect_url: "http://localhost:8080/thankyou"
+    valid_till: "[timestamp]"
+    created_at: "[timestamp]"
+    updated_at: "[timestamp]"
+  total_received_amount: "0"

@@ -7,6 +7,10 @@
 //! - `/private`: Endpoints that require authentication and are intended for
 //!   internal use. Should return only sanitized data without sensitive
 //!   information and details about the internal state.
+//! - `/admin`: Admin UI endpoints, protected by OAuth session middleware +
+//!   CSRF. Only mounted when auth config is present.
+//! - `/auth`: OAuth callback and session introspection endpoints. Only mounted
+//!   when auth config is present.
 //! - `/dev`: Development and testing endpoints. May include endpoints that are
 //!   not intended for production use. Allowed to return raw data including
 //!   sensitive information and internal state details for debugging purposes.
@@ -23,6 +27,8 @@
 //! - For invalid routes or methods under `/private` and `/dev` namespaces,
 //!   return structured JSON error response, while `/public` namespace returns
 //!   standard 404 HTML response.
+mod admin;
+pub mod auth_endpoints;
 #[cfg(feature = "dev_api")]
 mod dev;
 mod internal;
@@ -35,14 +41,14 @@ use std::sync::Arc;
 
 use axum::http::{
     HeaderName,
-    Method,
     StatusCode,
 };
-use tokio::net::TcpListener;
-use tower_http::cors::{
-    Any,
-    CorsLayer,
+use axum::middleware;
+use axum::routing::{
+    get,
+    post,
 };
+use tokio::net::TcpListener;
 use tower_http::request_id::{
     MakeRequestUuid,
     PropagateRequestIdLayer,
@@ -53,7 +59,16 @@ use tower_http::trace::TraceLayer;
 use kalatori_client::types::ApiError;
 use kalatori_client::utils::HmacConfig;
 
-use crate::configs::WebServerConfig;
+use crate::auth::oauth_client::OAuthClient;
+use crate::auth::session::{
+    AuthState,
+    csrf_middleware,
+    session_middleware,
+};
+use crate::configs::{
+    OAuthConfig,
+    WebServerConfig,
+};
 use crate::state::AppState;
 
 pub type ApiState = Arc<AppState>;
@@ -78,7 +93,7 @@ pub trait ApiErrorExt: std::error::Error {
 
 #[cfg(not(feature = "dev_api"))]
 mod dev {
-    pub fn routes() -> axum::Router<super::ApiState> {
+    pub fn routes(_dev_auth: Option<std::sync::Arc<()>>) -> axum::Router<super::ApiState> {
         axum::Router::new()
     }
 }
@@ -86,6 +101,7 @@ mod dev {
 pub async fn api_server(
     config: WebServerConfig,
     hmac_config: HmacConfig,
+    auth_config: Option<OAuthConfig>,
     state: AppState,
     cancellation_token: tokio_util::sync::CancellationToken,
 ) -> impl std::future::Future<Output = ()> {
@@ -97,11 +113,60 @@ pub async fn api_server(
         .await
         .expect("Failed to bind to address");
 
-    let router = axum::Router::new()
-        .nest("/dev", dev::routes())
+    // Resolve auth config — in dev mode, auto-generate if absent
+    #[cfg(feature = "dev_api")]
+    let (auth_config, dev_auth_state) = resolve_dev_auth(auth_config);
+
+    #[cfg(not(feature = "dev_api"))]
+    let dev_auth_state: Option<Arc<()>> = None;
+
+    let mut router = axum::Router::new()
+        .nest("/dev", dev::routes(dev_auth_state))
         .nest("/internal", internal::routes())
         .nest("/private", private::routes(hmac_config))
-        .nest("/public", public::routes())
+        .nest("/public", public::routes());
+
+    // Conditionally mount auth and admin routes when auth is configured
+    if let Some(oauth_config) = auth_config {
+        let auth_state = Arc::new(AuthState {
+            oauth_client: OAuthClient::new(oauth_config),
+        });
+
+        // /auth/* routes — no session middleware (these ARE the login flow)
+        let auth_routes = axum::Router::new()
+            .route(
+                "/login",
+                get(auth_endpoints::login_handler),
+            )
+            .route(
+                "/callback",
+                post(auth_endpoints::callback_handler),
+            )
+            .route(
+                "/session",
+                get(auth_endpoints::session_handler),
+            )
+            .with_state(Arc::clone(&auth_state));
+
+        // /admin routes — protected by session + CSRF middleware
+        // Session middleware runs first (outermost layer), then CSRF.
+        let admin_routes = admin::routes()
+            .layer(middleware::from_fn(csrf_middleware))
+            .layer(middleware::from_fn_with_state(
+                Arc::clone(&auth_state),
+                session_middleware,
+            ));
+
+        router = router
+            .nest("/auth", auth_routes)
+            .nest("/admin", admin_routes);
+
+        tracing::info!("OAuth authentication enabled — /auth and /admin routes mounted");
+    } else {
+        tracing::info!("OAuth authentication disabled — /auth and /admin routes not mounted");
+    }
+
+    let router = router
         .layer(
             tower::ServiceBuilder::new()
                 .layer(SetRequestIdLayer::new(
@@ -128,12 +193,7 @@ pub async fn api_server(
                 )
                 .layer(PropagateRequestIdLayer::new(
                     REQUEST_ID_HEADER,
-                ))
-                .layer(
-                    CorsLayer::new()
-                        .allow_methods([Method::GET, Method::POST])
-                        .allow_origin(Any),
-                ),
+                )),
         )
         .with_state(api_state);
 
@@ -143,4 +203,52 @@ pub async fn api_server(
             .await
             .unwrap();
     }
+}
+
+/// When `dev_api` is enabled and no auth config is provided, generate an
+/// ephemeral keypair and construct a synthetic auth config. This enables local
+/// development of admin endpoints without needing a real auth server.
+#[cfg(feature = "dev_api")]
+fn resolve_dev_auth(
+    auth_config: Option<OAuthConfig>
+) -> (
+    Option<OAuthConfig>,
+    Option<Arc<dev::DevAuthState>>,
+) {
+    use secrecy::SecretString;
+
+    use crate::auth::token::generate_dev_keypair;
+
+    if auth_config.is_some() {
+        return (auth_config, None);
+    }
+
+    let (kp, paserk_public) = generate_dev_keypair();
+
+    let issuer = "http://localhost:dev".to_string();
+    let client_id = "dev".to_string();
+
+    let synthetic_config = OAuthConfig {
+        auth_server_url: issuer.clone(),
+        client_id: client_id.clone(),
+        client_secret: SecretString::from("dev-secret-not-used".to_string()),
+        previous_client_secret: None,
+        token_public_keys: vec![paserk_public.clone()],
+        clock_tolerance: 30,
+        base_url: "http://localhost:8080".to_string(),
+    };
+
+    let dev_auth = Arc::new(dev::DevAuthState {
+        secret_key: kp.secret,
+        issuer,
+        audience: client_id,
+    });
+
+    tracing::info!(
+        public_key = %paserk_public,
+        "Dev mode: auto-generated ephemeral auth keypair. \
+         Use POST /dev/auth/mint-token to create session tokens."
+    );
+
+    (Some(synthetic_config), Some(dev_auth))
 }

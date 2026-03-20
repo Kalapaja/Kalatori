@@ -1,0 +1,6 @@
+---
+source: daemon/src/dao/invoice.rs
+assertion_line: 1481
+expression: result
+---
+[]

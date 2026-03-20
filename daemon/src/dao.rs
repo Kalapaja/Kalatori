@@ -30,7 +30,6 @@ use crate::configs::DatabaseConfig;
 // Export domain-specific errors
 pub use changes::DaoChangesError;
 pub use invoice::DaoInvoiceError;
-#[expect(unused_imports)]
 pub use payout::DaoPayoutError;
 #[expect(unused_imports)]
 pub use refund::DaoRefundError;
