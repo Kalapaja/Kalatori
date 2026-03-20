@@ -2,7 +2,7 @@
 
 ## Code Style
 
-- **Rust edition 2024**, MSRV 1.88
+- **Rust edition 2024**, MSRV 1.93
 - **rustfmt**: Nightly required (`cargo +nightly fmt --all`)
 - Self-named modules only (e.g., `chain.rs` + `chain/` directory) — **never `mod.rs`** (enforced by `mod_module_files` clippy lint). Rationale: better Git history, avoids file renaming issues.
 

@@ -5,7 +5,7 @@ edition = "2024"
 description = "A non-castodial crypto payment-gateway daemon."
 homepage = "https://github.com/Kalapaja/Kalatori"
 documentation = "https://docs.rs/Kalatori"
-rust-version = "1.88"
+rust-version = "1.93"
 license.workspace = true
 authors.workspace = true
 readme.workspace = true
@@ -103,7 +103,6 @@ zeroize = "1"
 shadow-rs = { version = "0.36", default-features = false }
 thiserror = "2"
 trait-variant = "0.1"
-hmac = "0.12"
 sha2 = "0.10"
 # Let's add some random and fun to financial operations :) (it's a joke, we don't really do anything like that)
 rand = "0.10"
@@ -131,6 +130,12 @@ lto = true
 codegen-units = 1
 panic = "abort"
 overflow-checks = true
+
+[package.metadata.cargo-machete]
+# parity-scale-codec's `derive` feature is required by the `#[subxt::subxt]` macro
+# to derive `Encode` for `MultiLocation` (see chain_client/asset_hub.rs).
+# cargo-machete can't detect this because the crate is accessed via `subxt::ext::codec`.
+ignored = ["parity-scale-codec"]
 
 [lints]
 workspace = true

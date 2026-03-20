@@ -41,21 +41,25 @@ This runs the Rust examples against the live daemon (default: `localhost:16726`)
 
 ## CI Pipeline
 
-GitHub Actions with reusable workflow templates in `.github/workflows/`:
+Hybrid setup: **Dagger** (TypeScript module in `ci/`) runs build/check/test logic, **GitHub Actions** handles orchestration, secrets, and GitHub-native integrations.
 
-### PR to dev
-`semantic-pr` → `fmt` → `clippy` → `cargo-deny` → `cargo-test-coverage` → `integration-test`
+### Dagger checks (run via `dagger call <command>`)
+`check-fmt`, `check-clippy`, `check-deny`, `check-machete` run in parallel. Tests via `test-unit`, `test-unit-coverage`, `test-integration`. See [docs/dagger-migration-plan.md](dagger-migration-plan.md) for full details.
 
-### PR to main
-`release-validate` → `fmt` → `clippy` → `cargo-deny` → `cargo-test`
+### GHA orchestration
 
-### Merge to dev
+#### PR to dev/main
+`semantic-pr` → matrix of Dagger checks (fmt, clippy, deny, machete, tests, integration)
+
+#### Merge to dev
 `docker-build` (pushes to dev GHCR package)
 
-### Release (tag push)
+#### Release (tag push)
 `release-prepare` → `release-validate` → `docker-build` → `github-release`
 
-Reusable job templates: `_job-cargo-check.yml`, `_job-cargo-test.yml`, `_job-cargo-test-coverage.yml`, `_job-clippy.yml`, `_job-fmt.yml`, `_job-cargo-deny.yml`, `_job-docker-build.yml`, `_job-integration-test.yml`, `_job-github-release.yml`, `_job-release-prepare.yml`, `_job-release-validate.yml`, `_job-semantic-pr.yml`
+GHA-only reusable templates: `_job-semantic-pr.yml`, `_job-release-validate.yml`, `_job-release-prepare.yml`, `_job-github-release.yml`
+
+Legacy templates (being replaced by Dagger): `_job-cargo-test.yml`, `_job-cargo-test-coverage.yml`, `_job-clippy.yml`, `_job-fmt.yml`, `_job-cargo-deny.yml`, `_job-docker-build.yml`, `_job-integration-test.yml`
 
 ## Test Environment
 
@@ -65,7 +69,7 @@ Reusable job templates: `_job-cargo-check.yml`, `_job-cargo-test.yml`, `_job-car
 
 ## Tool Versions
 
-Pinned in `Makefile`:
+Pinned in `Makefile` and `ci/src/versions.ts`:
 - nextest: 0.9.129
 - llvm-cov: 0.8.4
 - cargo-mutants: 26.2.0

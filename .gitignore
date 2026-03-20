@@ -19,3 +19,4 @@ static/
 
 # mutants output files
 mutants.out*
+.serena/project.local.yml

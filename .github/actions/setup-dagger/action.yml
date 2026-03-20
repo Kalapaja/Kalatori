@@ -1,0 +1,32 @@
+name: Setup Dagger
+description: SSH agent + known hosts + Dagger CLI install for remote engine
+
+inputs:
+  ssh-private-key:
+    description: SSH private key for the remote Dagger host
+    required: true
+  known-host:
+    description: known_hosts entry for the remote Dagger host
+    required: true
+  dagger-version:
+    description: Dagger CLI version to install
+    default: '0.20.1'
+
+runs:
+  using: composite
+  steps:
+    - uses: webfactory/ssh-agent@v0.9.1
+      with:
+        ssh-private-key: ${{ inputs.ssh-private-key }}
+
+    - name: Trust remote Dagger host
+      shell: bash
+      env:
+        KNOWN_HOST: ${{ inputs.known-host }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$KNOWN_HOST" >> ~/.ssh/known_hosts
+
+    - uses: dagger/dagger-for-github@v8.4.0
+      with:
+        version: ${{ inputs.dagger-version }}

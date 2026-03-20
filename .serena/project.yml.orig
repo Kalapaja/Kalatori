@@ -32,6 +32,8 @@ languages:
 # For a list of possible encodings, see https://docs.python.org/3.11/library/codecs.html#standard-encodings
 encoding: "utf-8"
 
+<<<<<<< HEAD
+=======
 # line ending convention to use when writing source files.
 # Possible values: unset (use global setting), "lf", "crlf", or "native" (platform default)
 # This does not affect Serena's own files (e.g. memories and configuration files), which always use native line endings.
@@ -44,6 +46,7 @@ line_ending:
 # is activated post-init, an error will be returned.
 language_backend:
 
+>>>>>>> develop
 # whether to use project's .gitignore files to ignore files
 ignore_all_files_in_gitignore: true
 
@@ -124,10 +127,9 @@ default_modes:
 # (contrary to the memories, which are loaded on demand).
 initial_prompt: ""
 
-# time budget (seconds) per tool call for the retrieval of additional symbol information
-# such as docstrings or parameter information.
-# This overrides the corresponding setting in the global configuration; see the documentation there.
-# If null or missing, use the setting from the global configuration.
+<<<<<<< HEAD
+# override of the corresponding setting in serena_config.yml, see the documentation there.
+# If null or missing, the value from the global config is used.
 symbol_info_budget:
 
 # The language backend to use for this project.
@@ -145,3 +147,14 @@ read_only_memory_patterns: []
 # Possible values: unset (use global setting), "lf", "crlf", or "native" (platform default)
 # This does not affect Serena's own files (e.g. memories and configuration files), which always use native line endings.
 line_ending:
+=======
+# time budget (seconds) per tool call for the retrieval of additional symbol information
+# such as docstrings or parameter information.
+# This overrides the corresponding setting in the global configuration; see the documentation there.
+# If null or missing, use the setting from the global configuration.
+symbol_info_budget:
+
+# list of regex patterns which, when matched, mark a memory entry as read‑only.
+# Extends the list from the global configuration, merging the two lists.
+read_only_memory_patterns: []
+>>>>>>> develop
