@@ -177,7 +177,7 @@ pub struct KalatoriSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KalatoriIntegrationSettings {
-    pub invoices_webhook_url: String,
+    pub invoices_webhook_url: Option<String>,
     pub signature_max_age_secs: u64,
     pub private_api_base_url: String,
     pub api_secret_key: String,

@@ -782,7 +782,7 @@ mod tests {
         };
 
         let shop_config = ShopConfig {
-            invoices_webhook_url: "http://test.com/webhook".to_string(),
+            invoices_webhook_url: Some("http://test.com/webhook".to_string()),
             signature_max_age_secs: 300,
             private_api_base_url: None,
             meta,
