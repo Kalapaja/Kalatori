@@ -1303,7 +1303,13 @@ mod tests {
     /// | 6 | Polygon  | USDT  |  42.00 | Incoming | Completed   |
     /// | 7 | AssetHub | USDT  | 180.00 | Incoming | Waiting     |
     /// | 8 | Polygon  | USDC  |  99.99 | Outgoing | Completed   |
-    async fn seed_transactions(dao: &crate::dao::DAO) -> (Vec<Uuid>, Vec<Uuid>) {
+    async fn seed_transactions(
+        dao: &crate::dao::DAO
+    ) -> (
+        Vec<Uuid>,
+        Vec<Uuid>,
+        chrono::DateTime<chrono::Utc>,
+    ) {
         let mut tx_ids = Vec::new();
 
         // Create 2 invoices (one per chain) to parent the transactions
@@ -1383,6 +1389,8 @@ mod tests {
 
         // Sleep to create a timestamp gap between batches
         tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
+        let batch_cutoff = chrono::Utc::now();
+        tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
 
         // --- Second batch (after the sleep) ---
 
@@ -1460,7 +1468,7 @@ mod tests {
             .await
             .unwrap();
 
-        (tx_ids, invoice_ids)
+        (tx_ids, invoice_ids, batch_cutoff)
     }
 
     #[tokio::test]
@@ -1639,7 +1647,7 @@ mod tests {
     #[tokio::test]
     async fn test_paginated_transactions_filter_by_invoice_id() {
         let dao = create_test_dao().await;
-        let (_tx_ids, invoice_ids) = seed_transactions(&dao).await;
+        let (_tx_ids, invoice_ids, _) = seed_transactions(&dao).await;
 
         // Polygon invoice: tx2, tx4, tx6, tx8
         let params = ListTransactionsParams {
@@ -1769,13 +1777,11 @@ mod tests {
     #[tokio::test]
     async fn test_paginated_transactions_date_range() {
         let dao = create_test_dao().await;
-        seed_transactions(&dao).await;
+        let (_, _, batch_cutoff) = seed_transactions(&dao).await;
 
-        // All transactions were created "now"-ish — get those in the first batch
-        // by filtering up to a moment before the second batch.
-        let cutoff = chrono::Utc::now() - chrono::Duration::milliseconds(5);
+        // Filter to transactions created before the cutoff between batches.
         let params = ListTransactionsParams {
-            created_to: Some(cutoff),
+            created_to: Some(batch_cutoff),
             ..Default::default()
         };
         let result = dao
