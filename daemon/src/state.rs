@@ -588,7 +588,11 @@ mod tests {
         let keyring = KeyringClient::default();
         let dao = MockDaoInterface::default();
         let registry = InvoiceRegistry::new();
-        let swaps_clients = SwapsClients::new(SwapsConfig::default()).await;
+        // TODO: replace it with mocks, zero ex establish real connection which might be
+        // flaky
+        let mut swaps_config = SwapsConfig::default();
+        swaps_config.zero_ex.rpc_url = "https://polygon-bor-rpc.publicnode.com".to_string();
+        let swaps_clients = SwapsClients::new(swaps_config).await;
         let swaps_executor = SwapsExecutor::new(
             MockDaoInterface::default(),
             swaps_clients,

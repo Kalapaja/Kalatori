@@ -63,6 +63,7 @@ pub struct ZeroExTransaction {
     pub value: u128,
 }
 
+#[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ZeroExPermit2 {
     pub hash: String,
