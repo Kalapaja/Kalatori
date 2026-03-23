@@ -1,0 +1,269 @@
+---
+source: daemon/src/dao/swap.rs
+assertion_line: 1096
+expression: result
+---
+- id: "[uuid]"
+  request:
+    invoice_id: "[uuid]"
+    swap_executor: Bungee
+    from_chain: Ethereum
+    to_chain: Polygon
+    from_token_address: ""
+    to_token_address: ""
+    from_amount_units: "10100000"
+    expected_to_amount_units: "10000000"
+    from_address: ""
+    to_address: ""
+    direction: Incoming
+  status: Pending
+  estimated_to_amount: "10"
+  swap_details:
+    id: ""
+    raw_transaction:
+      transaction:
+        chain_id: 8453
+        contract_address: ""
+        data: ""
+        value: "100"
+        gas: "100"
+        max_fee_per_gas: "100"
+        max_priority_fee_per_gas: "100"
+      approval_transactions: []
+    transaction_hash: ~
+  created_at: "[timestamp]"
+  submitted_at: "[timestamp]"
+  finished_at: "[timestamp]"
+  valid_till: "[timestamp]"
+  error_message: ~
+- id: "[uuid]"
+  request:
+    invoice_id: "[uuid]"
+    swap_executor: Across
+    from_chain: Base
+    to_chain: Polygon
+    from_token_address: ""
+    to_token_address: ""
+    from_amount_units: "10100000"
+    expected_to_amount_units: "10000000"
+    from_address: ""
+    to_address: ""
+    direction: Incoming
+  status: Completed
+  estimated_to_amount: "10"
+  swap_details:
+    id: ""
+    raw_transaction:
+      transaction:
+        chain_id: 8453
+        contract_address: ""
+        data: ""
+        value: "100"
+        gas: "100"
+        max_fee_per_gas: "100"
+        max_priority_fee_per_gas: "100"
+      approval_transactions: []
+    transaction_hash: ~
+  created_at: "[timestamp]"
+  submitted_at: "[timestamp]"
+  finished_at: "[timestamp]"
+  valid_till: "[timestamp]"
+  error_message: ~
+- id: "[uuid]"
+  request:
+    invoice_id: "[uuid]"
+    swap_executor: Bungee
+    from_chain: Arbitrum
+    to_chain: Polygon
+    from_token_address: ""
+    to_token_address: ""
+    from_amount_units: "10100000"
+    expected_to_amount_units: "10000000"
+    from_address: ""
+    to_address: ""
+    direction: Incoming
+  status: Created
+  estimated_to_amount: "10"
+  swap_details:
+    id: ""
+    raw_transaction:
+      transaction:
+        chain_id: 8453
+        contract_address: ""
+        data: ""
+        value: "100"
+        gas: "100"
+        max_fee_per_gas: "100"
+        max_priority_fee_per_gas: "100"
+      approval_transactions: []
+    transaction_hash: ~
+  created_at: "[timestamp]"
+  submitted_at: "[timestamp]"
+  finished_at: "[timestamp]"
+  valid_till: "[timestamp]"
+  error_message: ~
+- id: "[uuid]"
+  request:
+    invoice_id: "[uuid]"
+    swap_executor: Across
+    from_chain: Ethereum
+    to_chain: Polygon
+    from_token_address: ""
+    to_token_address: ""
+    from_amount_units: "10100000"
+    expected_to_amount_units: "10000000"
+    from_address: ""
+    to_address: ""
+    direction: Incoming
+  status: Failed
+  estimated_to_amount: "10"
+  swap_details:
+    id: ""
+    raw_transaction:
+      transaction:
+        chain_id: 8453
+        contract_address: ""
+        data: ""
+        value: "100"
+        gas: "100"
+        max_fee_per_gas: "100"
+        max_priority_fee_per_gas: "100"
+      approval_transactions: []
+    transaction_hash: ~
+  created_at: "[timestamp]"
+  submitted_at: "[timestamp]"
+  finished_at: "[timestamp]"
+  valid_till: "[timestamp]"
+  error_message: Network error
+- id: "[uuid]"
+  request:
+    invoice_id: "[uuid]"
+    swap_executor: Bungee
+    from_chain: Base
+    to_chain: Polygon
+    from_token_address: ""
+    to_token_address: ""
+    from_amount_units: "10100000"
+    expected_to_amount_units: "10000000"
+    from_address: ""
+    to_address: ""
+    direction: Incoming
+  status: Completed
+  estimated_to_amount: "10"
+  swap_details:
+    id: ""
+    raw_transaction:
+      transaction:
+        chain_id: 8453
+        contract_address: ""
+        data: ""
+        value: "100"
+        gas: "100"
+        max_fee_per_gas: "100"
+        max_priority_fee_per_gas: "100"
+      approval_transactions: []
+    transaction_hash: ~
+  created_at: "[timestamp]"
+  submitted_at: "[timestamp]"
+  finished_at: "[timestamp]"
+  valid_till: "[timestamp]"
+  error_message: ~
+- id: "[uuid]"
+  request:
+    invoice_id: "[uuid]"
+    swap_executor: Across
+    from_chain: Arbitrum
+    to_chain: Polygon
+    from_token_address: ""
+    to_token_address: ""
+    from_amount_units: "10100000"
+    expected_to_amount_units: "10000000"
+    from_address: ""
+    to_address: ""
+    direction: Incoming
+  status: Pending
+  estimated_to_amount: "10"
+  swap_details:
+    id: ""
+    raw_transaction:
+      transaction:
+        chain_id: 8453
+        contract_address: ""
+        data: ""
+        value: "100"
+        gas: "100"
+        max_fee_per_gas: "100"
+        max_priority_fee_per_gas: "100"
+      approval_transactions: []
+    transaction_hash: ~
+  created_at: "[timestamp]"
+  submitted_at: "[timestamp]"
+  finished_at: "[timestamp]"
+  valid_till: "[timestamp]"
+  error_message: ~
+- id: "[uuid]"
+  request:
+    invoice_id: "[uuid]"
+    swap_executor: Bungee
+    from_chain: Ethereum
+    to_chain: Polygon
+    from_token_address: ""
+    to_token_address: ""
+    from_amount_units: "10100000"
+    expected_to_amount_units: "10000000"
+    from_address: ""
+    to_address: ""
+    direction: Incoming
+  status: Pending
+  estimated_to_amount: "10"
+  swap_details:
+    id: ""
+    raw_transaction:
+      transaction:
+        chain_id: 8453
+        contract_address: ""
+        data: ""
+        value: "100"
+        gas: "100"
+        max_fee_per_gas: "100"
+        max_priority_fee_per_gas: "100"
+      approval_transactions: []
+    transaction_hash: ~
+  created_at: "[timestamp]"
+  submitted_at: "[timestamp]"
+  finished_at: "[timestamp]"
+  valid_till: "[timestamp]"
+  error_message: ~
+- id: "[uuid]"
+  request:
+    invoice_id: "[uuid]"
+    swap_executor: Across
+    from_chain: Base
+    to_chain: Polygon
+    from_token_address: ""
+    to_token_address: ""
+    from_amount_units: "10100000"
+    expected_to_amount_units: "10000000"
+    from_address: ""
+    to_address: ""
+    direction: Incoming
+  status: Created
+  estimated_to_amount: "10"
+  swap_details:
+    id: ""
+    raw_transaction:
+      transaction:
+        chain_id: 8453
+        contract_address: ""
+        data: ""
+        value: "100"
+        gas: "100"
+        max_fee_per_gas: "100"
+        max_priority_fee_per_gas: "100"
+      approval_transactions: []
+    transaction_hash: ~
+  created_at: "[timestamp]"
+  submitted_at: "[timestamp]"
+  finished_at: "[timestamp]"
+  valid_till: "[timestamp]"
+  error_message: ~

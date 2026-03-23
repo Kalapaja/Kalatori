@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod chain;
 mod chain_client;
 mod clients;
@@ -25,7 +26,6 @@ use secrecy::ExposeSecret;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
-use zeroize::Zeroize;
 
 use chain::{
     InvoiceRegistry,
@@ -42,6 +42,7 @@ use chain_client::{
 use configs::{
     ChainsConfig,
     PaymentsConfig,
+    auth_config_with_prefix,
     chains_config_with_prefix,
     database_config_with_prefix,
     etherscan_client_config_with_prefix,
@@ -210,7 +211,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         env!("CARGO_PKG_VERSION")
     );
 
-    let mut secrets_config = secrets_config_with_prefix(&configs_path, &env_prefix);
+    let secrets_config = secrets_config_with_prefix(&configs_path, &env_prefix);
     let mut chains_config = chains_config_with_prefix(&configs_path, &env_prefix);
     let mut payments_config = payments_config_with_prefix(&configs_path, &env_prefix);
     let web_server_config = web_server_config_with_prefix(&configs_path, &env_prefix);
@@ -218,6 +219,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let shop_config = shop_config_with_prefix(&configs_path, &env_prefix);
     let etherscan_client_config = etherscan_client_config_with_prefix(&configs_path, &env_prefix);
     let swaps_config = swaps_config_with_prefix(&configs_path, &env_prefix);
+    let auth_config = auth_config_with_prefix(&configs_path, &env_prefix);
 
     let hmac_config = HmacConfig::new(
         secrets_config
@@ -227,8 +229,6 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
             .to_vec(),
         shop_config.signature_max_age_secs,
     );
-
-    secrets_config.api_secret_key.zeroize();
 
     // Initialize DAO for SQLite database operations
     let dao = DAO::new(database_config.clone())
@@ -374,7 +374,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let webhook_sender = webhook_sender::WebhookSender::new(
         dao.clone(),
-        shop_config.invoices_webhook_url,
+        shop_config.invoices_webhook_url.clone(),
         hmac_config.clone(),
     );
 
@@ -394,12 +394,14 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         swaps_executor,
         asset_names_map,
         payments_config,
-        shop_config.meta,
+        shop_config,
+        secrets_config.api_secret_key,
     );
 
     let api_handle = api::api_server(
         web_server_config,
         hmac_config,
+        auth_config,
         app_state,
         shutdown_notification.token.clone(),
     )

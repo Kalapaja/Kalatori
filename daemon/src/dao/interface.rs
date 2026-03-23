@@ -21,6 +21,10 @@ use crate::types::{
     Invoice,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
+    ListInvoicesParams,
+    ListPayoutsParams,
+    ListSwapsParams,
+    ListTransactionsParams,
     Payout,
     PayoutStatus,
     Refund,
@@ -139,6 +143,18 @@ pub trait DaoInterface: Send + Sync + 'static {
 
     async fn get_expired_invoices(&self) -> Result<Vec<Invoice>, DaoInvoiceError>;
 
+    /// Get a paginated, filtered list of invoices with their received amounts.
+    async fn get_invoices_paginated(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError>;
+
+    /// Count invoices matching the given filters.
+    async fn count_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<u32, DaoInvoiceError>;
+
     // === Transaction Methods ===
 
     /// Create a new transaction record.
@@ -167,11 +183,29 @@ pub trait DaoInterface: Send + Sync + 'static {
         failed_at: DateTime<Utc>,
     ) -> Result<Transaction, DaoTransactionError>;
 
+    /// Get a transaction by its ID.
+    async fn get_transaction_by_id(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError>;
+
     /// Get all transactions for a specific invoice.
     async fn get_invoice_transactions(
         &self,
         invoice_id: Uuid,
     ) -> Result<Vec<Transaction>, DaoTransactionError>;
+
+    /// Get a paginated, filtered list of transactions.
+    async fn get_transactions_paginated(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<Vec<Transaction>, DaoTransactionError>;
+
+    /// Count transactions matching the given filters.
+    async fn count_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<u32, DaoTransactionError>;
 
     // === Payout Methods ===
 
@@ -211,6 +245,18 @@ pub trait DaoInterface: Send + Sync + 'static {
         retry_meta: RetryMeta,
         is_retriable: bool,
     ) -> Result<Payout, DaoPayoutError>;
+
+    /// Get a paginated, filtered list of payouts.
+    async fn get_payouts_paginated(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<Vec<Payout>, DaoPayoutError>;
+
+    /// Count payouts matching the given filters.
+    async fn count_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<u32, DaoPayoutError>;
 
     // === Webhook Event Methods ===
 
@@ -284,6 +330,24 @@ pub trait DaoInterface: Send + Sync + 'static {
         error_message: String,
     ) -> Result<Swap, DaoSwapError>;
 
+    /// Get a swap by its ID.
+    async fn get_swap_by_id(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError>;
+
+    /// Get a paginated, filtered list of swaps.
+    async fn get_swaps_paginated(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<Vec<Swap>, DaoSwapError>;
+
+    /// Count swaps matching the given filters.
+    async fn count_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<u32, DaoSwapError>;
+
     // === Refund Methods ===
 
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError>;
@@ -338,6 +402,16 @@ pub trait DaoTransactionInterface {
 
     async fn update_invoices_expired(&self) -> Result<Vec<Invoice>, DaoInvoiceError>;
 
+    async fn get_invoices_paginated(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError>;
+
+    async fn count_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<u32, DaoInvoiceError>;
+
     // === Transaction Methods ===
 
     async fn create_transaction(
@@ -362,10 +436,25 @@ pub trait DaoTransactionInterface {
         failed_at: DateTime<Utc>,
     ) -> Result<Transaction, DaoTransactionError>;
 
+    async fn get_transaction_by_id(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError>;
+
     async fn get_invoice_transactions(
         &self,
         invoice_id: Uuid,
     ) -> Result<Vec<Transaction>, DaoTransactionError>;
+
+    async fn get_transactions_paginated(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<Vec<Transaction>, DaoTransactionError>;
+
+    async fn count_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<u32, DaoTransactionError>;
 
     // === Payout Methods ===
 
@@ -398,6 +487,16 @@ pub trait DaoTransactionInterface {
         retry_meta: RetryMeta,
         is_retriable: bool,
     ) -> Result<Payout, DaoPayoutError>;
+
+    async fn get_payouts_paginated(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<Vec<Payout>, DaoPayoutError>;
+
+    async fn count_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<u32, DaoPayoutError>;
 
     // === Webhook Event Methods ===
 
@@ -461,6 +560,21 @@ pub trait DaoTransactionInterface {
         swap_id: Uuid,
         error_message: String,
     ) -> Result<Swap, DaoSwapError>;
+
+    async fn get_swap_by_id(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError>;
+
+    async fn get_swaps_paginated(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<Vec<Swap>, DaoSwapError>;
+
+    async fn count_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<u32, DaoSwapError>;
 
     // === Refund Methods ===
 
@@ -536,6 +650,20 @@ impl DaoInterface for DAO {
         DaoInvoiceMethods::get_expired_invoices(self).await
     }
 
+    async fn get_invoices_paginated(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError> {
+        DaoInvoiceMethods::get_invoices_paginated(self, params).await
+    }
+
+    async fn count_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<u32, DaoInvoiceError> {
+        DaoInvoiceMethods::count_invoices(self, params).await
+    }
+
     async fn create_transaction(
         &self,
         transaction: Transaction,
@@ -579,11 +707,32 @@ impl DaoInterface for DAO {
         .await
     }
 
+    async fn get_transaction_by_id(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError> {
+        DaoTransactionMethods::get_transaction_by_id(self, transaction_id).await
+    }
+
     async fn get_invoice_transactions(
         &self,
         invoice_id: Uuid,
     ) -> Result<Vec<Transaction>, DaoTransactionError> {
         DaoTransactionMethods::get_invoice_transactions(self, invoice_id).await
+    }
+
+    async fn get_transactions_paginated(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<Vec<Transaction>, DaoTransactionError> {
+        DaoTransactionMethods::get_transactions_paginated(self, params).await
+    }
+
+    async fn count_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<u32, DaoTransactionError> {
+        DaoTransactionMethods::count_transactions(self, params).await
     }
 
     async fn create_payout(
@@ -632,6 +781,20 @@ impl DaoInterface for DAO {
             is_retriable,
         )
         .await
+    }
+
+    async fn get_payouts_paginated(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<Vec<Payout>, DaoPayoutError> {
+        DaoPayoutMethods::get_payouts_paginated(self, params).await
+    }
+
+    async fn count_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<u32, DaoPayoutError> {
+        DaoPayoutMethods::count_payouts(self, params).await
     }
 
     async fn create_webhook_event(
@@ -726,6 +889,27 @@ impl DaoInterface for DAO {
         DaoSwapMethods::update_swap_failed(self, swap_id, error_message).await
     }
 
+    async fn get_swap_by_id(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_swap_by_id(self, swap_id).await
+    }
+
+    async fn get_swaps_paginated(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<Vec<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_swaps_paginated(self, params).await
+    }
+
+    async fn count_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<u32, DaoSwapError> {
+        DaoSwapMethods::count_swaps(self, params).await
+    }
+
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError> {
         DaoRefundMethods::get_all_refunds(self).await
     }
@@ -780,6 +964,20 @@ impl DaoTransactionInterface for DaoTransaction {
         DaoInvoiceMethods::get_expired_invoices(self).await
     }
 
+    async fn get_invoices_paginated(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError> {
+        DaoInvoiceMethods::get_invoices_paginated(self, params).await
+    }
+
+    async fn count_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<u32, DaoInvoiceError> {
+        DaoInvoiceMethods::count_invoices(self, params).await
+    }
+
     async fn create_transaction(
         &self,
         transaction: Transaction,
@@ -823,11 +1021,32 @@ impl DaoTransactionInterface for DaoTransaction {
         .await
     }
 
+    async fn get_transaction_by_id(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError> {
+        DaoTransactionMethods::get_transaction_by_id(self, transaction_id).await
+    }
+
     async fn get_invoice_transactions(
         &self,
         invoice_id: Uuid,
     ) -> Result<Vec<Transaction>, DaoTransactionError> {
         DaoTransactionMethods::get_invoice_transactions(self, invoice_id).await
+    }
+
+    async fn get_transactions_paginated(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<Vec<Transaction>, DaoTransactionError> {
+        DaoTransactionMethods::get_transactions_paginated(self, params).await
+    }
+
+    async fn count_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<u32, DaoTransactionError> {
+        DaoTransactionMethods::count_transactions(self, params).await
     }
 
     async fn create_payout(
@@ -876,6 +1095,20 @@ impl DaoTransactionInterface for DaoTransaction {
             is_retriable,
         )
         .await
+    }
+
+    async fn get_payouts_paginated(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<Vec<Payout>, DaoPayoutError> {
+        DaoPayoutMethods::get_payouts_paginated(self, params).await
+    }
+
+    async fn count_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<u32, DaoPayoutError> {
+        DaoPayoutMethods::count_payouts(self, params).await
     }
 
     async fn create_webhook_event(
@@ -961,6 +1194,27 @@ impl DaoTransactionInterface for DaoTransaction {
         error_message: String,
     ) -> Result<Swap, DaoSwapError> {
         DaoSwapMethods::update_swap_failed(self, swap_id, error_message).await
+    }
+
+    async fn get_swap_by_id(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_swap_by_id(self, swap_id).await
+    }
+
+    async fn get_swaps_paginated(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<Vec<Swap>, DaoSwapError> {
+        DaoSwapMethods::get_swaps_paginated(self, params).await
+    }
+
+    async fn count_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<u32, DaoSwapError> {
+        DaoSwapMethods::count_swaps(self, params).await
     }
 
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError> {

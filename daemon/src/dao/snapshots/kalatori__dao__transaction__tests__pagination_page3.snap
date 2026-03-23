@@ -1,0 +1,38 @@
+---
+source: daemon/src/dao/transaction.rs
+expression: page3
+---
+- id: "[uuid]"
+  invoice_id: "[uuid]"
+  chain: Polygon
+  asset_id: USDC
+  asset_name: USDC
+  amount: "250.50"
+  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+  destination_address: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+  block_number: ~
+  position_in_block: ~
+  tx_hash: "[tx_hash]"
+  origin: {}
+  status: Waiting
+  transaction_type: Incoming
+  outgoing_meta: {}
+  created_at: "[timestamp]"
+  updated_at: "[timestamp]"
+- id: "[uuid]"
+  invoice_id: "[uuid]"
+  chain: PolkadotAssetHub
+  asset_id: "1984"
+  asset_name: USDT
+  amount: "100.00"
+  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+  destination_address: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+  block_number: ~
+  position_in_block: ~
+  tx_hash: "[tx_hash]"
+  origin: {}
+  status: Waiting
+  transaction_type: Incoming
+  outgoing_meta: {}
+  created_at: "[timestamp]"
+  updated_at: "[timestamp]"

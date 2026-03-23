@@ -33,6 +33,8 @@ jobs:
         run: rustup component add llvm-tools-preview
 
       - name: Run tests with coverage
+        # NOTE: insta snapshot tests require CI=true to fail on mismatches instead of writing .snap.new files.
+        # GitHub Actions sets CI=true by default, but this must be set explicitly when migrating to Dagger.
         run: make generate-coverage-report
 
       - name: Upload coverage to Codecov
