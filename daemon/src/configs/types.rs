@@ -551,10 +551,30 @@ pub struct BungeeApiConfig {
     pub affiliate: SecretString,
 }
 
+#[derive(Deserialize, Clone, Debug)]
+pub struct ZeroExApiConfig {
+    pub api_key: SecretString,
+    pub rpc_url: String,
+}
+
+// TODO: make zero ex api config (and client starting) optional
+// with some backup which not require API keys and get rid of this default.
+// Might be a problem if/when we'll move to some other chain
+impl Default for ZeroExApiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: "".into(),
+            rpc_url: "https://polygon-bor-rpc.publicnode.com".to_string(),
+        }
+    }
+}
+
 #[derive(Deserialize, Default, Clone, Debug)]
 pub struct SwapsConfig {
     #[serde(default)]
     pub bungee: Option<BungeeApiConfig>,
+    #[serde(default)]
+    pub zero_ex: ZeroExApiConfig,
     #[serde(default)]
     pub fees: Option<IntegratorFees>,
 }

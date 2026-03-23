@@ -20,6 +20,8 @@ use crate::clients::{
     AcrossRawTransaction,
     BungeeQuoteDetails,
     BungeeRawTransaction,
+    ZeroExQuoteDetails,
+    ZeroExRawTransaction,
 };
 
 use super::ChainType;
@@ -63,6 +65,7 @@ pub struct CreateSwapParams {
 pub enum SwapExecutorType {
     Across,
     Bungee,
+    ZeroEx,
 }
 
 impl std::fmt::Display for SwapExecutorType {
@@ -73,6 +76,7 @@ impl std::fmt::Display for SwapExecutorType {
         match self {
             Self::Across => write!(f, "Across"),
             Self::Bungee => write!(f, "Bungee"),
+            Self::ZeroEx => write!(f, "ZeroEx"),
         }
     }
 }
@@ -84,6 +88,7 @@ impl std::str::FromStr for SwapExecutorType {
         match s {
             "Across" => Ok(Self::Across),
             "Bungee" => Ok(Self::Bungee),
+            "ZeroEx" => Ok(Self::ZeroEx),
             _ => Err("Unknown swap executor type: {s}".to_string()),
         }
     }
@@ -97,7 +102,7 @@ impl SwapExecutorType {
         _direction: SwapDirection,
     ) -> Option<SwapExecutorType> {
         if from_chain == to_chain {
-            Some(Self::Bungee)
+            Some(Self::ZeroEx)
         } else {
             Some(Self::Across)
         }
@@ -375,6 +380,7 @@ pub fn default_create_swap_data(invoice_id: Uuid) -> CreateSwapData {
 pub enum InternalQuoteDetails {
     Across(AcrossQuoteDetails),
     Bungee(BungeeQuoteDetails),
+    ZeroEx(ZeroExQuoteDetails),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,12 +408,24 @@ pub struct BungeeSwapDetails {
     pub transaction_hash: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZeroExSwapDetails {
+    pub id: String,
+    pub raw_transaction: ZeroExRawTransaction,
+    // Actually we store fully signed transaction under this field,
+    // just use the same name for structure consistency
+    // which also simplifies DAO and API
+    pub signature: Option<String>,
+    pub transaction_hash: Option<String>,
+}
+
 #[expect(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum InternalSwapDetails {
     Across(AcrossSwapDetails),
     Bungee(BungeeSwapDetails),
+    ZeroEx(ZeroExSwapDetails),
 }
 
 impl From<SwapQuote> for InternalSwapDetails {
@@ -422,6 +440,14 @@ impl From<SwapQuote> for InternalSwapDetails {
             },
             InternalQuoteDetails::Bungee(details) => {
                 InternalSwapDetails::Bungee(BungeeSwapDetails {
+                    id: value.id,
+                    raw_transaction: details,
+                    signature: None,
+                    transaction_hash: None,
+                })
+            },
+            InternalQuoteDetails::ZeroEx(details) => {
+                InternalSwapDetails::ZeroEx(ZeroExSwapDetails {
                     id: value.id,
                     raw_transaction: details,
                     signature: None,

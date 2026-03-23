@@ -18,7 +18,7 @@ mutants_version := 26.2.0
 insta_version := 1.46.3
 
 # Front end release version compatible with current daemon version
-front_end_version := 0.0.18
+front_end_version := 0.0.20
 
 help: # Show help for each of the Makefile recipes
 	@grep -E '^[a-zA-Z0-9 -]+:.*#'  Makefile | sort | while read -r l; do printf "\033[1;32m$$(echo $$l | cut -f 1 -d':')\033[00m:$$(echo $$l | cut -f 2- -d'#')\n"; done
@@ -65,9 +65,7 @@ download-front-end: # Download front-end release and unpack it into static folde
 	cd static; \
 	curl -LfO https://github.com/Kalapaja/Kassette/releases/download/v$(front_end_version)/payment-page-v$(front_end_version).zip; \
 	unzip payment-page-v$(front_end_version).zip; \
-	mkdir -p assets; \
-	mv dist/index.html .; \
-	cp -r dist/* assets/; \
+	mv dist/* .; \
 	rm -r dist; \
 	rm payment-page-v$(front_end_version).zip
 

@@ -3,6 +3,7 @@ use uuid::Uuid;
 use crate::clients::{
     AcrossClientError,
     BungeeClientError,
+    ZeroExClientError,
 };
 use crate::dao::{
     DAO,
@@ -44,6 +45,13 @@ impl From<BungeeClientError> for SwapsExecutorError {
     }
 }
 
+impl From<ZeroExClientError> for SwapsExecutorError {
+    fn from(_value: ZeroExClientError) -> Self {
+        // TODO: refactor
+        SwapsExecutorError::QuoteRequestFailed
+    }
+}
+
 #[derive(Clone)]
 pub struct SwapsExecutor<D: DaoInterface + 'static = DAO> {
     dao: D,
@@ -80,6 +88,12 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
                 .get_swap_quote(quote_request_data.into())
                 .await?
                 .into(),
+            SwapExecutorType::ZeroEx => self
+                .clients
+                .zero_ex_client
+                .get_quote(quote_request_data.into())
+                .await?
+                .into(),
         };
 
         let swap = Swap::new(data, quote);
@@ -104,8 +118,15 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
         &self,
         swap_signature: SwapSignatureParams,
     ) -> Result<Swap, SwapsExecutorError> {
-        if swap_signature.swap_executor != SwapExecutorType::Bungee {
+        if !matches!(
+            swap_signature.swap_executor,
+            SwapExecutorType::Bungee | SwapExecutorType::ZeroEx
+        ) {
             // TODO: other error, perhaps also check executor on DB level
+            tracing::warn!(
+                swap_executor = %swap_signature.swap_executor,
+                "Got submit with signature request for wrong swap executor"
+            );
             return Err(SwapsExecutorError::DatabaseError);
         }
 
@@ -125,28 +146,32 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
                 _ => SwapsExecutorError::DatabaseError,
             })?;
 
-        let InternalSwapDetails::Bungee(details) = swap.swap_details.clone() else {
-            // TODO: shouldn't really happen. Add logs and other error
-            return Err(SwapsExecutorError::DatabaseError);
+        let transaction_hash = match &swap.swap_details {
+            InternalSwapDetails::Bungee(details) => {
+                self.clients
+                    .bungee_client
+                    .submit_signed_request(details.clone().into())
+                    // TODO: In case of error need to check an error thoroughly.
+                    // If it's problem with signature, we can mark it as failed.
+                    // If it's some kind of network error, we can retry it.
+                    // In any way we have to understand if it was received by bungee
+                    // and is being processed to avoid double-payments or just missing
+                    // the transaction.
+                    .await?
+                    .request_hash
+            },
+            InternalSwapDetails::ZeroEx(details) => {
+                self.clients
+                    .zero_ex_client
+                    // TODO: unwrap should be safe here, but it's better to ensure it somehow
+                    .submit_transaction(details.signature.clone().unwrap())
+                    .await?
+            },
+            InternalSwapDetails::Across(_) => unreachable!(),
         };
 
-        let response = self
-            .clients
-            .bungee_client
-            .submit_signed_request(details.into())
-            // TODO: In case of error need to check an error thoroughly.
-            // If it's problem with signature, we can mark it as failed.
-            // If it's some kind of network error, we can retry it.
-            // In any way we have to understand if it was received by bungee
-            // and is being processed to avoid double-payments or just missing
-            // the transaction.
-            .await?;
-
         self.dao
-            .update_across_swap_submitted(
-                swap_signature.swap_id,
-                response.request_hash,
-            )
+            .update_swap_submitted_with_hash(swap_signature.swap_id, transaction_hash)
             .await
             .map_err(|e| match e {
                 DaoSwapError::NotFound {
@@ -200,7 +225,7 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
         } = submitted_swap;
 
         self.dao
-            .update_across_swap_submitted(swap_id, transaction_hash.clone())
+            .update_swap_submitted_with_hash(swap_id, transaction_hash.clone())
             .await
             .map_err(|e| {
                 // TODO: check more different errors, at least status constraints

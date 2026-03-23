@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::clients::{
     AcrossSwapStatus,
     BungeeSwapStatus,
+    ZeroExTransactionStatus,
 };
 use crate::dao::DaoInterface;
 use crate::types::{
@@ -255,6 +256,76 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, invoice_id = %swap.request.invoice_id))]
+    async fn check_zero_ex_swap(
+        &mut self,
+        swap: &Swap,
+    ) -> Result<(), SwapsTrackerError> {
+        tracing::trace!("Check zero ex swap");
+
+        let InternalSwapDetails::ZeroEx(details) = &swap.swap_details else {
+            tracing::error!("Unexpected internal swap details. Expected ZeroEx");
+            return Ok(())
+        };
+
+        if let Some(tx_hash) = details.transaction_hash.as_ref() {
+            let result = self
+                .clients
+                .zero_ex_client
+                .get_transaction_status(tx_hash)
+                .await
+                // TODO: check errors specifically?
+                .map_err(|_| SwapsTrackerError::ApiError)?;
+
+            match result {
+                ZeroExTransactionStatus::FailedOnChain => {
+                    // shouldn't really happen as long as it already has been sent but just in case
+                    self.dao
+                        .update_swap_failed(
+                            swap.id,
+                            "Transaction has failed on chain".to_string(),
+                        )
+                        .await
+                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+                    self.store.remove_swap(swap.id);
+
+                    tracing::info!(
+                        "Transaction has failed on chain. Swap has been marked as failed and will no longer be tracked"
+                    );
+                },
+                ZeroExTransactionStatus::NotFound => {
+                    tracing::trace!("Swap still has pending status, keep watching")
+                },
+                // According to the docs, both settled and fulfilled statuses are final
+                ZeroExTransactionStatus::Executed => {
+                    self.dao
+                        .update_swap_completed(swap.id)
+                        .await
+                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+                    self.store.remove_swap(swap.id);
+                    tracing::info!("Swap has been filled and marked as completed in the database")
+                },
+            }
+        } else {
+            self.dao
+                .update_swap_failed(
+                    swap.id,
+                    "No transaction hash saved".to_string(),
+                )
+                .await
+                .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+            tracing::error!(
+                "ZeroEx swap has been marked as sent but transaction hash is empty.
+                It has been marked as failed and will no longer be tracked"
+            );
+        }
+
+        Ok(())
+    }
+
     async fn check_swaps(&mut self) {
         let swaps = self.store.get_all_swaps();
 
@@ -262,6 +333,7 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             let result = match swap.request.swap_executor {
                 SwapExecutorType::Across => self.check_across_swap(&swap).await,
                 SwapExecutorType::Bungee => self.check_bungee_swap(&swap).await,
+                SwapExecutorType::ZeroEx => self.check_zero_ex_swap(&swap).await,
             };
 
             if let Err(e) = result {

@@ -752,7 +752,7 @@ mod tests {
 
     use super::*;
 
-    fn setup_app_state() -> AppState<MockDaoInterface> {
+    async fn setup_app_state() -> AppState<MockDaoInterface> {
         let asset_names_map = HashMap::from([
             (1337.to_string(), "USDC".to_string()),
             (1984.to_string(), "USDt".to_string()),
@@ -791,7 +791,7 @@ mod tests {
         let keyring = KeyringClient::default();
         let dao = MockDaoInterface::default();
         let registry = InvoiceRegistry::new();
-        let swaps_clients = SwapsClients::new(SwapsConfig::default());
+        let swaps_clients = SwapsClients::new(SwapsConfig::default()).await;
         let swaps_executor = SwapsExecutor::new(
             MockDaoInterface::default(),
             swaps_clients,
@@ -852,7 +852,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_invoice() {
-        let mut app_state = setup_app_state();
+        let mut app_state = setup_app_state().await;
         let invoice_id = Uuid::new_v4();
 
         // Test case 1: Invoice found
@@ -915,7 +915,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_invoice() {
-        let mut app_state = setup_app_state();
+        let mut app_state = setup_app_state().await;
 
         let uri = subxt_signer::SecretUri::from_str("//Bob").unwrap();
         let keypair = subxt_signer::sr25519::Keypair::from_uri(&uri).unwrap();

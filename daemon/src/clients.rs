@@ -1,5 +1,6 @@
 mod across;
 mod bungee;
+mod zeroex;
 
 #[cfg(test)]
 pub use across::default_across_raw_transaction;
@@ -17,4 +18,12 @@ pub use bungee::{
     BungeeQuoteDetails,
     BungeeRawTransaction,
     BungeeSwapStatus,
+};
+
+pub use zeroex::{
+    ZeroExClient,
+    ZeroExClientError,
+    ZeroExQuoteDetails,
+    ZeroExRawTransaction,
+    ZeroExTransactionStatus,
 };
