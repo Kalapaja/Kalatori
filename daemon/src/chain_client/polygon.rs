@@ -7,6 +7,7 @@ mod consts;
 mod pimlico_client;
 
 use std::str::FromStr;
+use std::time::Duration;
 
 use alloy::eips::eip7702::Authorization;
 use alloy::primitives::{
@@ -82,6 +83,8 @@ use pimlico_client::{
     PimlicoClient,
     TokenQuote,
 };
+
+const WS_MESSAGES_TIMEOUT_DURATION: Duration = Duration::from_secs(10);
 
 // ============================================================================
 // ERC-20 Interface Definition
@@ -771,36 +774,51 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         let stream = async_stream::try_stream! {
             let mut sub = subscription.into_stream();
 
-            while let Some(log) = sub.next().await {
-                // Decode Transfer event from log
-                match log.log_decode::<IERC20::Transfer>() {
-                    Ok(decoded) => {
-                        let event = decoded.inner.data;
-                        match client.log_to_transfer(&log, &event).await {
-                            Ok(transfer) => {
-                                tracing::trace!(
-                                    from = %transfer.sender,
-                                    to = %transfer.recipient,
-                                    amount = %transfer.amount,
-                                    asset = %transfer.asset_name,
-                                    "Detected ERC-20 transfer"
-                                );
-                                yield vec![transfer];
-                            }
+            loop {
+                tokio::select! {
+                    log = sub.next() => {
+                        let Some(log) = log else {
+                            tracing::warn!("Polygon subscription task received None, probably ws connection has been closed");
+                            break
+                        };
+
+                        // Decode Transfer event from log
+                        match log.log_decode::<IERC20::Transfer>() {
+                            Ok(decoded) => {
+                                let event = decoded.inner.data;
+                                match client.log_to_transfer(&log, &event).await {
+                                    Ok(transfer) => {
+                                        tracing::trace!(
+                                            from = %transfer.sender,
+                                            to = %transfer.recipient,
+                                            amount = %transfer.amount,
+                                            asset = %transfer.asset_name,
+                                            "Detected ERC-20 transfer"
+                                        );
+                                        yield vec![transfer];
+                                    },
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = ?e,
+                                            "Failed to process transfer event"
+                                        );
+                                        break
+                                    },
+                                }
+                            },
                             Err(e) => {
-                                tracing::warn!(
+                                tracing::debug!(
                                     error = ?e,
-                                    "Failed to process transfer event"
+                                    "Failed to decode Transfer event from log"
                                 );
-                            }
+                                break
+                            },
                         }
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            error = ?e,
-                            "Failed to decode Transfer event from log"
-                        );
-                    }
+                    },
+                    () = tokio::time::sleep(WS_MESSAGES_TIMEOUT_DURATION) => {
+                        tracing::error!("Polygon subscription didn't receive any updates for {} secs, force subscription recreate", WS_MESSAGES_TIMEOUT_DURATION.as_secs());
+                        break
+                    },
                 }
             }
 
