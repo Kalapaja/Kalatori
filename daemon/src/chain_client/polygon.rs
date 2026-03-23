@@ -815,7 +815,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                             },
                         }
                     },
-                    _ = tokio::time::sleep(WS_MESSAGES_TIMEOUT_DURATION) => {
+                    () = tokio::time::sleep(WS_MESSAGES_TIMEOUT_DURATION) => {
                         tracing::error!("Polygon subscription didn't receive any updates for {} secs, force subscription recreate", WS_MESSAGES_TIMEOUT_DURATION.as_secs());
                         break
                     },
