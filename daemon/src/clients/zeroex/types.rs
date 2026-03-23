@@ -80,7 +80,7 @@ pub struct ZeroExGetQuoteResponse {
     pub buy_token: String,
     #[serde_as(as = "DisplayFromStr")]
     pub min_buy_amount: u128,
-    pub permit2: ZeroExPermit2,
+    // pub permit2: ZeroExPermit2,
     #[serde_as(as = "DisplayFromStr")]
     pub sell_amount: u128,
     pub sell_token: String,
@@ -92,8 +92,8 @@ impl From<ZeroExGetQuoteResponse> for SwapQuote {
     fn from(value: ZeroExGetQuoteResponse) -> Self {
         let details = ZeroExQuoteDetails {
             allowance_target: value.allowance_target,
-            permit_hash: value.permit2.hash,
-            permit_data: value.permit2.eip712,
+            // permit_hash: value.permit2.hash,
+            // permit_data: value.permit2.eip712,
             raw_transaction: value.transaction.into(),
         };
 

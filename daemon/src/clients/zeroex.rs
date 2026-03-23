@@ -65,8 +65,8 @@ impl From<ZeroExTransaction> for RawTransactionData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZeroExRawTransaction {
     pub allowance_target: String,
-    pub permit_hash: String,
-    pub permit_data: serde_json::Value,
+    // pub permit_hash: String,
+    // pub permit_data: serde_json::Value,
     pub raw_transaction: RawTransactionData,
 }
 
@@ -120,7 +120,7 @@ impl ZeroExClient {
     ) -> Result<ZeroExGetQuoteResponse, ZeroExClientError> {
         let response = self
             .client
-            .get("https://api.0x.org/swap/permit2/quote")
+            .get("https://api.0x.org/swap/allowance-holder/quote")
             .header(
                 "0x-api-key",
                 self.api_key.expose_secret(),
