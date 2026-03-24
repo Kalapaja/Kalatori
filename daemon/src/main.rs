@@ -328,6 +328,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     );
 
     let balance_checker = BalanceChecker::new(
+        dao.clone(),
         invoice_registry.clone(),
         asset_hub_client.clone(),
         polygon_client.clone(),

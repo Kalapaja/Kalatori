@@ -29,6 +29,7 @@ pub enum BalanceCheckerError {
     InvoiceNotFound { invoice_id: Uuid },
     FetchBalanceFailed,
     FetchTransfersFailed,
+    DatabaseError,
 }
 
 #[derive(Clone)]
@@ -37,6 +38,7 @@ pub struct BalanceChecker<
     AH: BlockChainClient<AssetHubChainConfig> + 'static = AssetHubClient,
     PG: BlockChainClient<PolygonChainConfig> + 'static = PolygonClient,
 > {
+    dao: D,
     registry: InvoiceRegistry,
     asset_hub_client: AH,
     polygon_client: PG,
@@ -51,6 +53,7 @@ impl<
 > BalanceChecker<D, AH, PG>
 {
     pub fn new(
+        dao: D,
         registry: InvoiceRegistry,
         asset_hub_client: AH,
         polygon_client: PG,
@@ -58,6 +61,7 @@ impl<
         transactions_recorder: TransactionsRecorder<D>,
     ) -> Self {
         Self {
+            dao,
             registry,
             asset_hub_client,
             polygon_client,
@@ -212,20 +216,40 @@ impl<
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn check_invoice_balance(
         &self,
         invoice_id: Uuid,
     ) -> Result<InvoiceWithReceivedAmount, BalanceCheckerError> {
-        let Some(mut invoice) = self
+        let mut invoice = if let Some(invoice) = self
             .registry
             .get_invoice(&invoice_id)
             .await
-        else {
-            // TODO: in that case we probably should try to fetch invoice with amounts from
-            // database
-            return Err(BalanceCheckerError::InvoiceNotFound {
-                invoice_id,
-            })
+        {
+            tracing::trace!(
+                ?invoice,
+                "Invoice for balance checking is found in registry"
+            );
+            invoice
+        } else {
+            self.dao
+                .get_invoice_with_received_amount_by_id(invoice_id)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(
+                        error = ?e,
+                        "Failed to get invoice with received amounts from database"
+                    );
+
+                    BalanceCheckerError::DatabaseError
+                })?
+                .inspect(|invoice| tracing::trace!(
+                    ?invoice,
+                    "Invoice for balance checking wasn't found in registry but is found in database"
+                ))
+                .ok_or(BalanceCheckerError::InvoiceNotFound {
+                    invoice_id,
+                })?
         };
 
         let received_amount = invoice.total_received_amount;
@@ -240,6 +264,11 @@ impl<
         if received_amount != balance {
             self.get_and_store_transactions(&mut invoice, balance)
                 .await?;
+        } else {
+            tracing::trace!(
+                ?balance,
+                "Invoice received amount is equal to payment address balance"
+            )
         }
 
         Ok(invoice)
