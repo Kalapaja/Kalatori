@@ -38,10 +38,19 @@ pub struct ZeroExGetQuoteRequest {
 // if `from_chain != to_chain` or validate it in some other level
 impl From<CreateSwapData> for ZeroExGetQuoteRequest {
     fn from(value: CreateSwapData) -> Self {
+        // TODO: move to consts? Ideally will be have some wrapper around the value and
+        // detect such "native assets" by method and validate address
+        let sell_token = if value.from_token_address == "0x0000000000000000000000000000000000000000"
+        {
+            "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE".to_string()
+        } else {
+            value.from_token_address
+        };
+
         Self {
             chain_id: value.from_chain.chain_id(),
             buy_token: value.to_token_address,
-            sell_token: value.from_token_address,
+            sell_token,
             sell_amount: value.from_amount_units,
             taker: value.from_address,
             recipient: value.to_address,
