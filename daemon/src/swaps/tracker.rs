@@ -135,6 +135,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
+                    // TODO: check error, if it's Invoice not found, skip monitoring (shouldn't
+                    // happen though)
                     let invoice = self
                         .balance_checker
                         .check_invoice_balance(swap.request.invoice_id)
@@ -252,6 +254,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
+                    // TODO: check error, if it's Invoice not found, skip monitoring (shouldn't
+                    // happen though)
                     let invoice = self
                         .balance_checker
                         .check_invoice_balance(swap.request.invoice_id)
@@ -360,6 +364,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
+                    // TODO: check error, if it's Invoice not found, skip monitoring (shouldn't
+                    // happen though)
                     let invoice = self
                         .balance_checker
                         .check_invoice_balance(swap.request.invoice_id)
