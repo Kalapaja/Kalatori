@@ -43,12 +43,20 @@ use axum::http::{
     HeaderName,
     StatusCode,
 };
-use axum::middleware;
 use axum::routing::{
     get,
     post,
 };
+use axum::{
+    ServiceExt,
+    middleware,
+};
 use tokio::net::TcpListener;
+use tower::{
+    Layer,
+    ServiceExt as _,
+};
+use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::request_id::{
     MakeRequestUuid,
     PropagateRequestIdLayer,
@@ -197,8 +205,12 @@ pub async fn api_server(
         )
         .with_state(api_state);
 
+    let app = NormalizePathLayer::trim_trailing_slash()
+        .layer(router)
+        .map_request(|req| req);
+
     async move {
-        axum::serve(listener, router)
+        axum::serve(listener, app.into_make_service())
             .with_graceful_shutdown(cancellation_token.cancelled_owned())
             .await
             .unwrap();

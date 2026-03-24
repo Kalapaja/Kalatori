@@ -47,7 +47,7 @@ axum = { version = "0.8", default-features = false, features = [
     "macros",
 ] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "fs"] }
+tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "fs", "normalize-path"] }
 
 # Database
 # On update sqlx version, plase also update sqlx-cli to corresponding version in Makefile
