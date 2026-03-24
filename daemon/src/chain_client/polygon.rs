@@ -721,8 +721,15 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         // alloy 1.4 returns the value directly
         let balance = balance_result;
+        let balance_decimal = u256_to_decimal(balance, decimals);
 
-        Ok(u256_to_decimal(balance, decimals))
+        tracing::trace!(
+            ?balance,
+            ?balance_decimal,
+            "Fetched ERC-20 balance"
+        );
+
+        Ok(balance_decimal)
     }
 
     #[instrument(skip(self))]

@@ -5,6 +5,7 @@ use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::balance_checker::BalanceChecker;
 use crate::clients::{
     AcrossSwapStatus,
     BungeeSwapStatus,
@@ -62,22 +63,27 @@ pub struct SwapsTracker<D: DaoInterface + 'static> {
     dao: D,
     store: TrackedSwaps,
     clients: SwapsClients,
+    balance_checker: BalanceChecker,
 }
 
+#[expect(clippy::enum_variant_names)]
 #[derive(Debug)]
 pub enum SwapsTrackerError {
     ApiError,
     DatabaseError,
+    BalanceCheckerError,
 }
 
 impl<D: DaoInterface + 'static> SwapsTracker<D> {
     pub fn new(
         dao: D,
         clients: SwapsClients,
+        balance_checker: BalanceChecker,
     ) -> Self {
         Self {
             dao,
             clients,
+            balance_checker,
             store: TrackedSwaps::new(),
         }
     }
@@ -128,6 +134,31 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                         .update_swap_completed(swap.id)
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+                    let invoice = self
+                        .balance_checker
+                        .check_invoice_balance(swap.request.invoice_id)
+                        .await
+                        .map_err(|e| {
+                            tracing::warn!(
+                                error = ?e,
+                                "Error while check balance after swap has been executed"
+                            );
+
+                            SwapsTrackerError::BalanceCheckerError
+                        })?;
+
+                    tracing::debug!(
+                        invoice_with_amount = ?invoice,
+                        "Invoice has been checked after swap successful execution"
+                    );
+
+                    if invoice.total_received_amount.is_zero() {
+                        tracing::warn!(
+                            "Swap has executed status but received amount after check is still zero. Will recheck balance later"
+                        );
+                        return Err(SwapsTrackerError::BalanceCheckerError)
+                    }
 
                     self.store.remove_swap(swap.id);
                     tracing::info!("Swap has been filled and marked as completed in the database")
@@ -221,6 +252,31 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
+                    let invoice = self
+                        .balance_checker
+                        .check_invoice_balance(swap.request.invoice_id)
+                        .await
+                        .map_err(|e| {
+                            tracing::warn!(
+                                error = ?e,
+                                "Error while check balance after swap has been executed"
+                            );
+
+                            SwapsTrackerError::BalanceCheckerError
+                        })?;
+
+                    tracing::debug!(
+                        invoice_with_amount = ?invoice,
+                        "Invoice has been checked after swap successful execution"
+                    );
+
+                    if invoice.total_received_amount.is_zero() {
+                        tracing::warn!(
+                            "Swap has executed status but received amount after check is still zero. Will recheck balance later"
+                        );
+                        return Err(SwapsTrackerError::BalanceCheckerError)
+                    }
+
                     self.store.remove_swap(swap.id);
                     tracing::info!("Swap has been filled and marked as completed in the database")
                 },
@@ -303,6 +359,31 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                         .update_swap_completed(swap.id)
                         .await
                         .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+                    let invoice = self
+                        .balance_checker
+                        .check_invoice_balance(swap.request.invoice_id)
+                        .await
+                        .map_err(|e| {
+                            tracing::warn!(
+                                error = ?e,
+                                "Error while check balance after swap has been executed"
+                            );
+
+                            SwapsTrackerError::BalanceCheckerError
+                        })?;
+
+                    tracing::debug!(
+                        invoice_with_amount = ?invoice,
+                        "Invoice has been checked after swap successful execution"
+                    );
+
+                    if invoice.total_received_amount.is_zero() {
+                        tracing::warn!(
+                            "Swap has executed status but received amount after check is still zero. Will recheck balance later"
+                        );
+                        return Err(SwapsTrackerError::BalanceCheckerError)
+                    }
 
                     self.store.remove_swap(swap.id);
                     tracing::info!("Swap has been filled and marked as completed in the database")

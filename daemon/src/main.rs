@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod balance_checker;
 mod chain;
 mod chain_client;
 mod clients;
@@ -76,6 +77,7 @@ use utils::shutdown::{
 };
 use utils::task_tracker::TaskTracker;
 
+use crate::balance_checker::BalanceChecker;
 use crate::swaps::SwapsClients;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
@@ -325,14 +327,19 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         payments_config.clone(),
     );
 
-    let expiration_detector = ExpirationDetector::new(
-        dao.clone(),
+    let balance_checker = BalanceChecker::new(
         invoice_registry.clone(),
         asset_hub_client.clone(),
         polygon_client.clone(),
         etherscan_client,
-        payments_config.clone(),
         transactions_recorder.clone(),
+    );
+
+    let expiration_detector = ExpirationDetector::new(
+        dao.clone(),
+        invoice_registry.clone(),
+        payments_config.clone(),
+        balance_checker.clone(),
     );
 
     let expiration_detector_handle =
@@ -384,7 +391,12 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let swaps_executor = SwapsExecutor::new(dao.clone(), swaps_clients.clone());
 
-    let swaps_tracker = SwapsTracker::new(dao.clone(), swaps_clients);
+    let swaps_tracker = SwapsTracker::new(
+        dao.clone(),
+        swaps_clients,
+        balance_checker,
+    );
+
     let swaps_tracker_handle = swaps_tracker.ignite(shutdown_notification.token.clone());
 
     let app_state = AppState::new(
