@@ -486,58 +486,93 @@ impl<
                 ChainPayoutRequestTyped::AssetHub(request) => {
                     let invoice_id = request.invoice_id;
                     let payout_id = request.id;
+                    let mut retry_meta = request.retry_meta.clone();
 
                     let client = self.asset_hub_client.clone();
                     let prepared_transfer = self
                         .prepare_transfer(client, request)
-                        .await
-                        // TODO: add error handling and logging here
-                        .inspect_err(|e| {
+                        .await;
+
+                    match prepared_transfer {
+                        Ok(transfer) => {
+                            tracing::info!(
+                                invoice_id = %invoice_id,
+                                payout_id = %payout_id,
+                                chain = "AssetHub",
+                                "Scheduled transfer for processing on chain",
+                            );
+                            futures_set.push(transfer);
+                        },
+                        Err(e) => {
                             tracing::warn!(
                                 error = %e,
                                 invoice_id = %invoice_id,
                                 payout_id = %payout_id,
                                 chain = "AssetHub",
-                                "Failed to prepare transfer request, it will be skipped",
+                                "Failed to prepare transfer request, it will be marked as failed and retriable"
                             );
-                        });
+                            retry_meta.increment_retry(e.to_string());
 
-                    if let Ok(transfer) = prepared_transfer {
-                        tracing::info!(
-                            invoice_id = %invoice_id,
-                            payout_id = %payout_id,
-                            chain = "AssetHub",
-                            "Scheduled transfer for processing on chain",
-                        );
-                        futures_set.push(transfer);
+                            if let Err(error) = self
+                                .dao
+                                .update_payout_retry(payout_id, retry_meta, true)
+                                .await
+                            {
+                                tracing::error!(
+                                    %error,
+                                    invoice_id = %invoice_id,
+                                    payout_id = %payout_id,
+                                    chain = "AssetHub",
+                                    "Error while trying to mark payout request failed but retriable. It might stuck in In Progress status"
+                                );
+                            };
+                        },
                     }
                 },
                 ChainPayoutRequestTyped::Polygon(request) => {
                     let invoice_id = request.invoice_id;
                     let payout_id = request.id;
+                    let mut retry_meta = request.retry_meta.clone();
 
                     let client = self.polygon_client.clone();
                     let prepared_transfer = self
                         .prepare_transfer(client, request)
-                        .await
-                        .inspect_err(|e| {
+                        .await;
+
+                    match prepared_transfer {
+                        Ok(transfer) => {
+                            tracing::info!(
+                                invoice_id = %invoice_id,
+                                payout_id = %payout_id,
+                                chain = "Polygon",
+                                "Scheduled transfer for processing on chain",
+                            );
+                            futures_set.push(transfer);
+                        },
+                        Err(e) => {
                             tracing::warn!(
                                 error = %e,
                                 invoice_id = %invoice_id,
                                 payout_id = %payout_id,
                                 chain = "Polygon",
-                                "Failed to prepare transfer request, it will be skipped",
+                                "Failed to prepare transfer request, it will be marked as failed and retriable"
                             );
-                        });
+                            retry_meta.increment_retry(e.to_string());
 
-                    if let Ok(transfer) = prepared_transfer {
-                        tracing::info!(
-                            invoice_id = %invoice_id,
-                            payout_id = %payout_id,
-                            chain = "Polygon",
-                            "Scheduled transfer for processing on chain",
-                        );
-                        futures_set.push(transfer);
+                            if let Err(error) = self
+                                .dao
+                                .update_payout_retry(payout_id, retry_meta, true)
+                                .await
+                            {
+                                tracing::error!(
+                                    %error,
+                                    invoice_id = %invoice_id,
+                                    payout_id = %payout_id,
+                                    chain = "AssetHub",
+                                    "Error while trying to mark payout request failed but retriable. It might stuck in In Progress status"
+                                );
+                            };
+                        },
                     }
                 },
             }
