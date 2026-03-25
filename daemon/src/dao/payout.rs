@@ -240,8 +240,9 @@ pub trait DaoPayoutMethods: DaoExecutor + 'static {
             "WITH sel AS (
                 SELECT id
                 FROM payouts
-                WHERE status = 'Waiting'
-                    AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
+                WHERE
+                    status = 'Waiting'
+                    OR (status = 'FailedRetriable' AND next_retry_at <= datetime('now'))
                 ORDER BY created_at ASC
                 LIMIT ?
             )
@@ -545,7 +546,7 @@ mod tests {
 
         // Create payout with Waiting status (should be returned)
         let payout1 = default_payout(invoice.id);
-        dao.create_payout(payout1)
+        dao.create_payout(payout1.clone())
             .await
             .unwrap();
 
@@ -563,11 +564,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Create payout with Waiting status but next_retry_at in future (should NOT be
-        // returned)
+        // Create payout with Waiting status and next_retry_at in the future — should still
+        // be returned because all Waiting payouts are eligible regardless of next_retry_at
         let mut payout4 = default_payout(invoice.id);
         payout4.retry_meta.next_retry_at = Some(Utc::now() + chrono::Duration::hours(1));
-        dao.create_payout(payout4)
+        dao.create_payout(payout4.clone())
             .await
             .unwrap();
 
@@ -577,39 +578,35 @@ mod tests {
             .await
             .unwrap();
 
-        // Should only return payout1 (InProgress with no next_retry_at)
-        assert_eq!(pending.len(), 1);
-        assert_eq!(
-            pending[0].status,
-            PayoutStatus::InProgress
-        );
-        assert_eq!(
-            pending[0].retry_meta,
-            RetryMeta::default()
-        );
+        // Should return payout1 and payout4 (both Waiting), not payout2 (InProgress) or
+        // payout3 (Completed)
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].status, PayoutStatus::InProgress);
+        assert_eq!(pending[1].status, PayoutStatus::InProgress);
+        assert_eq!(pending[0].id, payout1.id);
+        assert_eq!(pending[1].id, payout4.id);
 
-        let payout5 = Payout {
-            created_at: Utc::now() - chrono::Duration::minutes(10),
-            ..default_payout(invoice.id)
-        };
+        // Create FailedRetriable payout with next_retry_at in the past (should be returned)
+        let mut payout5 = default_payout(invoice.id);
+        payout5.status = PayoutStatus::FailedRetriable;
+        payout5.created_at = Utc::now() - chrono::Duration::minutes(10);
+        payout5.retry_meta.next_retry_at = Some(Utc::now() - chrono::Duration::minutes(2));
         dao.create_payout(payout5.clone())
             .await
             .unwrap();
 
-        let payout6 = Payout {
-            created_at: Utc::now() - chrono::Duration::minutes(5),
-            retry_meta: RetryMeta {
-                next_retry_at: Some(Utc::now() - chrono::Duration::minutes(2)),
-                ..RetryMeta::default()
-            },
-            ..default_payout(invoice.id)
-        };
-        dao.create_payout(payout6.clone())
+        // Create FailedRetriable payout with next_retry_at in the future (should NOT be
+        // returned)
+        let mut payout6 = default_payout(invoice.id);
+        payout6.status = PayoutStatus::FailedRetriable;
+        payout6.retry_meta.next_retry_at = Some(Utc::now() + chrono::Duration::hours(1));
+        dao.create_payout(payout6)
             .await
             .unwrap();
 
+        // Create another Waiting payout
         let payout7 = default_payout(invoice.id);
-        dao.create_payout(payout7)
+        dao.create_payout(payout7.clone())
             .await
             .unwrap();
 
@@ -617,17 +614,13 @@ mod tests {
             .get_pending_payouts(2)
             .await
             .unwrap();
+        // payout5 (FailedRetriable, past retry, oldest) and payout7 (Waiting) picked up.
+        // payout6 (FailedRetriable, future retry) excluded. Limit caps at 2.
         assert_eq!(pending_all.len(), 2);
-        assert_eq!(
-            pending_all[0].status,
-            PayoutStatus::InProgress
-        );
-        assert_eq!(
-            pending_all[1].status,
-            PayoutStatus::InProgress
-        );
         assert_eq!(pending_all[0].id, payout5.id);
-        assert_eq!(pending_all[1].id, payout6.id);
+        assert_eq!(pending_all[1].id, payout7.id);
+        assert_eq!(pending_all[0].status, PayoutStatus::InProgress);
+        assert_eq!(pending_all[1].status, PayoutStatus::InProgress);
     }
 
     #[tokio::test]
