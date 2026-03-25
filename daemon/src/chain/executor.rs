@@ -513,7 +513,8 @@ impl<
                             );
                             retry_meta.increment_retry(e.to_string());
 
-                            if let Err(error) = self.dao
+                            if let Err(error) = self
+                                .dao
                                 .update_payout_retry(payout_id, retry_meta, true)
                                 .await
                             {
@@ -525,7 +526,7 @@ impl<
                                     "Error while trying to mark payout request failed but retriable. It might stuck in In Progress status"
                                 );
                             };
-                        }
+                        },
                     }
                 },
                 ChainPayoutRequestTyped::Polygon(request) => {
@@ -558,7 +559,8 @@ impl<
                             );
                             retry_meta.increment_retry(e.to_string());
 
-                            if let Err(error) = self.dao
+                            if let Err(error) = self
+                                .dao
                                 .update_payout_retry(payout_id, retry_meta, true)
                                 .await
                             {
@@ -570,7 +572,7 @@ impl<
                                     "Error while trying to mark payout request failed but retriable. It might stuck in In Progress status"
                                 );
                             };
-                        }
+                        },
                     }
                 },
             }
