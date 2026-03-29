@@ -2,6 +2,7 @@ mod types;
 
 use std::time::Duration;
 
+use kalatori_client::types::ChainType;
 use reqwest::header::{
     HeaderMap,
     HeaderName,
@@ -16,12 +17,20 @@ use serde::{
 
 use types::*;
 
-pub use types::BungeeSwapStatus;
-
+use crate::clients::RawSwapDetails;
+use crate::clients::swaps::{
+    SwapsClient,
+    SwapsClientError,
+};
 use crate::configs::{
     BungeeApiConfig,
     IntegratorFees,
     SwapsConfig,
+};
+use crate::types::{
+    SwapChainType,
+    SwapDetails,
+    SwapExecutorType,
 };
 
 // Use without API Key
@@ -42,8 +51,21 @@ pub struct BungeeRawTransaction {
     pub sign_typed_data: SignTypedData,
 }
 
+impl TryFrom<RawSwapDetails> for BungeeRawTransaction {
+    type Error = SwapsClientError;
+
+    fn try_from(value: RawSwapDetails) -> Result<Self, Self::Error> {
+        let RawSwapDetails::Bungee(raw_transaction) = value else {
+            return Err(SwapsClientError::WrongRawTransaction)
+        };
+
+        Ok(raw_transaction)
+    }
+}
+
 pub type BungeeQuoteDetails = BungeeRawTransaction;
 
+#[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BungeeApiResponse<T> {
@@ -57,27 +79,9 @@ struct BungeeApiResponse<T> {
     status_code: Option<u32>,
 }
 
-impl<T> From<BungeeApiResponse<T>> for BungeeClientError {
-    fn from(value: BungeeApiResponse<T>) -> Self {
-        Self::BungeeError {
-            message: value
-                .message
-                .unwrap_or("Error message is not provided in response".to_string()),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum BungeeClientError {
-    #[error("Bungee API Error")]
-    BungeeError { message: String },
-    #[error("Request failed")]
-    RequestFailed,
-}
-
-impl From<reqwest::Error> for BungeeClientError {
-    fn from(_value: reqwest::Error) -> Self {
-        Self::RequestFailed
+impl<T> From<BungeeApiResponse<T>> for SwapsClientError {
+    fn from(_value: BungeeApiResponse<T>) -> Self {
+        Self::UnknownApiError
     }
 }
 
@@ -104,7 +108,7 @@ impl BungeeClient {
         url: &str,
         method: reqwest::Method,
         params: T,
-    ) -> Result<R, BungeeClientError>
+    ) -> Result<R, SwapsClientError>
     where
         T: Serialize + std::fmt::Debug,
         R: DeserializeOwned + std::fmt::Debug,
@@ -167,7 +171,7 @@ impl BungeeClient {
                 "Error while trying to deserialize response from Bungee"
             );
 
-            BungeeClientError::RequestFailed
+            SwapsClientError::UnknownApiError
         })?;
 
         tracing::trace!(
@@ -180,11 +184,25 @@ impl BungeeClient {
             _ => Err(response.into()),
         }
     }
+}
 
-    pub async fn get_swap_quote(
+impl SwapsClient for BungeeClient {
+    type GetQuoteParams = QuoteRequest;
+    type GetQuoteResponse = QuoteResponse;
+    type RawTransactionDetails = BungeeRawTransaction;
+    type SwapStatus = BungeeSwapStatus;
+
+    const CROSS_CHAIN_SUPPORTED: bool = true;
+    const EXECUTOR: SwapExecutorType = SwapExecutorType::Bungee;
+    const GASLESS: bool = false;
+    const SINGLE_CHAIN_SUPPORTED: bool = true;
+    const SUPPORTED_CHAINS: &[ChainType] = &[ChainType::Polygon];
+    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[];
+
+    async fn get_quote_internal(
         &self,
-        data: QuoteRequest,
-    ) -> Result<QuoteResponse, BungeeClientError> {
+        data: Self::GetQuoteParams,
+    ) -> Result<Self::GetQuoteResponse, SwapsClientError> {
         self.send_request(
             "/api/v1/bungee/quote",
             reqwest::Method::GET,
@@ -194,27 +212,46 @@ impl BungeeClient {
         // TODO: check if `auto_quote` is empty, if so return an error
     }
 
-    pub async fn submit_signed_request(
+    async fn submit_transaction_internal(
         &self,
-        data: SubmitOrderRequest,
-    ) -> Result<SubmitOrderResponse, BungeeClientError> {
-        self.send_request(
-            "/api/v1/bungee/submit",
-            reqwest::Method::POST,
-            data,
-        )
-        .await
+        data: &SwapDetails,
+    ) -> Result<super::TransactionHash, SwapsClientError> {
+        let params: SubmitOrderRequest = data.clone().try_into()?;
+
+        let result: SubmitOrderResponse = self
+            .send_request(
+                "/api/v1/bungee/submit",
+                reqwest::Method::POST,
+                params,
+            )
+            .await?;
+
+        Ok(result.request_hash)
     }
 
-    pub async fn get_swap_status(
+    async fn get_transaction_status_internal(
         &self,
-        data: GetSwapStatusRequest,
-    ) -> Result<Vec<GetSwapStatusResponse>, BungeeClientError> {
-        self.send_request(
-            "/api/v1/bungee/status",
-            reqwest::Method::GET,
-            data,
-        )
-        .await
+        data: &SwapDetails,
+    ) -> Result<Self::SwapStatus, SwapsClientError> {
+        let params = GetSwapStatusRequest {
+            // TODO: clone can be avoided
+            request_hash: self
+                .extract_transaction_hash(data)?
+                .clone(),
+        };
+
+        let result: Vec<GetSwapStatusResponse> = self
+            .send_request(
+                "/api/v1/bungee/status",
+                reqwest::Method::GET,
+                params,
+            )
+            .await?;
+
+        let Some(trans) = result.first() else {
+            return Err(SwapsClientError::UnknownApiError)
+        };
+
+        Ok(trans.bungee_status_code)
     }
 }

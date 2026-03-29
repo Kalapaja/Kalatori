@@ -1,29 +1,13 @@
-mod across;
-mod bungee;
-mod zeroex;
+mod swaps;
 
 #[cfg(test)]
-pub use across::default_across_raw_transaction;
-pub use across::{
+pub use swaps::default_across_raw_transaction;
+pub use swaps::{
     AcrossClient,
-    AcrossClientError,
-    AcrossQuoteDetails,
-    AcrossRawTransaction,
-    AcrossSwapStatus,
-};
-
-pub use bungee::{
     BungeeClient,
-    BungeeClientError,
-    BungeeQuoteDetails,
-    BungeeRawTransaction,
-    BungeeSwapStatus,
-};
-
-pub use zeroex::{
+    ExecutorSwapStatus,
+    RawSwapDetails,
+    SwapsClient,
+    SwapsClientError,
     ZeroExClient,
-    ZeroExClientError,
-    ZeroExQuoteDetails,
-    ZeroExRawTransaction,
-    ZeroExTransactionStatus,
 };

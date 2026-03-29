@@ -8,6 +8,7 @@ use alloy::providers::{
     ProviderBuilder,
     RootProvider,
 };
+use kalatori_client::types::ChainType;
 use secrecy::{
     ExposeSecret,
     SecretString,
@@ -25,6 +26,18 @@ use crate::configs::{
     IntegratorFees,
     SwapsConfig,
 };
+use crate::types::{
+    SwapChainType,
+    SwapDetails,
+    SwapExecutorType,
+};
+
+use super::{
+    ExecutorSwapStatus,
+    RawSwapDetails,
+    SwapsClient,
+    SwapsClientError,
+};
 
 use types::*;
 
@@ -35,6 +48,16 @@ pub enum ZeroExTransactionStatus {
     NotFound,
     Executed,
     FailedOnChain,
+}
+
+impl From<ZeroExTransactionStatus> for ExecutorSwapStatus {
+    fn from(value: ZeroExTransactionStatus) -> Self {
+        match value {
+            ZeroExTransactionStatus::NotFound => Self::Pending,
+            ZeroExTransactionStatus::Executed => Self::Executed,
+            ZeroExTransactionStatus::FailedOnChain => Self::Failed,
+        }
+    }
 }
 
 #[serde_as]
@@ -70,22 +93,23 @@ pub struct ZeroExRawTransaction {
     pub raw_transaction: RawTransactionData,
 }
 
-pub type ZeroExQuoteDetails = ZeroExRawTransaction;
+impl TryFrom<RawSwapDetails> for ZeroExRawTransaction {
+    type Error = SwapsClientError;
 
-#[derive(Debug, thiserror::Error)]
-pub enum ZeroExClientError {
-    #[error("0x API Error")]
-    ZeroExError { code: String, message: String },
-    #[error("Request failed")]
-    RequestFailed,
+    fn try_from(value: RawSwapDetails) -> Result<Self, Self::Error> {
+        let RawSwapDetails::ZeroEx(raw_transaction) = value else {
+            return Err(SwapsClientError::WrongRawTransaction)
+        };
+
+        Ok(raw_transaction)
+    }
 }
 
-impl From<ZeroExErrorResponse> for ZeroExClientError {
-    fn from(value: ZeroExErrorResponse) -> Self {
-        Self::ZeroExError {
-            code: value.name,
-            message: value.message,
-        }
+pub type ZeroExQuoteDetails = ZeroExRawTransaction;
+
+impl From<ZeroExErrorResponse> for SwapsClientError {
+    fn from(_value: ZeroExErrorResponse) -> Self {
+        Self::UnknownApiError
     }
 }
 
@@ -112,12 +136,25 @@ impl ZeroExClient {
             api_key: config.zero_ex.api_key.clone(),
         }
     }
+}
 
-    #[tracing::instrument(skip(self))]
-    pub async fn get_quote(
+impl SwapsClient for ZeroExClient {
+    type GetQuoteParams = ZeroExGetQuoteRequest;
+    type GetQuoteResponse = ZeroExGetQuoteResponse;
+    type RawTransactionDetails = ZeroExRawTransaction;
+    type SwapStatus = ZeroExTransactionStatus;
+
+    const CROSS_CHAIN_SUPPORTED: bool = false;
+    const EXECUTOR: SwapExecutorType = SwapExecutorType::ZeroEx;
+    const GASLESS: bool = false;
+    const SINGLE_CHAIN_SUPPORTED: bool = true;
+    const SUPPORTED_CHAINS: &[ChainType] = &[ChainType::Polygon];
+    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[];
+
+    async fn get_quote_internal(
         &self,
-        data: ZeroExGetQuoteRequest,
-    ) -> Result<ZeroExGetQuoteResponse, ZeroExClientError> {
+        data: Self::GetQuoteParams,
+    ) -> Result<Self::GetQuoteResponse, SwapsClientError> {
         let response = self
             .client
             .get("https://api.0x.org/swap/allowance-holder/quote")
@@ -131,19 +168,19 @@ impl ZeroExClient {
             .await
             .map_err(|e| {
                 tracing::warn!(error = ?e, "Error while send request to 0x API");
-                ZeroExClientError::RequestFailed
+                SwapsClientError::UnknownApiError
             })?;
 
         let text = response.text().await.map_err(|e| {
             tracing::warn!(error = ?e, "Failed to extract response text from 0x response");
-            ZeroExClientError::RequestFailed
+            SwapsClientError::UnknownApiError
         })?;
 
         tracing::trace!(%text, "Got raw text response from 0x API");
 
         let result = serde_json::from_str(&text).map_err(|e| {
             tracing::warn!(error = ?e, "Failed to deserialize response from 0x API");
-            ZeroExClientError::RequestFailed
+            SwapsClientError::UnknownApiError
         })?;
 
         match result {
@@ -152,14 +189,15 @@ impl ZeroExClient {
         }
     }
 
-    #[tracing::instrument(skip(self))]
-    pub async fn submit_transaction(
+    async fn submit_transaction_internal(
         &self,
-        transaction: String,
-    ) -> Result<String, ZeroExClientError> {
-        let transaction_bytes = const_hex::decode(&transaction).map_err(|e| {
+        data: &SwapDetails,
+    ) -> Result<super::TransactionHash, SwapsClientError> {
+        let transaction = self.extract_signature(data)?;
+
+        let transaction_bytes = const_hex::decode(transaction).map_err(|e| {
             tracing::warn!(error = ?e, "Failed to decode 0x transaction");
-            ZeroExClientError::RequestFailed
+            SwapsClientError::UnknownApiError
         })?;
 
         let submitted = self
@@ -168,7 +206,7 @@ impl ZeroExClient {
             .await
             .map_err(|e| {
                 tracing::warn!(error = ?e, "Failed to send 0x transaction to chain");
-                ZeroExClientError::RequestFailed
+                SwapsClientError::UnknownApiError
             })?;
 
         let tx_hash = const_hex::encode_prefixed(submitted.tx_hash());
@@ -176,19 +214,20 @@ impl ZeroExClient {
         Ok(tx_hash)
     }
 
-    #[tracing::instrument(skip(self))]
-    pub async fn get_transaction_status(
+    async fn get_transaction_status_internal(
         &self,
-        transaction_hash: &str,
-    ) -> Result<ZeroExTransactionStatus, ZeroExClientError> {
+        data: &SwapDetails,
+    ) -> Result<Self::SwapStatus, SwapsClientError> {
+        let transaction_hash = self.extract_transaction_hash(data)?;
+
         let bytes = const_hex::decode(transaction_hash).map_err(|e| {
             tracing::warn!(error = ?e, "Failed to decode 0x transaction");
-            ZeroExClientError::RequestFailed
+            SwapsClientError::UnknownApiError
         })?;
 
         let tx_hash = B256::try_from(bytes.as_slice()).map_err(|e| {
             tracing::warn!(error = ?e, "Failed to decode 0x transaction");
-            ZeroExClientError::RequestFailed
+            SwapsClientError::UnknownApiError
         })?;
 
         let result = self
@@ -197,7 +236,7 @@ impl ZeroExClient {
             .await
             .map_err(|e| {
                 tracing::warn!(error = ?e, "Chain request to get 0x transaction status failed");
-                ZeroExClientError::RequestFailed
+                SwapsClientError::UnknownApiError
             })?
             .map(|receipt| receipt.status());
 

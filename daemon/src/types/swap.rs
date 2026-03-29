@@ -16,12 +16,10 @@ use sqlx::Type;
 use uuid::Uuid;
 
 use crate::clients::{
-    AcrossQuoteDetails,
-    AcrossRawTransaction,
-    BungeeQuoteDetails,
-    BungeeRawTransaction,
-    ZeroExQuoteDetails,
-    ZeroExRawTransaction,
+    RawSwapDetails,
+    // AcrossRawTransaction,
+    // BungeeRawTransaction,
+    // ZeroExRawTransaction,
 };
 
 use super::ChainType;
@@ -374,15 +372,6 @@ pub fn default_create_swap_data(invoice_id: Uuid) -> CreateSwapData {
     }
 }
 
-#[expect(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum InternalQuoteDetails {
-    Across(AcrossQuoteDetails),
-    Bungee(BungeeQuoteDetails),
-    ZeroEx(ZeroExQuoteDetails),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwapQuote {
     pub swap_executor: SwapExecutorType,
@@ -390,70 +379,24 @@ pub struct SwapQuote {
     pub estimated_to_amount_units: u128,
     pub estimated_to_amount: Decimal,
     pub valid_till: DateTime<Utc>,
-    pub quote_details: InternalQuoteDetails,
+    pub quote_details: RawSwapDetails,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcrossSwapDetails {
+pub struct SwapDetails {
     pub id: String,
-    pub raw_transaction: AcrossRawTransaction,
-    pub transaction_hash: Option<String>, // hash of the sent transaction
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BungeeSwapDetails {
-    pub id: String,
-    pub raw_transaction: BungeeRawTransaction,
+    pub raw_transaction: RawSwapDetails,
     pub signature: Option<String>,
     pub transaction_hash: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ZeroExSwapDetails {
-    pub id: String,
-    pub raw_transaction: ZeroExRawTransaction,
-    // Actually we store fully signed transaction under this field,
-    // just use the same name for structure consistency
-    // which also simplifies DAO and API
-    pub signature: Option<String>,
-    pub transaction_hash: Option<String>,
-}
-
-#[expect(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum InternalSwapDetails {
-    Across(AcrossSwapDetails),
-    Bungee(BungeeSwapDetails),
-    ZeroEx(ZeroExSwapDetails),
-}
-
-impl From<SwapQuote> for InternalSwapDetails {
+impl From<SwapQuote> for SwapDetails {
     fn from(value: SwapQuote) -> Self {
-        match value.quote_details {
-            InternalQuoteDetails::Across(details) => {
-                InternalSwapDetails::Across(AcrossSwapDetails {
-                    id: value.id,
-                    raw_transaction: details,
-                    transaction_hash: None,
-                })
-            },
-            InternalQuoteDetails::Bungee(details) => {
-                InternalSwapDetails::Bungee(BungeeSwapDetails {
-                    id: value.id,
-                    raw_transaction: details,
-                    signature: None,
-                    transaction_hash: None,
-                })
-            },
-            InternalQuoteDetails::ZeroEx(details) => {
-                InternalSwapDetails::ZeroEx(ZeroExSwapDetails {
-                    id: value.id,
-                    raw_transaction: details,
-                    signature: None,
-                    transaction_hash: None,
-                })
-            },
+        SwapDetails {
+            id: value.id,
+            raw_transaction: value.quote_details,
+            signature: None,
+            transaction_hash: None,
         }
     }
 }
@@ -464,7 +407,7 @@ pub struct Swap {
     pub request: CreateSwapData,
     pub status: SwapStatus,
     pub estimated_to_amount: Decimal, // calculated by swap executor
-    pub swap_details: InternalSwapDetails,
+    pub swap_details: SwapDetails,
     pub created_at: DateTime<Utc>,
     pub submitted_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -519,11 +462,14 @@ pub fn default_swap(invoice_id: Uuid) -> Swap {
         request: default_create_swap_data(invoice_id),
         status: SwapStatus::Created,
         estimated_to_amount: Decimal::new(10, 0),
-        swap_details: InternalSwapDetails::Across(AcrossSwapDetails {
+        swap_details: SwapDetails {
             id: "".to_string(),
-            raw_transaction: crate::clients::default_across_raw_transaction(),
+            raw_transaction: RawSwapDetails::Across(
+                crate::clients::default_across_raw_transaction(),
+            ),
+            signature: None,
             transaction_hash: None,
-        }),
+        },
         created_at: Utc::now(),
         submitted_at: None,
         finished_at: None,
@@ -541,7 +487,7 @@ pub struct PublicSwap {
     pub to_chain_id: u64,
     pub status: SwapStatus,
     pub estimated_to_amount: Decimal, // calculated by swap executor
-    pub swap_details: InternalSwapDetails,
+    pub swap_details: SwapDetails,
     pub created_at: DateTime<Utc>,
     pub valid_till: DateTime<Utc>,
 }

@@ -11,11 +11,14 @@ use serde_with::{
 
 use crate::types::{
     CreateSwapData,
-    InternalQuoteDetails,
     SwapExecutorType,
     SwapQuote,
 };
 
+use super::super::{
+    ExecutorSwapStatus,
+    RawSwapDetails,
+};
 use super::AcrossQuoteDetails;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,6 +45,17 @@ pub enum AcrossSwapStatus {
     // Deposit has expired and the depositor has been successfully refunded
     // on the originChain.
     Refunded,
+}
+
+impl From<AcrossSwapStatus> for ExecutorSwapStatus {
+    fn from(value: AcrossSwapStatus) -> Self {
+        match value {
+            AcrossSwapStatus::Filled => Self::Executed,
+            AcrossSwapStatus::Pending => Self::Pending,
+            AcrossSwapStatus::Expired => Self::Failed,
+            AcrossSwapStatus::Refunded => Self::Failed,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -168,11 +182,12 @@ impl From<SwapApprovalResponse> for SwapQuote {
             estimated_to_amount: Decimal::ZERO,
             // TODO: ensure unwrap is safe here?
             valid_till: DateTime::from_timestamp_secs(value.quote_expiry_timestamp).unwrap(),
-            quote_details: InternalQuoteDetails::Across(details),
+            quote_details: RawSwapDetails::Across(details),
         }
     }
 }
 
+#[expect(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapStatusRequest {
@@ -217,6 +232,7 @@ pub struct AcrossApiError {
     pub id: Option<String>,
 }
 
+#[expect(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetDepositsRequest {

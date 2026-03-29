@@ -14,11 +14,11 @@ use serde_with::{
 
 use crate::types::{
     CreateSwapData,
-    InternalQuoteDetails,
     SwapExecutorType,
     SwapQuote,
 };
 
+use super::super::RawSwapDetails;
 use super::ZeroExQuoteDetails;
 
 #[serde_as]
@@ -117,7 +117,7 @@ impl From<ZeroExGetQuoteResponse> for SwapQuote {
             // to make this field optional
             estimated_to_amount: Decimal::ZERO,
             valid_till: Utc::now() + TimeDelta::minutes(5),
-            quote_details: InternalQuoteDetails::ZeroEx(details),
+            quote_details: RawSwapDetails::ZeroEx(details),
         }
     }
 }
@@ -130,6 +130,7 @@ pub struct ZeroExErrorResponseData {
     pub details: Option<serde_json::Value>,
 }
 
+#[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ZeroExErrorResponse {
     pub name: String,

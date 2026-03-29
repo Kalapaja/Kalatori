@@ -2,6 +2,7 @@ mod types;
 
 use std::time::Duration;
 
+use kalatori_client::types::ChainType;
 use serde::de::DeserializeOwned;
 use serde::{
     Deserialize,
@@ -12,10 +13,21 @@ use types::*;
 
 pub use types::AcrossSwapStatus;
 
+use crate::clients::swaps::{
+    SwapsClient,
+    SwapsClientError,
+};
 use crate::configs::{
     IntegratorFees,
     SwapsConfig,
 };
+use crate::types::{
+    SwapChainType,
+    SwapDetails,
+    SwapExecutorType,
+};
+
+use super::RawSwapDetails;
 
 const ACROSS_BASE_URL: &str = "https://app.across.to";
 const ACROSS_CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -25,6 +37,18 @@ pub struct AcrossRawTransaction {
     pub transaction: SwapTransaction,
     #[serde(default)]
     pub approval_transactions: Vec<ApprovalTransaction>,
+}
+
+impl TryFrom<RawSwapDetails> for AcrossRawTransaction {
+    type Error = SwapsClientError;
+
+    fn try_from(value: RawSwapDetails) -> Result<Self, Self::Error> {
+        let RawSwapDetails::Across(raw_transaction) = value else {
+            return Err(SwapsClientError::WrongRawTransaction)
+        };
+
+        Ok(raw_transaction)
+    }
 }
 
 #[cfg(test)]
@@ -45,25 +69,9 @@ pub fn default_across_raw_transaction() -> AcrossRawTransaction {
 
 pub type AcrossQuoteDetails = AcrossRawTransaction;
 
-#[derive(Debug, thiserror::Error)]
-pub enum AcrossClientError {
-    #[error("Across API Error with code")]
-    AcrossError { message: String },
-    #[error("Request failed")]
-    RequestFailed,
-}
-
-impl From<AcrossApiError> for AcrossClientError {
-    fn from(value: AcrossApiError) -> Self {
-        Self::AcrossError {
-            message: value.message,
-        }
-    }
-}
-
-impl From<reqwest::Error> for AcrossClientError {
-    fn from(_value: reqwest::Error) -> Self {
-        Self::RequestFailed
+impl From<AcrossApiError> for SwapsClientError {
+    fn from(_value: AcrossApiError) -> Self {
+        Self::UnknownApiError
     }
 }
 
@@ -87,7 +95,7 @@ impl AcrossClient {
         &self,
         url: &str,
         params: T,
-    ) -> Result<R, AcrossClientError>
+    ) -> Result<R, SwapsClientError>
     where
         T: Serialize + std::fmt::Debug,
         R: DeserializeOwned + std::fmt::Debug,
@@ -122,7 +130,7 @@ impl AcrossClient {
                 "Error while trying to deserialize response from across"
             );
 
-            AcrossClientError::RequestFailed
+            SwapsClientError::UnknownApiError
         })?;
 
         tracing::trace!(
@@ -135,29 +143,45 @@ impl AcrossClient {
             AcrossApiResponse::Err(e) => Err(e.into()),
         }
     }
+}
 
-    pub async fn get_swap_approval(
+impl SwapsClient for AcrossClient {
+    type GetQuoteParams = SwapApprovalRequest;
+    type GetQuoteResponse = SwapApprovalResponse;
+    type RawTransactionDetails = AcrossRawTransaction;
+    type SwapStatus = AcrossSwapStatus;
+
+    const CROSS_CHAIN_SUPPORTED: bool = true;
+    const EXECUTOR: SwapExecutorType = SwapExecutorType::Across;
+    const GASLESS: bool = false;
+    const SINGLE_CHAIN_SUPPORTED: bool = false;
+    const SUPPORTED_CHAINS: &[ChainType] = &[ChainType::Polygon];
+    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[];
+
+    async fn get_quote_internal(
         &self,
-        data: SwapApprovalRequest,
-    ) -> Result<SwapApprovalResponse, AcrossClientError> {
+        data: Self::GetQuoteParams,
+    ) -> Result<Self::GetQuoteResponse, SwapsClientError> {
         self.send_request("/api/swap/approval", data)
             .await
     }
 
-    pub async fn get_swap_status(
+    async fn submit_transaction_internal(
         &self,
-        data: SwapStatusRequest,
-    ) -> Result<SwapStatusResponse, AcrossClientError> {
-        self.send_request("/api/deposit/status", data)
-            .await
+        _params: &SwapDetails,
+    ) -> Result<super::TransactionHash, SwapsClientError> {
+        // TODO: add more explicit error or implement server-side submission
+        Err(SwapsClientError::UnknownApiError)
     }
 
-    #[expect(dead_code)]
-    pub async fn get_deposits_by_address(
+    async fn get_transaction_status_internal(
         &self,
-        data: GetDepositsRequest,
-    ) -> Result<Vec<GetDepositsResponse>, AcrossClientError> {
-        self.send_request("/api/deposits", data)
-            .await
+        data: &SwapDetails,
+    ) -> Result<Self::SwapStatus, SwapsClientError> {
+        let result: SwapStatusResponse = self
+            .send_request("/api/deposits", data)
+            .await?;
+
+        Ok(result.status)
     }
 }
