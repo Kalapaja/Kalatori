@@ -26,6 +26,8 @@ pub use across::{
     AcrossRawTransaction,
 };
 pub use bungee::BungeeClient;
+#[cfg(test)]
+pub use zeroex::default_zero_ex_raw_transaction;
 pub use zeroex::{
     ZeroExClient,
     ZeroExRawTransaction,
@@ -52,8 +54,7 @@ pub enum ExecutorSwapStatus {
     Failed,
 }
 
-#[expect(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwapsClientError {
     DirectionIsNotSupported {
         from_chain: SwapChainType,

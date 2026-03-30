@@ -187,31 +187,27 @@ impl From<SwapApprovalResponse> for SwapQuote {
     }
 }
 
-#[expect(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SwapStatusRequest {
-    pub deposit_txn_ref: String,
+pub struct SwapStatusRequest<'a> {
+    pub deposit_txn_ref: &'a str,
 }
 
-impl From<&str> for SwapStatusRequest {
-    fn from(value: &str) -> Self {
-        Self {
-            deposit_txn_ref: value.to_string(),
-        }
-    }
-}
-
-#[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapStatusResponse {
     pub status: AcrossSwapStatus,
+    #[expect(dead_code)]
     pub origin_chain_id: u64,
+    #[expect(dead_code)]
     pub deposit_id: String,
+    #[expect(dead_code)]
     pub deposit_txn_ref: String,
+    #[expect(dead_code)]
     pub fill_txn_ref: Option<String>,
+    #[expect(dead_code)]
     pub destination_chain_id: u64,
+    #[expect(dead_code)]
     pub deposit_refund_txn_ref: Option<String>,
 }
 
