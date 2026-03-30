@@ -53,6 +53,7 @@ pub enum ExecutorSwapStatus {
 }
 
 #[expect(dead_code)]
+#[derive(Debug)]
 pub enum SwapsClientError {
     DirectionIsNotSupported {
         from_chain: SwapChainType,

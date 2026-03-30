@@ -156,7 +156,33 @@ impl SwapsClient for AcrossClient {
     const GASLESS: bool = false;
     const SINGLE_CHAIN_SUPPORTED: bool = false;
     const SUPPORTED_CHAINS: &[ChainType] = &[ChainType::Polygon];
-    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[];
+    // https://docs.across.to/chains-and-contracts
+    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[
+        SwapChainType::Ethereum,
+        SwapChainType::Arbitrum,
+        SwapChainType::Base,
+        SwapChainType::Blast,
+        SwapChainType::BnbSmartChain,
+        SwapChainType::HyperEvm,
+        SwapChainType::Ink,
+        SwapChainType::Lens,
+        SwapChainType::Linea,
+        SwapChainType::Lisk,
+        SwapChainType::MegaEth,
+        SwapChainType::Mode,
+        SwapChainType::Monad,
+        SwapChainType::Optimism,
+        SwapChainType::Plasma,
+        SwapChainType::Polygon,
+        SwapChainType::Scroll,
+        SwapChainType::Solana,
+        SwapChainType::Soneium,
+        SwapChainType::Tempo,
+        SwapChainType::Unichain,
+        SwapChainType::WorldChain,
+        SwapChainType::ZkSync,
+        SwapChainType::Zora,
+    ];
 
     async fn get_quote_internal(
         &self,

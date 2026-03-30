@@ -197,7 +197,38 @@ impl SwapsClient for BungeeClient {
     const GASLESS: bool = false;
     const SINGLE_CHAIN_SUPPORTED: bool = true;
     const SUPPORTED_CHAINS: &[ChainType] = &[ChainType::Polygon];
-    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[];
+    // https://docs.bungee.exchange/overview/chain-support
+    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[
+        SwapChainType::Arbitrum,
+        SwapChainType::Avalanche,
+        SwapChainType::Base,
+        SwapChainType::Berachain,
+        SwapChainType::BnbSmartChain,
+        SwapChainType::Blast,
+        SwapChainType::Ethereum,
+        // SwapChainType::Fantom,
+        // SwapChainType::Gnosis,
+        SwapChainType::HyperEvm,
+        SwapChainType::Ink,
+        // SwapChainType::Katana,
+        SwapChainType::Linea,
+        SwapChainType::Mantle,
+        SwapChainType::MegaEth,
+        SwapChainType::Mode,
+        SwapChainType::Monad,
+        SwapChainType::Optimism,
+        SwapChainType::Plasma,
+        // SwapChainType::Plume,
+        SwapChainType::Polygon,
+        SwapChainType::Scroll,
+        // SwapChainType::Sei,
+        SwapChainType::Solana,
+        SwapChainType::Soneium,
+        SwapChainType::Sonic,
+        // SwapChainType::Tron,
+        SwapChainType::Unichain,
+        SwapChainType::WorldChain,
+    ];
 
     async fn get_quote_internal(
         &self,

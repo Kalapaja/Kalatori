@@ -149,7 +149,31 @@ impl SwapsClient for ZeroExClient {
     const GASLESS: bool = false;
     const SINGLE_CHAIN_SUPPORTED: bool = true;
     const SUPPORTED_CHAINS: &[ChainType] = &[ChainType::Polygon];
-    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[];
+    // https://docs.0x.org/docs/introduction/supported-chains
+    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[
+        SwapChainType::Ethereum,
+        SwapChainType::Abstract,
+        SwapChainType::Arbitrum,
+        SwapChainType::Avalanche,
+        SwapChainType::Base,
+        SwapChainType::Berachain,
+        SwapChainType::Blast,
+        SwapChainType::BnbSmartChain,
+        SwapChainType::HyperEvm,
+        SwapChainType::Ink,
+        SwapChainType::Linea,
+        SwapChainType::Mantle,
+        SwapChainType::Mode,
+        SwapChainType::Monad,
+        SwapChainType::Optimism,
+        SwapChainType::Plasma,
+        SwapChainType::Polygon,
+        SwapChainType::Scroll,
+        SwapChainType::Sonic,
+        SwapChainType::Tempo,
+        SwapChainType::Unichain,
+        SwapChainType::WorldChain,
+    ];
 
     async fn get_quote_internal(
         &self,
