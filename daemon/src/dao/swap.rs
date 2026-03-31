@@ -17,10 +17,10 @@ use crate::types::{
     CreateFrontEndSwapParams,
     CreateSwapData,
     FrontEndSwap,
-    InternalSwapDetails,
     ListSwapsParams,
     Swap,
     SwapChainType,
+    SwapDetails,
     SwapDirection,
     SwapExecutorType,
     SwapStatus,
@@ -99,7 +99,7 @@ struct SwapRow {
     request: CreateSwapDataRow,
     status: SwapStatus,
     estimated_to_amount: Text<Decimal>, // approximate
-    swap_details: Json<InternalSwapDetails>,
+    swap_details: Json<SwapDetails>,
     created_at: DateTime<Utc>,
     submitted_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
@@ -727,6 +727,7 @@ impl<T: DaoExecutor + 'static> DaoSwapMethods for T {}
 mod tests {
     use rust_decimal::Decimal;
 
+    use crate::clients::RawSwapDetails;
     use crate::dao::create_test_dao;
     use crate::dao::invoice::DaoInvoiceMethods;
     use crate::types::{
@@ -855,10 +856,15 @@ mod tests {
             submitted_at: Some(Utc::now()),
             ..swap
         };
-        let InternalSwapDetails::Across(ref mut details) = expected_submitted.swap_details else {
+        let RawSwapDetails::Across(ref _details) = expected_submitted
+            .swap_details
+            .raw_transaction
+        else {
             panic!("Not across internal swap details");
         };
-        details.transaction_hash = Some("transaction_hash123".to_string());
+        expected_submitted
+            .swap_details
+            .transaction_hash = Some("transaction_hash123".to_string());
         expected_submitted.trunc_timestamps();
 
         assert_eq!(submitted, expected_submitted);

@@ -1,10 +1,6 @@
 use uuid::Uuid;
 
-use crate::clients::{
-    AcrossClientError,
-    BungeeClientError,
-    ZeroExClientError,
-};
+use crate::clients::SwapsClientError;
 use crate::dao::{
     DAO,
     DaoInterface,
@@ -12,11 +8,9 @@ use crate::dao::{
 };
 use crate::types::{
     CreateSwapData,
-    InternalSwapDetails,
     SubmittedSwapParams,
     Swap,
     SwapExecutorType,
-    SwapQuote,
     SwapSignatureParams,
 };
 
@@ -31,22 +25,8 @@ pub enum SwapsExecutorError {
     DatabaseError,
 }
 
-impl From<AcrossClientError> for SwapsExecutorError {
-    fn from(_value: AcrossClientError) -> Self {
-        // TODO: refactor
-        SwapsExecutorError::QuoteRequestFailed
-    }
-}
-
-impl From<BungeeClientError> for SwapsExecutorError {
-    fn from(_value: BungeeClientError) -> Self {
-        // TODO: refactor
-        SwapsExecutorError::QuoteRequestFailed
-    }
-}
-
-impl From<ZeroExClientError> for SwapsExecutorError {
-    fn from(_value: ZeroExClientError) -> Self {
+impl From<SwapsClientError> for SwapsExecutorError {
+    fn from(_value: SwapsClientError) -> Self {
         // TODO: refactor
         SwapsExecutorError::QuoteRequestFailed
     }
@@ -75,26 +55,10 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
     ) -> Result<Swap, SwapsExecutorError> {
         let quote_request_data = data.clone();
 
-        let quote: SwapQuote = match data.swap_executor {
-            SwapExecutorType::Across => self
-                .clients
-                .across_client
-                .get_swap_approval(quote_request_data.into())
-                .await?
-                .into(),
-            SwapExecutorType::Bungee => self
-                .clients
-                .bungee_client
-                .get_swap_quote(quote_request_data.into())
-                .await?
-                .into(),
-            SwapExecutorType::ZeroEx => self
-                .clients
-                .zero_ex_client
-                .get_quote(quote_request_data.into())
-                .await?
-                .into(),
-        };
+        let quote = self
+            .clients
+            .get_quote(data.swap_executor, quote_request_data)
+            .await?;
 
         let swap = Swap::new(data, quote);
 
@@ -146,29 +110,19 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
                 _ => SwapsExecutorError::DatabaseError,
             })?;
 
-        let transaction_hash = match &swap.swap_details {
-            InternalSwapDetails::Bungee(details) => {
-                self.clients
-                    .bungee_client
-                    .submit_signed_request(details.clone().into())
-                    // TODO: In case of error need to check an error thoroughly.
-                    // If it's problem with signature, we can mark it as failed.
-                    // If it's some kind of network error, we can retry it.
-                    // In any way we have to understand if it was received by bungee
-                    // and is being processed to avoid double-payments or just missing
-                    // the transaction.
-                    .await?
-                    .request_hash
-            },
-            InternalSwapDetails::ZeroEx(details) => {
-                self.clients
-                    .zero_ex_client
-                    // TODO: unwrap should be safe here, but it's better to ensure it somehow
-                    .submit_transaction(details.signature.clone().unwrap())
-                    .await?
-            },
-            InternalSwapDetails::Across(_) => unreachable!(),
-        };
+        // TODO: In case of error need to check an error thoroughly.
+        // If it's problem with signature, we can mark it as failed.
+        // If it's some kind of network error, we can retry it.
+        // In any way we have to understand if it was received by bungee
+        // and is being processed to avoid double-payments or just missing
+        // the transaction.
+        let transaction_hash = self
+            .clients
+            .submit_transaction(
+                swap.request.swap_executor,
+                &swap.swap_details,
+            )
+            .await?;
 
         self.dao
             .update_swap_submitted_with_hash(swap_signature.swap_id, transaction_hash)

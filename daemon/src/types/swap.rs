@@ -16,12 +16,10 @@ use sqlx::Type;
 use uuid::Uuid;
 
 use crate::clients::{
-    AcrossQuoteDetails,
-    AcrossRawTransaction,
-    BungeeQuoteDetails,
-    BungeeRawTransaction,
-    ZeroExQuoteDetails,
-    ZeroExRawTransaction,
+    RawSwapDetails,
+    // AcrossRawTransaction,
+    // BungeeRawTransaction,
+    // ZeroExRawTransaction,
 };
 
 use super::ChainType;
@@ -111,8 +109,11 @@ impl SwapExecutorType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub enum SwapChainType {
+    Abstract,
     Arbitrum,
+    Avalanche,
     Base,
+    Berachain,
     Blast,
     BnbSmartChain,
     Ethereum,
@@ -122,14 +123,17 @@ pub enum SwapChainType {
     Linea,
     Lisk,
     MegaEth,
+    Mantle,
     Mode,
     Monad,
     Optimism,
     Plasma,
     Polygon,
     Scroll,
+    Sonic,
     Soneium,
     Solana,
+    Tempo,
     Unichain,
     WorldChain,
     ZkSync,
@@ -154,8 +158,11 @@ impl TryFrom<u64> for SwapChainType {
         use SwapChainType::*;
 
         match value {
+            2741 => Ok(Abstract),
             42161 => Ok(Arbitrum),
+            43114 => Ok(Avalanche),
             8453 => Ok(Base),
+            80094 => Ok(Berachain),
             81457 => Ok(Blast),
             56 => Ok(BnbSmartChain),
             1 => Ok(Ethereum),
@@ -165,17 +172,20 @@ impl TryFrom<u64> for SwapChainType {
             59144 => Ok(Linea),
             1135 => Ok(Lisk),
             4326 => Ok(MegaEth),
+            5000 => Ok(Mantle),
             34443 => Ok(Mode),
             143 => Ok(Monad),
             10 => Ok(Optimism),
             9745 => Ok(Plasma),
             137 => Ok(Polygon),
             534352 => Ok(Scroll),
+            146 => Ok(Sonic),
             1868 => Ok(Soneium),
             // TODO: This is not actual chain id, soloana doesn't have one at all.
             // Need to "wrap" it somehow for Across specifically and also check other
             // chains and ids
             34268394551451 => Ok(Solana),
+            4217 => Ok(Tempo),
             130 => Ok(Unichain),
             480 => Ok(WorldChain),
             323 => Ok(ZkSync),
@@ -193,8 +203,11 @@ impl std::fmt::Display for SwapChainType {
         use SwapChainType::*;
 
         match self {
+            Abstract => write!(f, "Abstract"),
             Arbitrum => write!(f, "Arbitrum"),
+            Avalanche => write!(f, "Avalanche"),
             Base => write!(f, "Base"),
+            Berachain => write!(f, "Berachain"),
             Blast => write!(f, "Blast"),
             BnbSmartChain => write!(f, "BnbSmartChain"),
             Ethereum => write!(f, "Ethereum"),
@@ -204,15 +217,18 @@ impl std::fmt::Display for SwapChainType {
             Linea => write!(f, "Linea"),
             Lisk => write!(f, "Lisk"),
             MegaEth => write!(f, "MegaEth"),
+            Mantle => write!(f, "Mantle"),
             Mode => write!(f, "Mode"),
             Monad => write!(f, "Monad"),
             Optimism => write!(f, "Optimism"),
             Plasma => write!(f, "Plasma"),
             Polygon => write!(f, "Polygon"),
             Scroll => write!(f, "Scroll"),
+            Sonic => write!(f, "Sonic"),
             Soneium => write!(f, "Soneium"),
             Solana => write!(f, "Solana"),
             Unichain => write!(f, "Unichain"),
+            Tempo => write!(f, "Tempo"),
             WorldChain => write!(f, "WorldChain"),
             ZkSync => write!(f, "ZkSync"),
             Zora => write!(f, "Zora"),
@@ -225,8 +241,11 @@ impl std::str::FromStr for SwapChainType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "Abstract" => Ok(Self::Abstract),
             "Arbitrum" => Ok(Self::Arbitrum),
+            "Avalanche" => Ok(Self::Avalanche),
             "Base" => Ok(Self::Base),
+            "Berachain" => Ok(Self::Berachain),
             "Blast" => Ok(Self::Blast),
             "BnbSmartChain" => Ok(Self::BnbSmartChain),
             "Ethereum" => Ok(Self::Ethereum),
@@ -236,14 +255,17 @@ impl std::str::FromStr for SwapChainType {
             "Linea" => Ok(Self::Linea),
             "Lisk" => Ok(Self::Lisk),
             "MegaEth" => Ok(Self::MegaEth),
+            "Mantle" => Ok(Self::Mantle),
             "Mode" => Ok(Self::Mode),
             "Monad" => Ok(Self::Monad),
             "Optimism" => Ok(Self::Optimism),
             "Plasma" => Ok(Self::Plasma),
             "Polygon" => Ok(Self::Polygon),
             "Scroll" => Ok(Self::Scroll),
+            "Sonic" => Ok(Self::Sonic),
             "Soneium" => Ok(Self::Soneium),
             "Solana" => Ok(Self::Solana),
+            "Tempo" => Ok(Self::Tempo),
             "Unichain" => Ok(Self::Unichain),
             "WorldChain" => Ok(Self::WorldChain),
             "ZkSync" => Ok(Self::ZkSync),
@@ -258,8 +280,11 @@ impl SwapChainType {
         use SwapChainType::*;
 
         match self {
+            Abstract => 2741,
             Arbitrum => 42161,
+            Avalanche => 43114,
             Base => 8453,
+            Berachain => 80094,
             Blast => 81457,
             BnbSmartChain => 56,
             Ethereum => 1,
@@ -269,14 +294,17 @@ impl SwapChainType {
             Linea => 59144,
             Lisk => 1135,
             MegaEth => 4326,
+            Mantle => 5000,
             Mode => 34443,
             Monad => 143,
             Optimism => 10,
             Plasma => 9745,
             Polygon => 137,
             Scroll => 534352,
+            Sonic => 146,
             Soneium => 1868,
             Solana => 34268394551451,
+            Tempo => 4217,
             Unichain => 130,
             WorldChain => 480,
             ZkSync => 323,
@@ -374,15 +402,6 @@ pub fn default_create_swap_data(invoice_id: Uuid) -> CreateSwapData {
     }
 }
 
-#[expect(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum InternalQuoteDetails {
-    Across(AcrossQuoteDetails),
-    Bungee(BungeeQuoteDetails),
-    ZeroEx(ZeroExQuoteDetails),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwapQuote {
     pub swap_executor: SwapExecutorType,
@@ -390,70 +409,24 @@ pub struct SwapQuote {
     pub estimated_to_amount_units: u128,
     pub estimated_to_amount: Decimal,
     pub valid_till: DateTime<Utc>,
-    pub quote_details: InternalQuoteDetails,
+    pub quote_details: RawSwapDetails,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcrossSwapDetails {
+pub struct SwapDetails {
     pub id: String,
-    pub raw_transaction: AcrossRawTransaction,
-    pub transaction_hash: Option<String>, // hash of the sent transaction
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BungeeSwapDetails {
-    pub id: String,
-    pub raw_transaction: BungeeRawTransaction,
+    pub raw_transaction: RawSwapDetails,
     pub signature: Option<String>,
     pub transaction_hash: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ZeroExSwapDetails {
-    pub id: String,
-    pub raw_transaction: ZeroExRawTransaction,
-    // Actually we store fully signed transaction under this field,
-    // just use the same name for structure consistency
-    // which also simplifies DAO and API
-    pub signature: Option<String>,
-    pub transaction_hash: Option<String>,
-}
-
-#[expect(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum InternalSwapDetails {
-    Across(AcrossSwapDetails),
-    Bungee(BungeeSwapDetails),
-    ZeroEx(ZeroExSwapDetails),
-}
-
-impl From<SwapQuote> for InternalSwapDetails {
+impl From<SwapQuote> for SwapDetails {
     fn from(value: SwapQuote) -> Self {
-        match value.quote_details {
-            InternalQuoteDetails::Across(details) => {
-                InternalSwapDetails::Across(AcrossSwapDetails {
-                    id: value.id,
-                    raw_transaction: details,
-                    transaction_hash: None,
-                })
-            },
-            InternalQuoteDetails::Bungee(details) => {
-                InternalSwapDetails::Bungee(BungeeSwapDetails {
-                    id: value.id,
-                    raw_transaction: details,
-                    signature: None,
-                    transaction_hash: None,
-                })
-            },
-            InternalQuoteDetails::ZeroEx(details) => {
-                InternalSwapDetails::ZeroEx(ZeroExSwapDetails {
-                    id: value.id,
-                    raw_transaction: details,
-                    signature: None,
-                    transaction_hash: None,
-                })
-            },
+        SwapDetails {
+            id: value.id,
+            raw_transaction: value.quote_details,
+            signature: None,
+            transaction_hash: None,
         }
     }
 }
@@ -464,7 +437,7 @@ pub struct Swap {
     pub request: CreateSwapData,
     pub status: SwapStatus,
     pub estimated_to_amount: Decimal, // calculated by swap executor
-    pub swap_details: InternalSwapDetails,
+    pub swap_details: SwapDetails,
     pub created_at: DateTime<Utc>,
     pub submitted_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -519,11 +492,14 @@ pub fn default_swap(invoice_id: Uuid) -> Swap {
         request: default_create_swap_data(invoice_id),
         status: SwapStatus::Created,
         estimated_to_amount: Decimal::new(10, 0),
-        swap_details: InternalSwapDetails::Across(AcrossSwapDetails {
+        swap_details: SwapDetails {
             id: "".to_string(),
-            raw_transaction: crate::clients::default_across_raw_transaction(),
+            raw_transaction: RawSwapDetails::Across(
+                crate::clients::default_across_raw_transaction(),
+            ),
+            signature: None,
             transaction_hash: None,
-        }),
+        },
         created_at: Utc::now(),
         submitted_at: None,
         finished_at: None,
@@ -541,7 +517,7 @@ pub struct PublicSwap {
     pub to_chain_id: u64,
     pub status: SwapStatus,
     pub estimated_to_amount: Decimal, // calculated by swap executor
-    pub swap_details: InternalSwapDetails,
+    pub swap_details: SwapDetails,
     pub created_at: DateTime<Utc>,
     pub valid_till: DateTime<Utc>,
 }
