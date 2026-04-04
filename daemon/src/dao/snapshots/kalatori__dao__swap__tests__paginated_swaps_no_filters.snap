@@ -1,6 +1,6 @@
 ---
 source: daemon/src/dao/swap.rs
-assertion_line: 1157
+assertion_line: 1166
 expression: result
 ---
 - id: "[uuid]"
@@ -16,6 +16,7 @@ expression: result
     from_address: ""
     to_address: ""
     direction: Incoming
+    origin: {}
   status: Pending
   estimated_to_amount: "10"
   swap_details:
@@ -50,6 +51,7 @@ expression: result
     from_address: ""
     to_address: ""
     direction: Incoming
+    origin: {}
   status: Completed
   estimated_to_amount: "10"
   swap_details:
@@ -84,6 +86,7 @@ expression: result
     from_address: ""
     to_address: ""
     direction: Incoming
+    origin: {}
   status: Created
   estimated_to_amount: "10"
   swap_details:
@@ -118,6 +121,7 @@ expression: result
     from_address: ""
     to_address: ""
     direction: Incoming
+    origin: {}
   status: Failed
   estimated_to_amount: "10"
   swap_details:
@@ -152,6 +156,7 @@ expression: result
     from_address: ""
     to_address: ""
     direction: Incoming
+    origin: {}
   status: Completed
   estimated_to_amount: "10"
   swap_details:
@@ -186,6 +191,7 @@ expression: result
     from_address: ""
     to_address: ""
     direction: Incoming
+    origin: {}
   status: Pending
   estimated_to_amount: "10"
   swap_details:
@@ -220,6 +226,7 @@ expression: result
     from_address: ""
     to_address: ""
     direction: Incoming
+    origin: {}
   status: Pending
   estimated_to_amount: "10"
   swap_details:
@@ -254,6 +261,7 @@ expression: result
     from_address: ""
     to_address: ""
     direction: Incoming
+    origin: {}
   status: Created
   estimated_to_amount: "10"
   swap_details:

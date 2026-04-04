@@ -52,6 +52,9 @@ pub enum QueryError {
     /// Data decoding failed (SCALE or other format)
     #[error("Data decoding failed: {data_type}")]
     DecodeFailed { data_type: String },
+
+    #[error("Invalid query params")]
+    InvalidParams,
 }
 
 // ============================================================================

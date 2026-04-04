@@ -23,6 +23,7 @@ use crate::clients::{
 };
 
 use super::ChainType;
+use super::TransactionOrigin;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateFrontEndSwapParams {
@@ -64,6 +65,7 @@ pub enum SwapExecutorType {
     Across,
     Bungee,
     ZeroEx,
+    ZeroExGasless,
 }
 
 impl std::fmt::Display for SwapExecutorType {
@@ -75,6 +77,7 @@ impl std::fmt::Display for SwapExecutorType {
             Self::Across => write!(f, "Across"),
             Self::Bungee => write!(f, "Bungee"),
             Self::ZeroEx => write!(f, "ZeroEx"),
+            Self::ZeroExGasless => write!(f, "ZeroExGasless"),
         }
     }
 }
@@ -87,6 +90,7 @@ impl std::str::FromStr for SwapExecutorType {
             "Across" => Ok(Self::Across),
             "Bungee" => Ok(Self::Bungee),
             "ZeroEx" => Ok(Self::ZeroEx),
+            "ZeroExGasless" => Ok(Self::ZeroExGasless),
             _ => Err("Unknown swap executor type: {s}".to_string()),
         }
     }
@@ -97,12 +101,20 @@ impl SwapExecutorType {
     pub fn detect(
         from_chain: SwapChainType,
         to_chain: SwapChainType,
-        _direction: SwapDirection,
+        direction: SwapDirection,
     ) -> Option<SwapExecutorType> {
-        if from_chain == to_chain {
-            Some(Self::ZeroEx)
+        if direction == SwapDirection::Outgoing {
+            if from_chain == to_chain {
+                Some(Self::ZeroExGasless)
+            } else {
+                None
+            }
         } else {
-            Some(Self::Across)
+            if from_chain == to_chain {
+                Some(Self::ZeroEx)
+            } else {
+                Some(Self::Across)
+            }
         }
     }
 }
@@ -383,6 +395,7 @@ pub struct CreateSwapData {
     pub from_address: String,
     pub to_address: String,
     pub direction: SwapDirection,
+    pub origin: TransactionOrigin,
 }
 
 #[cfg(test)]
@@ -399,6 +412,7 @@ pub fn default_create_swap_data(invoice_id: Uuid) -> CreateSwapData {
         from_address: "".to_string(),
         to_address: "".to_string(),
         direction: SwapDirection::Incoming,
+        origin: TransactionOrigin::default(),
     }
 }
 

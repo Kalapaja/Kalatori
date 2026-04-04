@@ -20,6 +20,7 @@ use crate::types::{
     InvoiceEventType,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
+    Refund,
 };
 
 const EXPIRATION_CHECK_INTERVAL_MILLIS: u64 = 10_000;
@@ -52,8 +53,6 @@ impl<D: DaoInterface + 'static> ExpirationDetector<D> {
     }
 
     async fn fetch_expired_invoices(&self) -> Vec<Invoice> {
-        // TODO: fetch partially paid expired invoices as well and return them together
-
         self.dao
             .get_expired_invoices()
             .await
@@ -63,16 +62,20 @@ impl<D: DaoInterface + 'static> ExpirationDetector<D> {
             .unwrap_or_default()
     }
 
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            invoice_id = %invoice.invoice.id,
+            total_received_amount = %invoice.total_received_amount,
+            invoice_status = %invoice.invoice.status,
+        )
+    )]
     async fn update_invoice_expired(
         &self,
         invoice: InvoiceWithReceivedAmount,
     ) -> Result<(), ExpirationDetectorError> {
         let invoice_id = invoice.invoice.id;
-
-        let event = invoice
-            .into_public_invoice(&self.config.payment_url_base)
-            .build_event(InvoiceEventType::Expired)
-            .into();
+        let invoice_status = invoice.invoice.status;
 
         let dao_transaction = self
             .dao
@@ -80,15 +83,40 @@ impl<D: DaoInterface + 'static> ExpirationDetector<D> {
             .await
             .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
 
+        let new_status = if invoice_status == InvoiceStatus::PartiallyPaid {
+            let refund = Refund::from_invoice(invoice.invoice.clone(), invoice.total_received_amount);
+
+            let refund = dao_transaction
+                .create_refund(refund)
+                .await
+                .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
+
+            tracing::info!(
+                refund_id = %refund.id,
+                "Invoice has been partially paid, refund for respective amount created"
+            );
+
+            InvoiceStatus::PartiallyPaidExpired
+        } else if invoice_status == InvoiceStatus::Waiting {
+            tracing::trace!("Invoice hasn't been paid at all, no need to refund anything");
+            InvoiceStatus::UnpaidExpired
+        } else {
+            tracing::error!("Unexpected invoice status, interrupt expiration operation. It might require manual intervention");
+            return Err(ExpirationDetectorError::DatabaseError)
+        };
+
         dao_transaction
-            .create_webhook_event(event)
+            .update_invoice_status(invoice_id, new_status)
             .await
             .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
 
-        // TODO: we currently handle only unpaid expired invoices, will need also handle
-        // partially paid expired
+        let event = invoice
+            .into_public_invoice(&self.config.payment_url_base)
+            .build_event(InvoiceEventType::Expired)
+            .into();
+
         dao_transaction
-            .update_invoice_status(invoice_id, InvoiceStatus::UnpaidExpired)
+            .create_webhook_event(event)
             .await
             .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
 
@@ -102,7 +130,6 @@ impl<D: DaoInterface + 'static> ExpirationDetector<D> {
             .await;
 
         tracing::info!(
-            %invoice_id,
             "Invoice has been marked as expired"
         );
 
@@ -116,8 +143,6 @@ impl<D: DaoInterface + 'static> ExpirationDetector<D> {
     //    amount, fetch transactions from indexer and update status
     // 4. Schedule webhooks for expired invoices
     async fn handle_expirations(&self) {
-        // TODO: we fetch only waiting invoices here, need to also fetch partially paid
-        // in future
         let expired_invoices = self.fetch_expired_invoices().await;
 
         let expired_invoices_ids: Vec<_> = expired_invoices

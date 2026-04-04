@@ -45,7 +45,7 @@ impl GeneralTransactionId {
 
 /// Origin field for transactions (what triggered this transaction)
 #[expect(clippy::struct_field_names)]
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TransactionOrigin {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refund_id: Option<Uuid>,
@@ -55,10 +55,13 @@ pub struct TransactionOrigin {
     pub internal_transfer_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TransactionOriginVariant {
     Payout(Uuid),
     Refund(Uuid),
     InternalTransfer(Uuid),
+    // None for incoming transaction
+    #[default]
     None,
 }
 
@@ -356,12 +359,12 @@ impl From<IncomingTransaction> for Transaction {
 #[cfg(test)]
 pub fn default_incoming_transaction(invoice_id: Uuid) -> IncomingTransaction {
     let transfer_info = TransferInfo {
-        asset_id: 1984.to_string(),
-        asset_name: "USDT".to_string(),
-        chain: ChainType::PolkadotAssetHub,
+        asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359".to_string(),
+        asset_name: "USDC".to_string(),
+        chain: ChainType::Polygon,
         amount: rust_decimal::Decimal::new(10000, 2),
-        source_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
-        destination_address: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+        source_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7".to_string(),
+        destination_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9".to_string(),
     };
 
     let transaction_id = GeneralTransactionId {

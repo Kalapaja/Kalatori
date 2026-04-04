@@ -10,13 +10,10 @@ use serde::{
 
 use kalatori_client::types::ChainType;
 
+use crate::chain_client::KeyringClient;
 use crate::clients::swaps::bungee::BungeeRawTransaction;
 use crate::types::{
-    CreateSwapData,
-    SwapChainType,
-    SwapDetails,
-    SwapExecutorType,
-    SwapQuote,
+    CreateSwapData, Swap, SwapChainType, SwapDetails, SwapDirection, SwapExecutorType, SwapQuote
 };
 
 #[cfg(test)]
@@ -31,6 +28,8 @@ pub use zeroex::default_zero_ex_raw_transaction;
 pub use zeroex::{
     ZeroExClient,
     ZeroExRawTransaction,
+    ZeroExGaslessClient,
+    ZeroExGaslessRawTransaction,
 };
 
 pub type TransactionHash = String;
@@ -43,6 +42,7 @@ pub enum RawSwapDetails {
     Across(AcrossRawTransaction),
     Bungee(BungeeRawTransaction),
     ZeroEx(ZeroExRawTransaction),
+    ZeroExGasless(ZeroExGaslessRawTransaction),
 }
 
 // TODO: there is also SwapStatus enum in types which identifies status
@@ -54,19 +54,30 @@ pub enum ExecutorSwapStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// TODO: rework some errors
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SwapsClientError {
+    #[error("Swaps from {from_chain} to {to_chain} is not supported")]
     DirectionIsNotSupported {
         from_chain: SwapChainType,
         to_chain: SwapChainType,
     },
+    #[error("Chain {chain} is not supported")]
     ChainIsNotSupported {
         chain: SwapChainType,
     },
+    #[error("Signature is not set")]
     SignatureIsNotSet,
+    #[error("Wrong raw transaction stored")]
     WrongRawTransaction,
+    #[error("Transaction hash or other identifier is not set")]
     TransactionHashIsNotSet,
+    #[error("Unknown API error")]
     UnknownApiError,
+    #[error("Operation is not allowed")]
+    OperationIsNotAllowed,
+    #[error("Failed to sign transaction")]
+    FailedToSignTransaction,
 }
 
 impl From<reqwest::Error> for SwapsClientError {
@@ -135,6 +146,30 @@ pub trait SwapsClient {
             .await?;
 
         Ok(result.into())
+    }
+
+    fn extract_raw_details(&self, details: RawSwapDetails) -> Result<Self::RawTransactionDetails, SwapsClientError> {
+        details.try_into()
+    }
+
+    async fn sign_transaction_internal(
+        &self,
+        _keyring_client: &KeyringClient,
+        _swap: &Swap,
+    ) -> Result<String, SwapsClientError> {
+        Err(SwapsClientError::OperationIsNotAllowed)
+    }
+
+    async fn sign_transaction(
+        &self,
+        keyring_client: &KeyringClient,
+        swap: &Swap,
+    ) -> Result<String, SwapsClientError> {
+        if swap.request.direction == SwapDirection::Incoming {
+            return Err(SwapsClientError::OperationIsNotAllowed)
+        }
+
+        self.sign_transaction_internal(keyring_client, swap).await
     }
 
     fn extract_signature<'a>(

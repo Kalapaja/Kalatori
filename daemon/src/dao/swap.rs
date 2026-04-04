@@ -24,6 +24,7 @@ use crate::types::{
     SwapDirection,
     SwapExecutorType,
     SwapStatus,
+    TransactionOrigin,
 };
 
 use super::DaoExecutor;
@@ -72,6 +73,7 @@ struct CreateSwapDataRow {
     from_address: String,
     to_address: String,
     direction: SwapDirection,
+    origin: Json<TransactionOrigin>,
 }
 
 impl From<CreateSwapDataRow> for CreateSwapData {
@@ -88,6 +90,7 @@ impl From<CreateSwapDataRow> for CreateSwapData {
             from_address: value.from_address,
             to_address: value.to_address,
             direction: value.direction,
+            origin: value.origin.0,
         }
     }
 }
@@ -335,8 +338,8 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
         let invoice_id = swap.request.invoice_id;
 
         let query = sqlx::query_as::<_, SwapRow>(
-            "INSERT INTO swaps (id, invoice_id, swap_executor, from_chain, to_chain, from_token_address, to_token_address, from_amount_units, expected_to_amount_units, from_address, to_address, direction, status, estimated_to_amount, swap_details, created_at, valid_till)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO swaps (id, invoice_id, swap_executor, from_chain, to_chain, from_token_address, to_token_address, from_amount_units, expected_to_amount_units, from_address, to_address, direction, origin, status, estimated_to_amount, swap_details, created_at, valid_till)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *"
         )
         .bind(swap.id)
@@ -351,6 +354,7 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
         .bind(Text(swap.request.from_address))
         .bind(Text(swap.request.to_address))
         .bind(swap.request.direction)
+        .bind(Json(&swap.request.origin))
         .bind(swap.status)
         .bind(Text(swap.estimated_to_amount))
         .bind(Json(swap.swap_details))
@@ -626,6 +630,30 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
                     },
                     _ => DaoSwapError::DatabaseError,
                 }
+            })
+    }
+
+    // Get completed incoming swaps by invoice id
+    async fn get_completed_incoming_swaps_by_invoice(&self, invoice_id: Uuid) -> Result<Vec<Swap>, DaoSwapError> {
+        let query = sqlx::query_as::<_, SwapRow>(
+            "SELECT * FROM swaps
+            WHERE status = 'Completed' AND direction = 'Incoming' AND invoice_id = ?
+            ORDER BY created_at ASC"
+        )
+        .bind(invoice_id);
+
+        self.fetch_all(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.swap",
+                    error.operation = "get_completed_incoming_swaps_by_invoice",
+                    error.source = ?e,
+                    %invoice_id,
+                    "Failed get get completed incoming swaps by invoice"
+                );
+
+                DaoSwapError::DatabaseError
             })
     }
 

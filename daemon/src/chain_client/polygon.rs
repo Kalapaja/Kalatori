@@ -1029,18 +1029,14 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         let encoded_paymaster_data = const_hex::encode_prefixed(paymaster_data.clone());
         inner.paymaster_data = Some(encoded_paymaster_data.clone());
 
-        let call_data_for_estimate = if inner.transfer_all {
-            // for transfer all if we'll put full amount we'll get an error that we don't
-            // have enough balance for transfer + fees, so we put some dummy amount for now,
-            // paymaster fee shouldn't be significantly different depending on amount
-            self.build_call(
-                inner.recipient,
-                U256::from(100),
-                inner.asset_id,
-            )
-        } else {
-            inner.call_data.clone()
-        };
+        // if the amount we put is full balance amount we'll get an error that we don't
+        // have enough balance for transfer + fees, so we put some dummy amount for now,
+        // paymaster fee shouldn't be significantly different depending on amount
+        let call_data_for_estimate = self.build_call(
+            inner.recipient,
+            U256::from(100),
+            inner.asset_id,
+        );
 
         let mut gas_params = self
             .pimlico_client
@@ -1074,58 +1070,56 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         inner.gas_params = gas_params;
 
-        if inner.transfer_all {
-            let quotes = self
-                .pimlico_client
-                .get_token_quotes(&[inner.asset_id])
-                .await
-                .map_err(|e| {
-                    tracing::debug!(
-                        error = ?e,
-                        "Failed to get USDC quote using pimlico client",
-                    );
+        let quotes = self
+            .pimlico_client
+            .get_token_quotes(&[inner.asset_id])
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error = ?e,
+                    "Failed to get USDC quote using pimlico client",
+                );
 
-                    TransactionError::BuildFailed {
-                        reason: "Failed to get quote using pimlico client".to_string(),
-                    }
+                TransactionError::BuildFailed {
+                    reason: "Failed to get quote using pimlico client".to_string(),
+                }
+            })?;
+
+        let usdc_quote =
+            quotes
+                .quotes
+                .first()
+                .ok_or_else(|| TransactionError::BuildFailed {
+                    reason: "Failed to get quote from paymaster".to_string(),
                 })?;
 
-            let usdc_quote =
-                quotes
-                    .quotes
-                    .first()
-                    .ok_or_else(|| TransactionError::BuildFailed {
-                        reason: "Failed to get quote from paymaster".to_string(),
-                    })?;
+        let max_cost_in_usdc_wei = self.calculate_max_cost_in_token(
+            &inner.gas_params,
+            &inner.gas_price,
+            usdc_quote,
+        );
 
-            let max_cost_in_usdc_wei = self.calculate_max_cost_in_token(
-                &inner.gas_params,
-                &inner.gas_price,
-                usdc_quote,
-            );
+        let amount_wei = inner
+            .amount_wei
+            .saturating_sub(max_cost_in_usdc_wei)
+            .saturating_sub(U256::from(100));
 
-            let amount_wei = inner
-                .amount_wei
-                .saturating_sub(max_cost_in_usdc_wei)
-                .saturating_sub(U256::from(100));
+        let call_data = self.build_call(
+            inner.recipient,
+            amount_wei,
+            inner.asset_id,
+        );
+        inner.call_data = call_data;
+        let op_hash = self.compute_user_op_hash(&inner, &paymaster_data);
 
-            let call_data = self.build_call(
-                inner.recipient,
-                amount_wei,
-                inner.asset_id,
-            );
-            inner.call_data = call_data;
-            let op_hash = self.compute_user_op_hash(&inner, &paymaster_data);
-
-            if amount_wei.is_zero() {
-                return Err(TransactionError::InsufficientBalance {
-                    transaction_id: op_hash.to_string(),
-                })
-            }
-
-            // have to recalculate op_hash
-            inner.op_hash = Some(op_hash);
+        if amount_wei.is_zero() {
+            return Err(TransactionError::InsufficientBalance {
+                transaction_id: op_hash.to_string(),
+            })
         }
+
+        // have to recalculate op_hash
+        inner.op_hash = Some(op_hash);
 
         let data = SignTransactionRequestData {
             transaction: inner,

@@ -132,18 +132,20 @@ pub trait DaoPayoutMethods: DaoExecutor + 'static {
         payout: Payout,
     ) -> Result<Payout, DaoPayoutError> {
         let query = sqlx::query_as::<_, PayoutRow>(
-        "INSERT INTO payouts (id, invoice_id, asset_id, asset_name, chain, source_address, destination_address, amount, initiator_type, initiator_id, status, created_at, updated_at, retry_count, last_attempt_at, next_retry_at, failure_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO payouts (id, invoice_id, asset_id, asset_name, chain, source_address, destination_address, amount, destination_chain, destination_asset_id, initiator_type, initiator_id, status, created_at, updated_at, retry_count, last_attempt_at, next_retry_at, failure_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *"
         )
             .bind(payout.id)
             .bind(payout.invoice_id)
-            .bind(payout.transfer_info.asset_id)
-            .bind(payout.transfer_info.asset_name)
-            .bind(payout.transfer_info.chain)
-            .bind(&payout.transfer_info.source_address)
-            .bind(&payout.transfer_info.destination_address)
-            .bind(Text(payout.transfer_info.amount))
+            .bind(&payout.asset_id)
+            .bind(&payout.asset_name)
+            .bind(payout.chain)
+            .bind(&payout.source_address)
+            .bind(&payout.destination_params.destination_address)
+            .bind(Text(payout.amount))
+            .bind(payout.destination_params.destination_chain)
+            .bind(&payout.destination_params.destination_asset_id)
             .bind(payout.initiator_type)
             .bind(payout.initiator_id)
             .bind(payout.status)
@@ -887,18 +889,14 @@ mod tests {
         amount: Decimal,
     ) -> Payout {
         Payout {
-            transfer_info: TransferInfo {
-                chain,
-                asset_id: asset_id.to_string(),
-                asset_name: if asset_id == "1984" {
-                    "USDT".to_string()
-                } else {
-                    "USDC".to_string()
-                },
-                amount,
-                source_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
-                destination_address: "1NthTCKurNHLW52mMa6iA8Gz7UFYW5UnM3yTSpVdGu4Th7h".to_string(),
+            chain,
+            asset_id: asset_id.to_string(),
+            asset_name: if asset_id == "1984" {
+                "USDT".to_string()
+            } else {
+                "USDC".to_string()
             },
+            amount,
             ..default_payout(invoice_id)
         }
     }

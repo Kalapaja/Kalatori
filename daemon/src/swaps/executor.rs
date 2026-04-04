@@ -1,5 +1,6 @@
 use uuid::Uuid;
 
+use crate::chain_client::KeyringClient;
 use crate::clients::SwapsClientError;
 use crate::dao::{
     DAO,
@@ -16,12 +17,16 @@ use crate::types::{
 
 use super::SwapsClients;
 
-#[expect(dead_code)]
+#[derive(Debug, thiserror::Error)]
 pub enum SwapsExecutorError {
     // TODO: refactor
+    #[error("Failed to request swap quote")]
     QuoteRequestFailed,
+    #[error("Swap {swap_id} not found")]
     SwapNotFound { swap_id: Uuid },
+    #[error("Invoice {invoice_id} not found")]
     InvoiceNotFound { invoice_id: Uuid },
+    #[error("Internal database error")]
     DatabaseError,
 }
 
@@ -49,6 +54,7 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn create_swap(
         &self,
         data: CreateSwapData,
@@ -75,16 +81,35 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
                 _ => SwapsExecutorError::DatabaseError,
             })?;
 
+        tracing::trace!(
+            swap_id = %created.id,
+            "Swap created"
+        );
+
         Ok(created)
     }
 
+    #[tracing::instrument(skip_all)]
+    pub async fn sign_transaction(
+        &self,
+        keyring_client: &KeyringClient,
+        swap: &Swap,
+        // TODO: return SwapsExecutorError for consistency?
+    ) -> Result<String, SwapsClientError> {
+        self.clients.sign_transaction(keyring_client, swap).await
+    }
+
+    #[tracing::instrument(
+        skip_all,
+        fields(swap_id = %swap_signature.swap_id)
+    )]
     pub async fn submit_with_signature(
         &self,
         swap_signature: SwapSignatureParams,
     ) -> Result<Swap, SwapsExecutorError> {
         if !matches!(
             swap_signature.swap_executor,
-            SwapExecutorType::Bungee | SwapExecutorType::ZeroEx
+            SwapExecutorType::Bungee | SwapExecutorType::ZeroEx | SwapExecutorType::ZeroExGasless
         ) {
             // TODO: other error, perhaps also check executor on DB level
             tracing::warn!(
@@ -124,6 +149,8 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
             )
             .await?;
 
+        tracing::Span::current().record("transaction_hash", &transaction_hash);
+
         self.dao
             .update_swap_submitted_with_hash(swap_signature.swap_id, transaction_hash)
             .await
@@ -135,6 +162,10 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
                 },
                 _ => SwapsExecutorError::DatabaseError,
             })?;
+
+        tracing::info!(
+            "Swap has been submitted successfully"
+        );
 
         Ok(swap)
     }
@@ -205,4 +236,39 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
     // pub async fn abandon_swap(&self) -> Result<Swap, SwapsExecutorError> {
 
     // }
+}
+
+#[cfg(test)]
+mockall::mock!{
+    pub SwapsExecutor<D: DaoInterface + 'static = DAO> {
+        pub fn new(
+            dao: D,
+            clients: SwapsClients,
+        ) -> Self;
+
+        pub async fn create_swap(
+            &self,
+            data: CreateSwapData,
+        ) -> Result<Swap, SwapsExecutorError>;
+
+        pub async fn sign_transaction(
+            &self,
+            keyring_client: &KeyringClient,
+            swap: &Swap,
+        ) -> Result<String, SwapsClientError>;
+
+        pub async fn submit_with_signature(
+            &self,
+            swap_signature: SwapSignatureParams,
+        ) -> Result<Swap, SwapsExecutorError>;
+
+        pub async fn update_swap_submitted_on_front_end(
+            &self,
+            submitted_swap: SubmittedSwapParams,
+        ) -> Result<Swap, SwapsExecutorError>;
+    }
+
+    impl<D: DaoInterface + 'static> Clone for SwapsExecutor<D> {
+        fn clone(&self) -> Self;
+    }
 }

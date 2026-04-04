@@ -512,6 +512,32 @@ pub trait DaoTransactionMethods: DaoExecutor + 'static {
                 DaoTransactionError::DatabaseError
             })
     }
+
+    async fn get_completed_transactions_by_invoice(
+        &self,
+        invoice_id: Uuid,
+    ) -> Result<Vec<Transaction>, DaoTransactionError> {
+        let query = sqlx::query_as::<_, TransactionRow>(
+            "SELECT *
+            FROM transactions
+            WHERE invoice_id = ? AND transaction_type = 'Incoming' AND status = 'Completed'
+            ORDER BY created_at ASC"
+        )
+        .bind(invoice_id);
+
+        self.fetch_all(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.transaction",
+                    error.operation = "get_completed_transactions_by_invoice",
+                    %invoice_id,
+                    error.source = ?e,
+                    "Failed to fetch completed transactions by invoice id"
+                );
+                DaoTransactionError::DatabaseError
+            })
+    }
 }
 
 impl<T: DaoExecutor + 'static> DaoTransactionMethods for T {}

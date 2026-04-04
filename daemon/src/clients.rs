@@ -8,6 +8,7 @@ pub use swaps::{
     SwapsClient,
     SwapsClientError,
     ZeroExClient,
+    ZeroExGaslessClient,
 };
 #[cfg(test)]
 pub use swaps::{

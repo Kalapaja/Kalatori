@@ -45,32 +45,7 @@ use crate::dao::{
 };
 use crate::swaps::SwapsExecutor;
 use crate::types::{
-    ChainType,
-    ChangesResponse,
-    CreateFrontEndSwapParams,
-    CreateInvoiceData,
-    FrontEndSwap,
-    InvoiceChanges,
-    InvoiceEventType,
-    InvoiceWithReceivedAmount,
-    KalatoriEventExt,
-    KalatoriIntegrationSettings,
-    KalatoriSettings,
-    ListInvoicesParams,
-    ListPayoutsParams,
-    ListSwapsParams,
-    ListTransactionsParams,
-    PaginatedResponse,
-    Payout,
-    PayoutChanges,
-    PublicAssetDescription,
-    PublicChangesResponse,
-    PublicSwap,
-    PublicTransaction,
-    RefundChanges,
-    Swap,
-    Transaction,
-    UpdateInvoiceData,
+    ChainType, ChangesResponse, CreateFrontEndSwapParams, CreateInvoiceData, FrontEndSwap, InvoiceChanges, InvoiceEventType, InvoiceWithReceivedAmount, KalatoriEventExt, KalatoriIntegrationSettings, KalatoriSettings, ListInvoicesParams, ListPayoutsParams, ListSwapsParams, ListTransactionsParams, PaginatedResponse, Payout, PayoutChanges, PublicAssetDescription, PublicChangesResponse, PublicSwap, PublicTransaction, RefundChanges, Swap, Transaction, TransferDestinationParams, UpdateInvoiceData
 };
 
 pub use swaps::SwapRequestError;
@@ -427,6 +402,39 @@ impl<D: DaoInterface> AppState<D> {
             params.pagination.validated_page(),
             params.pagination.validated_per_page(),
         ))
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn initiate_payout(
+        &self,
+        invoice_id: Uuid,
+    ) -> Result<Payout, DaoInvoiceError> {
+        let invoice = self.dao
+            .get_invoice_by_id(invoice_id)
+            .await?
+            .ok_or(DaoInvoiceError::NotFound { invoice_id })?;
+
+        if invoice.status.is_active() {
+            return Err(DaoInvoiceError::UpdateNotAllowed { invoice_id, current_status: invoice.status })
+        }
+
+        let destination_address = self.payments_config.recipient
+            .get(&invoice.chain)
+            .unwrap()
+            .clone();
+
+        let destination_params = TransferDestinationParams {
+            destination_chain: invoice.chain.into(),
+            destination_asset_id: invoice.asset_id.clone(),
+            destination_address,
+        };
+
+        let payout = Payout::from_invoice(invoice, destination_params, Decimal::new(21, 2));
+
+        self.dao
+            .create_payout(payout)
+            .await
+            .map_err(|_e| DaoInvoiceError::DatabaseError)
     }
 
     pub async fn get_transaction(
@@ -791,11 +799,7 @@ mod tests {
         let keyring = KeyringClient::default();
         let dao = MockDaoInterface::default();
         let registry = InvoiceRegistry::new();
-        let swaps_clients = SwapsClients::new(SwapsConfig::default()).await;
-        let swaps_executor = SwapsExecutor::new(
-            MockDaoInterface::default(),
-            swaps_clients,
-        );
+        let swaps_executor = SwapsExecutor::default();
 
         AppState::new(
             keyring,

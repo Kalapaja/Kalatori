@@ -7,7 +7,7 @@ use axum::response::{
     IntoResponse,
     Response,
 };
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{
     Extension,
     Router,
@@ -24,7 +24,6 @@ use uuid::Uuid;
 
 use kalatori_client::types::ApiResultStructured;
 
-use crate::api::utils::SuccessWrapper;
 use crate::auth::session::AuthenticatedUser;
 use crate::auth::token::Role;
 use crate::dao::{
@@ -51,9 +50,11 @@ use super::ApiState;
 use super::utils::{
     ApiResult,
     AppQuery,
+    AppJson,
+    SuccessWrapper,
 };
 
-#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct InvoiceIdParam {
     invoice_id: Uuid,
 }
@@ -142,6 +143,23 @@ async fn get_payout_handler(
         .ok_or(DaoPayoutError::NotFound {
             payout_id,
         })?;
+
+    Ok(payout.into())
+}
+
+// ============================================================================
+// POST /admin/payouts/initiate
+// ============================================================================
+
+#[tracing::instrument(skip_all)]
+async fn initiate_payout_handler(
+    State(state): State<ApiState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    AppJson(param): AppJson<InvoiceIdParam>,
+) -> ApiResult<Payout, DaoInvoiceError> {
+    let invoice_id = param.invoice_id;
+
+    let payout = state.initiate_payout(invoice_id).await?;
 
     Ok(payout.into())
 }
@@ -283,6 +301,10 @@ pub fn routes() -> Router<ApiState> {
         .route(
             "/api/payout/get",
             get(get_payout_handler),
+        )
+        .route(
+            "/api/payout/initiate",
+            post(initiate_payout_handler),
         )
         .route(
             "/api/transaction/list",

@@ -1,6 +1,7 @@
 mod executor;
 mod tracker;
 
+#[cfg_attr(test, mockall_double::double)]
 pub use executor::SwapsExecutor;
 pub use tracker::SwapsTracker;
 
@@ -11,10 +12,13 @@ use crate::clients::{
     SwapsClient,
     SwapsClientError,
     ZeroExClient,
+    ZeroExGaslessClient,
 };
+use crate::chain_client::KeyringClient;
 use crate::configs::SwapsConfig;
 use crate::types::{
     CreateSwapData,
+    Swap,
     SwapDetails,
     SwapExecutorType,
     SwapQuote,
@@ -25,6 +29,7 @@ pub struct SwapsClients {
     pub across_client: AcrossClient,
     pub bungee_client: BungeeClient,
     pub zero_ex_client: ZeroExClient,
+    pub zero_ex_gasless_client: ZeroExGaslessClient,
 }
 
 impl SwapsClients {
@@ -32,11 +37,13 @@ impl SwapsClients {
         let across_client = AcrossClient::new(&config);
         let bungee_client = BungeeClient::new(&config);
         let zero_ex_client = ZeroExClient::new(&config).await;
+        let zero_ex_gasless_client = ZeroExGaslessClient::new(&config);
 
         Self {
             across_client,
             bungee_client,
             zero_ex_client,
+            zero_ex_gasless_client,
         }
     }
 
@@ -51,6 +58,36 @@ impl SwapsClients {
             SwapExecutorType::ZeroEx => {
                 self.zero_ex_client
                     .get_quote(data)
+                    .await
+            },
+            SwapExecutorType::ZeroExGasless => self.zero_ex_gasless_client.get_quote(data).await,
+        }
+    }
+
+    pub async fn sign_transaction(
+        &self,
+        keyring_client: &KeyringClient,
+        swap: &Swap,
+    ) -> Result<String, SwapsClientError> {
+        match swap.request.swap_executor {
+            SwapExecutorType::Across => {
+                self.across_client
+                    .sign_transaction(keyring_client, swap)
+                    .await
+            },
+            SwapExecutorType::Bungee => {
+                self.bungee_client
+                    .sign_transaction(keyring_client, swap)
+                    .await
+            },
+            SwapExecutorType::ZeroEx => {
+                self.zero_ex_client
+                    .sign_transaction(keyring_client, swap)
+                    .await
+            },
+            SwapExecutorType::ZeroExGasless => {
+                self.zero_ex_gasless_client
+                    .sign_transaction(keyring_client, swap)
                     .await
             },
         }
@@ -77,6 +114,9 @@ impl SwapsClients {
                     .submit_transaction(data)
                     .await
             },
+            SwapExecutorType::ZeroExGasless => {
+                self.zero_ex_gasless_client.submit_transaction(data).await
+            },
         }
     }
 
@@ -100,6 +140,9 @@ impl SwapsClients {
                 self.zero_ex_client
                     .get_transaction_status(data)
                     .await
+            },
+            SwapExecutorType::ZeroExGasless => {
+                self.zero_ex_gasless_client.get_transaction_status(data).await
             },
         }
     }

@@ -453,7 +453,7 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
         let query = sqlx::query_as::<_, InvoiceRow>(
             "SELECT *
             FROM invoices
-            WHERE status = 'Waiting' AND valid_till < datetime('now')",
+            WHERE status IN ('Waiting', 'PartiallyPaid') AND valid_till < datetime('now')",
         );
 
         self.fetch_all(query)
