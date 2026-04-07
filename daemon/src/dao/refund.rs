@@ -5,7 +5,9 @@ use uuid::Uuid;
 use crate::types::{
     Refund,
     RefundRow,
-    RefundStatus, RetryMeta, TransferDestinationParams,
+    RefundStatus,
+    RetryMeta,
+    TransferDestinationParams,
 };
 
 use super::DaoExecutor;
@@ -139,7 +141,6 @@ pub trait DaoRefundMethods: DaoExecutor + 'static {
             })
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     async fn get_refund_by_id(
         &self,
         refund_id: Uuid,
@@ -265,8 +266,16 @@ pub trait DaoRefundMethods: DaoExecutor + 'static {
             RETURNING *",
         )
         .bind(retry_meta.retry_count)
-        .bind(retry_meta.last_attempt_at.map(|dt| dt.naive_utc()))
-        .bind(retry_meta.next_retry_at.map(|dt| dt.naive_utc()))
+        .bind(
+            retry_meta
+                .last_attempt_at
+                .map(|dt| dt.naive_utc()),
+        )
+        .bind(
+            retry_meta
+                .next_retry_at
+                .map(|dt| dt.naive_utc()),
+        )
         .bind(&retry_meta.failure_message)
         .bind(status)
         .bind(refund_id);
@@ -541,10 +550,23 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(updated.status, RefundStatus::FailedRetriable);
+        assert_eq!(
+            updated.status,
+            RefundStatus::FailedRetriable
+        );
         assert_eq!(updated.retry_meta.retry_count, 1);
-        assert!(updated.retry_meta.last_attempt_at.is_some());
-        assert!(updated.retry_meta.next_retry_at.is_some());
+        assert!(
+            updated
+                .retry_meta
+                .last_attempt_at
+                .is_some()
+        );
+        assert!(
+            updated
+                .retry_meta
+                .next_retry_at
+                .is_some()
+        );
         assert_eq!(
             updated.retry_meta.failure_message,
             Some("Insufficient balance".to_string())

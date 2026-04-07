@@ -3,9 +3,11 @@ mod tracker;
 
 #[cfg_attr(test, mockall_double::double)]
 pub use executor::SwapsExecutor;
+#[cfg_attr(not(test), expect(unused_imports))]
 pub use executor::SwapsExecutorError;
 pub use tracker::SwapsTracker;
 
+use crate::chain_client::KeyringClient;
 use crate::clients::{
     AcrossClient,
     BungeeClient,
@@ -15,7 +17,6 @@ use crate::clients::{
     ZeroExClient,
     ZeroExGaslessClient,
 };
-use crate::chain_client::KeyringClient;
 use crate::configs::SwapsConfig;
 use crate::types::{
     CreateSwapData,
@@ -61,7 +62,11 @@ impl SwapsClients {
                     .get_quote(data)
                     .await
             },
-            SwapExecutorType::ZeroExGasless => self.zero_ex_gasless_client.get_quote(data).await,
+            SwapExecutorType::ZeroExGasless => {
+                self.zero_ex_gasless_client
+                    .get_quote(data)
+                    .await
+            },
         }
     }
 
@@ -116,7 +121,9 @@ impl SwapsClients {
                     .await
             },
             SwapExecutorType::ZeroExGasless => {
-                self.zero_ex_gasless_client.submit_transaction(data).await
+                self.zero_ex_gasless_client
+                    .submit_transaction(data)
+                    .await
             },
         }
     }
@@ -143,7 +150,9 @@ impl SwapsClients {
                     .await
             },
             SwapExecutorType::ZeroExGasless => {
-                self.zero_ex_gasless_client.get_transaction_status(data).await
+                self.zero_ex_gasless_client
+                    .get_transaction_status(data)
+                    .await
             },
         }
     }

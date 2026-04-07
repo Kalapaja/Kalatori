@@ -7,7 +7,10 @@ use axum::response::{
     IntoResponse,
     Response,
 };
-use axum::routing::{get, post};
+use axum::routing::{
+    get,
+    post,
+};
 use axum::{
     Extension,
     Router,
@@ -49,8 +52,8 @@ use crate::types::{
 use super::ApiState;
 use super::utils::{
     ApiResult,
-    AppQuery,
     AppJson,
+    AppQuery,
     SuccessWrapper,
 };
 
@@ -159,7 +162,9 @@ async fn initiate_payout_handler(
 ) -> ApiResult<Payout, DaoInvoiceError> {
     let invoice_id = param.invoice_id;
 
-    let payout = state.initiate_payout(invoice_id).await?;
+    let payout = state
+        .initiate_payout(invoice_id)
+        .await?;
 
     Ok(payout.into())
 }

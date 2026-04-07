@@ -1000,9 +1000,9 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         let transaction = PolygonUnsignedTransaction {
             transfer_all: false,
-            sender: sender,
-            recipient: recipient,
-            asset_id: asset_id,
+            sender,
+            recipient,
+            asset_id,
             entrypoint_nonce,
             call_data,
             gas_price,
@@ -1145,13 +1145,12 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                 }
             })?;
 
-        let usdc_quote =
-            quotes
-                .quotes
-                .first()
-                .ok_or_else(|| TransactionError::BuildFailed {
-                    reason: "Failed to get quote from paymaster".to_string(),
-                })?;
+        let usdc_quote = quotes
+            .quotes
+            .first()
+            .ok_or_else(|| TransactionError::BuildFailed {
+                reason: "Failed to get quote from paymaster".to_string(),
+            })?;
 
         let max_cost_in_usdc_wei = self.calculate_max_cost_in_token(
             &inner.gas_params,

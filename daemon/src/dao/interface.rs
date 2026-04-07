@@ -362,13 +362,22 @@ pub trait DaoInterface: Send + Sync + 'static {
 
     // === Refund Methods ===
 
-    async fn create_refund(&self, refund: Refund) -> Result<Refund, DaoRefundError>;
+    async fn create_refund(
+        &self,
+        refund: Refund,
+    ) -> Result<Refund, DaoRefundError>;
 
-    async fn get_refund_by_id(&self, refund_id: Uuid) -> Result<Option<Refund>, DaoRefundError>;
+    async fn get_refund_by_id(
+        &self,
+        refund_id: Uuid,
+    ) -> Result<Option<Refund>, DaoRefundError>;
 
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError>;
 
-    async fn get_pending_refunds(&self, limit: u32) -> Result<Vec<Refund>, DaoRefundError>;
+    async fn get_pending_refunds(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<Refund>, DaoRefundError>;
 
     async fn update_refund_status(
         &self,
@@ -624,13 +633,22 @@ pub trait DaoTransactionInterface {
     ) -> Result<u32, DaoSwapError>;
 
     // === Refund Methods ===
-    async fn create_refund(&self, refund: Refund) -> Result<Refund, DaoRefundError>;
+    async fn create_refund(
+        &self,
+        refund: Refund,
+    ) -> Result<Refund, DaoRefundError>;
 
-    async fn get_refund_by_id(&self, refund_id: Uuid) -> Result<Option<Refund>, DaoRefundError>;
+    async fn get_refund_by_id(
+        &self,
+        refund_id: Uuid,
+    ) -> Result<Option<Refund>, DaoRefundError>;
 
     async fn get_all_refunds(&self) -> Result<Vec<Refund>, DaoRefundError>;
 
-    async fn get_pending_refunds(&self, limit: u32) -> Result<Vec<Refund>, DaoRefundError>;
+    async fn get_pending_refunds(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<Refund>, DaoRefundError>;
 
     async fn update_refund_status(
         &self,
@@ -995,11 +1013,17 @@ impl DaoInterface for DAO {
         DaoSwapMethods::count_swaps(self, params).await
     }
 
-    async fn create_refund(&self, refund: Refund) -> Result<Refund, DaoRefundError> {
+    async fn create_refund(
+        &self,
+        refund: Refund,
+    ) -> Result<Refund, DaoRefundError> {
         DaoRefundMethods::create_refund(self, refund).await
     }
 
-    async fn get_refund_by_id(&self, refund_id: Uuid) -> Result<Option<Refund>, DaoRefundError> {
+    async fn get_refund_by_id(
+        &self,
+        refund_id: Uuid,
+    ) -> Result<Option<Refund>, DaoRefundError> {
         DaoRefundMethods::get_refund_by_id(self, refund_id).await
     }
 
@@ -1007,7 +1031,10 @@ impl DaoInterface for DAO {
         DaoRefundMethods::get_all_refunds(self).await
     }
 
-    async fn get_pending_refunds(&self, limit: u32) -> Result<Vec<Refund>, DaoRefundError> {
+    async fn get_pending_refunds(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<Refund>, DaoRefundError> {
         DaoRefundMethods::get_pending_refunds(self, limit).await
     }
 
@@ -1025,7 +1052,13 @@ impl DaoInterface for DAO {
         retry_meta: RetryMeta,
         is_retriable: bool,
     ) -> Result<Refund, DaoRefundError> {
-        DaoRefundMethods::update_refund_retry(self, refund_id, retry_meta, is_retriable).await
+        DaoRefundMethods::update_refund_retry(
+            self,
+            refund_id,
+            retry_meta,
+            is_retriable,
+        )
+        .await
     }
 
     async fn update_refund_destination_params(
@@ -1033,7 +1066,8 @@ impl DaoInterface for DAO {
         refund_id: Uuid,
         destination_params: TransferDestinationParams,
     ) -> Result<Refund, DaoRefundError> {
-        DaoRefundMethods::update_refund_destination_params(self, refund_id, destination_params).await
+        DaoRefundMethods::update_refund_destination_params(self, refund_id, destination_params)
+            .await
     }
 }
 
@@ -1353,11 +1387,17 @@ impl DaoTransactionInterface for DaoTransaction {
         DaoSwapMethods::count_swaps(self, params).await
     }
 
-    async fn create_refund(&self, refund: Refund) -> Result<Refund, DaoRefundError> {
+    async fn create_refund(
+        &self,
+        refund: Refund,
+    ) -> Result<Refund, DaoRefundError> {
         DaoRefundMethods::create_refund(self, refund).await
     }
 
-    async fn get_refund_by_id(&self, refund_id: Uuid) -> Result<Option<Refund>, DaoRefundError> {
+    async fn get_refund_by_id(
+        &self,
+        refund_id: Uuid,
+    ) -> Result<Option<Refund>, DaoRefundError> {
         DaoRefundMethods::get_refund_by_id(self, refund_id).await
     }
 
@@ -1365,7 +1405,10 @@ impl DaoTransactionInterface for DaoTransaction {
         DaoRefundMethods::get_all_refunds(self).await
     }
 
-    async fn get_pending_refunds(&self, limit: u32) -> Result<Vec<Refund>, DaoRefundError> {
+    async fn get_pending_refunds(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<Refund>, DaoRefundError> {
         DaoRefundMethods::get_pending_refunds(self, limit).await
     }
 
@@ -1383,7 +1426,13 @@ impl DaoTransactionInterface for DaoTransaction {
         retry_meta: RetryMeta,
         is_retriable: bool,
     ) -> Result<Refund, DaoRefundError> {
-        DaoRefundMethods::update_refund_retry(self, refund_id, retry_meta, is_retriable).await
+        DaoRefundMethods::update_refund_retry(
+            self,
+            refund_id,
+            retry_meta,
+            is_retriable,
+        )
+        .await
     }
 
     async fn update_refund_destination_params(
@@ -1391,7 +1440,8 @@ impl DaoTransactionInterface for DaoTransaction {
         refund_id: Uuid,
         destination_params: TransferDestinationParams,
     ) -> Result<Refund, DaoRefundError> {
-        DaoRefundMethods::update_refund_destination_params(self, refund_id, destination_params).await
+        DaoRefundMethods::update_refund_destination_params(self, refund_id, destination_params)
+            .await
     }
 
     async fn commit(self) -> DaoResult<()> {

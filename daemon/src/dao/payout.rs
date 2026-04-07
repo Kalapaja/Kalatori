@@ -853,7 +853,6 @@ mod tests {
         ListPayoutsParams,
         PaginationParams,
         SortOrder,
-        TransferInfo,
     };
 
     /// Helper to create an invoice for a given chain.

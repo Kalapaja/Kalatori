@@ -19,7 +19,11 @@ use crate::types::{
 };
 
 use super::super::RawSwapDetails;
-use super::{ZeroExQuoteDetails, ZeroExGaslessQuoteDetails, ExecutorSwapStatus};
+use super::{
+    ExecutorSwapStatus,
+    ZeroExGaslessQuoteDetails,
+    ZeroExQuoteDetails,
+};
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize)]
@@ -47,8 +51,7 @@ impl From<CreateSwapData> for ZeroExGetQuoteRequest {
             value.from_token_address
         };
 
-        let buy_token = if value.to_token_address == "0x0000000000000000000000000000000000000000"
-        {
+        let buy_token = if value.to_token_address == "0x0000000000000000000000000000000000000000" {
             "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE".to_string()
         } else {
             value.to_token_address
@@ -248,44 +251,6 @@ impl From<ZeroExGaslessTransactionStatus> for ExecutorSwapStatus {
 pub struct GetTransactionStatusResponse {
     pub status: ZeroExGaslessTransactionStatus,
     pub zid: String,
-}
-
-#[serde_as]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ZeroExFee {
-    pub token: String,
-    #[serde_as(as = "DisplayFromStr")]
-    pub amount: u128,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ZeroExFeesTable {
-    // #[serde(default)]
-    // pub integrator_fees: Vec<ZeroExFee>,
-    pub zero_ex_fee: ZeroExFee,
-    pub gas_fee: ZeroExFee,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ZeroExSwapPrice {
-    pub fees: ZeroExFeesTable,
-}
-
-impl ZeroExSwapPrice {
-    // TODO: it'll be best to check that all fees are in the same asset.
-    // For gasless API it shouldn't be a problem but if it will be used in common
-    // it might have fees in different assets
-    pub fn total_fees(&self) -> u128 {
-        // self.fees.integrator_fees
-        //     .iter()
-        //     .map(|fee| fee.amount)
-        //     .sum::<u128>()
-        self.fees.zero_ex_fee.amount
-            + self.fees.gas_fee.amount
-    }
 }
 
 #[expect(dead_code)]

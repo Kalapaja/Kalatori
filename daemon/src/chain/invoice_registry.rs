@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use crate::types::{
     ChainType,
-    InvoiceWithReceivedAmount,
     InvoiceStatus,
+    InvoiceWithReceivedAmount,
 };
 
 #[derive(Clone)]
@@ -350,27 +350,47 @@ mod tests {
         // Update filled amounts for each invoice and check it
         let invoice_1_new_amount = invoice_1_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_1_id, invoice_1_new_amount, InvoiceStatus::Waiting)
+            .update_filled_amount(
+                &invoice_1_id,
+                invoice_1_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let invoice_2_new_amount = invoice_2_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_2_id, invoice_2_new_amount, InvoiceStatus::Waiting)
+            .update_filled_amount(
+                &invoice_2_id,
+                invoice_2_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let invoice_3_new_amount = invoice_3_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_3_id, invoice_3_new_amount, InvoiceStatus::Waiting)
+            .update_filled_amount(
+                &invoice_3_id,
+                invoice_3_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let invoice_4_new_amount = invoice_1_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_4_id, invoice_4_new_amount, InvoiceStatus::Waiting)
+            .update_filled_amount(
+                &invoice_4_id,
+                invoice_4_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let invoice_5_new_amount = invoice_1_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_5_id, invoice_5_new_amount, InvoiceStatus::Waiting)
+            .update_filled_amount(
+                &invoice_5_id,
+                invoice_5_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let updated_1 = registry

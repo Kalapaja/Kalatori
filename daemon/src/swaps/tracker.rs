@@ -10,8 +10,16 @@ use crate::clients::{
     ExecutorSwapStatus,
     SwapsClientError,
 };
-use crate::dao::{DaoInterface, DaoTransactionInterface};
-use crate::types::{Swap, TransactionOriginVariant, PayoutStatus, RefundStatus};
+use crate::dao::{
+    DaoInterface,
+    DaoTransactionInterface,
+};
+use crate::types::{
+    PayoutStatus,
+    RefundStatus,
+    Swap,
+    TransactionOriginVariant,
+};
 
 use super::SwapsClients;
 
@@ -121,7 +129,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             return Err(SwapsTrackerError::BalanceCheckerError)
         }
 
-        let dao_transaction = self.dao
+        let dao_transaction = self
+            .dao
             .begin_transaction()
             .await
             .map_err(|_| SwapsTrackerError::DatabaseError)?;
@@ -164,7 +173,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         &mut self,
         swap: &Swap,
     ) -> Result<(), SwapsTrackerError> {
-        let dao_transaction = self.dao
+        let dao_transaction = self
+            .dao
             .begin_transaction()
             .await
             .map_err(|_| SwapsTrackerError::DatabaseError)?;
@@ -249,10 +259,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                 tracing::trace!("Swap still has pending status, keep watching")
             },
             ExecutorSwapStatus::Executed => {
-                self.handle_swap_executed(&swap).await?;
+                self.handle_swap_executed(swap).await?;
             },
             ExecutorSwapStatus::Failed => {
-                self.handle_swap_failed(&swap).await?;
+                self.handle_swap_failed(swap).await?;
             },
         }
 

@@ -521,7 +521,7 @@ pub trait DaoTransactionMethods: DaoExecutor + 'static {
             "SELECT *
             FROM transactions
             WHERE invoice_id = ? AND transaction_type = 'Incoming' AND status = 'Completed'
-            ORDER BY created_at ASC"
+            ORDER BY created_at ASC",
         )
         .bind(invoice_id);
 
@@ -972,7 +972,7 @@ mod tests {
         };
 
         let mut tx_with_origin = Transaction {
-            origin: origin_with_refund.clone(),
+            origin: origin_with_refund,
             ..default_transaction(invoice.id)
         };
 

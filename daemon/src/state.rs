@@ -45,7 +45,33 @@ use crate::dao::{
 };
 use crate::swaps::SwapsExecutor;
 use crate::types::{
-    ChainType, ChangesResponse, CreateFrontEndSwapParams, CreateInvoiceData, FrontEndSwap, InvoiceChanges, InvoiceEventType, InvoiceWithReceivedAmount, KalatoriEventExt, KalatoriIntegrationSettings, KalatoriSettings, ListInvoicesParams, ListPayoutsParams, ListSwapsParams, ListTransactionsParams, PaginatedResponse, Payout, PayoutChanges, PublicAssetDescription, PublicChangesResponse, PublicSwap, PublicTransaction, RefundChanges, Swap, Transaction, TransferDestinationParams, UpdateInvoiceData
+    ChainType,
+    ChangesResponse,
+    CreateFrontEndSwapParams,
+    CreateInvoiceData,
+    FrontEndSwap,
+    InvoiceChanges,
+    InvoiceEventType,
+    InvoiceWithReceivedAmount,
+    KalatoriEventExt,
+    KalatoriIntegrationSettings,
+    KalatoriSettings,
+    ListInvoicesParams,
+    ListPayoutsParams,
+    ListSwapsParams,
+    ListTransactionsParams,
+    PaginatedResponse,
+    Payout,
+    PayoutChanges,
+    PublicAssetDescription,
+    PublicChangesResponse,
+    PublicSwap,
+    PublicTransaction,
+    RefundChanges,
+    Swap,
+    Transaction,
+    TransferDestinationParams,
+    UpdateInvoiceData,
 };
 
 pub use swaps::SwapRequestError;
@@ -409,16 +435,24 @@ impl<D: DaoInterface> AppState<D> {
         &self,
         invoice_id: Uuid,
     ) -> Result<Payout, DaoInvoiceError> {
-        let invoice = self.dao
+        let invoice = self
+            .dao
             .get_invoice_by_id(invoice_id)
             .await?
-            .ok_or(DaoInvoiceError::NotFound { invoice_id })?;
+            .ok_or(DaoInvoiceError::NotFound {
+                invoice_id,
+            })?;
 
         if invoice.status.is_active() {
-            return Err(DaoInvoiceError::UpdateNotAllowed { invoice_id, current_status: invoice.status })
+            return Err(DaoInvoiceError::UpdateNotAllowed {
+                invoice_id,
+                current_status: invoice.status,
+            })
         }
 
-        let destination_address = self.payments_config.recipient
+        let destination_address = self
+            .payments_config
+            .recipient
             .get(&invoice.chain)
             .unwrap()
             .clone();
@@ -429,7 +463,11 @@ impl<D: DaoInterface> AppState<D> {
             destination_address,
         };
 
-        let payout = Payout::from_invoice(invoice, destination_params, Decimal::new(21, 2));
+        let payout = Payout::from_invoice(
+            invoice,
+            destination_params,
+            Decimal::new(21, 2),
+        );
 
         self.dao
             .create_payout(payout)
@@ -746,12 +784,10 @@ mod tests {
     use mockall::predicate::eq;
 
     use crate::chain_client::KeyringError;
-    use crate::configs::SwapsConfig;
     use crate::dao::{
         MockDaoInterface,
         MockDaoTransactionInterface,
     };
-    use crate::swaps::SwapsClients;
     use crate::types::{
         Invoice,
         InvoiceCart,

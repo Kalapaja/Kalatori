@@ -43,6 +43,7 @@ pub struct SwapsExecutor<D: DaoInterface + 'static = DAO> {
     clients: SwapsClients,
 }
 
+#[cfg_attr(test, expect(dead_code))]
 impl<D: DaoInterface + 'static> SwapsExecutor<D> {
     pub fn new(
         dao: D,
@@ -96,7 +97,9 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
         swap: &Swap,
         // TODO: return SwapsExecutorError for consistency?
     ) -> Result<String, SwapsClientError> {
-        self.clients.sign_transaction(keyring_client, swap).await
+        self.clients
+            .sign_transaction(keyring_client, swap)
+            .await
     }
 
     #[tracing::instrument(
@@ -163,9 +166,7 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
                 _ => SwapsExecutorError::DatabaseError,
             })?;
 
-        tracing::info!(
-            "Swap has been submitted successfully"
-        );
+        tracing::info!("Swap has been submitted successfully");
 
         Ok(swap)
     }
@@ -239,7 +240,7 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
 }
 
 #[cfg(test)]
-mockall::mock!{
+mockall::mock! {
     pub SwapsExecutor<D: DaoInterface + 'static = DAO> {
         pub fn new(
             dao: D,

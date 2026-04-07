@@ -53,6 +53,7 @@ pub enum QueryError {
     #[error("Data decoding failed: {data_type}")]
     DecodeFailed { data_type: String },
 
+    #[expect(dead_code)]
     #[error("Invalid query params")]
     InvalidParams,
 }

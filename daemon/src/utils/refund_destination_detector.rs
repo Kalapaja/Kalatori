@@ -1,5 +1,13 @@
-use crate::types::{Refund, Swap, Transaction, TransferDestinationParams};
-use crate::dao::{DaoInterface, DAO};
+use crate::dao::{
+    DAO,
+    DaoInterface,
+};
+use crate::types::{
+    Refund,
+    Swap,
+    Transaction,
+    TransferDestinationParams,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RefundDestinationDetectorError {
@@ -60,8 +68,14 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
             .map(|swap| swap.request.from_address.to_lowercase())
             .collect();
 
-        transactions
-            .retain(|trans| !swaps_addresses.contains(&trans.transfer_info.source_address.to_lowercase()));
+        transactions.retain(|trans| {
+            !swaps_addresses.contains(
+                &trans
+                    .transfer_info
+                    .source_address
+                    .to_lowercase(),
+            )
+        });
     }
 
     #[tracing::instrument(skip_all)]
@@ -79,7 +93,8 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
         // records so prefer refunding to the swap source address if found.
         // Otherwise check incoming transactions using arkhm to detect if it's
         // user's wallet or something else.
-        let swaps = self.dao
+        let swaps = self
+            .dao
             .get_completed_incoming_swaps_by_invoice(refund.invoice_id)
             .await
             .map_err(|error| {
@@ -97,7 +112,8 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
 
         // TODO: add search for cross-chain swap when it will be supported
 
-        let mut transactions = self.dao
+        let mut transactions = self
+            .dao
             .get_completed_transactions_by_invoice(refund.invoice_id)
             .await
             .map_err(|error| {
@@ -111,11 +127,15 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
 
         self.filter_out_swap_transactions(&mut transactions, &swaps);
 
-        // TODO: now we just get the first one, later we'll have to also check them using arkhm API
+        // TODO: now we just get the first one, later we'll have to also check them
+        // using arkhm API
         if let Some(trans) = transactions.first() {
             let params = TransferDestinationParams {
                 destination_asset_id: trans.transfer_info.asset_id.clone(),
-                destination_address: trans.transfer_info.source_address.clone(),
+                destination_address: trans
+                    .transfer_info
+                    .source_address
+                    .clone(),
                 destination_chain: trans.transfer_info.chain.into(),
             };
 
@@ -139,9 +159,13 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
         refund: &Refund,
         with_destination: &mut Vec<Refund>,
     ) -> Result<(), RefundDestinationDetectorError> {
-        match self.find_refund_destination(&refund).await {
+        match self
+            .find_refund_destination(refund)
+            .await
+        {
             Ok(params) => {
-                let refund = self.dao
+                let refund = self
+                    .dao
                     .update_refund_destination_params(refund.id, params.clone())
                     .await
                     .map_err(|error| {
@@ -171,15 +195,20 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
 
                         RefundDestinationDetectorError::DatabaseError
                     })?;
-            }
+            },
         }
 
         Ok(())
     }
 
+    #[cfg_attr(test, expect(dead_code))]
     #[tracing::instrument(skip(self))]
-    pub async fn get_refunds_with_destination(&self, limit: u32) -> Vec<Refund> {
-        let refunds = match self.dao
+    pub async fn get_refunds_with_destination(
+        &self,
+        limit: u32,
+    ) -> Vec<Refund> {
+        let refunds = match self
+            .dao
             .get_pending_refunds(limit)
             .await
         {
@@ -190,7 +219,7 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
                     "Failed to get pending refunds from database. Return an empty vector"
                 );
                 return vec![]
-            }
+            },
         };
 
         let mut with_destination = Vec::with_capacity(refunds.len());
@@ -199,7 +228,10 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
             if refund.destination_params.is_some() {
                 with_destination.push(refund)
             } else {
-                if let Err(error) = self.find_and_update_refund_destination(&refund, &mut with_destination).await {
+                if let Err(error) = self
+                    .find_and_update_refund_destination(&refund, &mut with_destination)
+                    .await
+                {
                     tracing::warn!(
                         %error,
                         "Failed to find destination params for refund, it will be skipped"
@@ -213,7 +245,7 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
 }
 
 #[cfg(test)]
-mockall::mock!{
+mockall::mock! {
     pub RefundDestinationDetector<D: DaoInterface + 'static = DAO> {
         pub fn new(dao: D) -> Self;
 
@@ -226,12 +258,22 @@ mockall::mock!{
 }
 
 #[cfg(test)]
-mod tests  {
-    use uuid::Uuid;
+mod tests {
     use mockall::predicate::eq;
+    use uuid::Uuid;
 
-    use crate::dao::{MockDaoInterface, DaoSwapError, DaoTransactionError};
-    use crate::types::{SwapChainType, default_swap, default_transaction, default_refund, ChainType};
+    use crate::dao::{
+        DaoSwapError,
+        DaoTransactionError,
+        MockDaoInterface,
+    };
+    use crate::types::{
+        ChainType,
+        SwapChainType,
+        default_refund,
+        default_swap,
+        default_transaction,
+    };
 
     use super::*;
 
@@ -248,7 +290,10 @@ mod tests  {
         let swap_1_destination = TransferDestinationParams {
             destination_address: swap_1.request.from_address.clone(),
             destination_chain: swap_1.request.from_chain,
-            destination_asset_id: swap_1.request.from_token_address.clone(),
+            destination_asset_id: swap_1
+                .request
+                .from_token_address
+                .clone(),
         };
 
         let mut swap_2 = default_swap(Uuid::new_v4());
@@ -259,7 +304,10 @@ mod tests  {
         let swap_2_destination = TransferDestinationParams {
             destination_address: swap_2.request.from_address.clone(),
             destination_chain: swap_2.request.from_chain,
-            destination_asset_id: swap_2.request.from_token_address.clone(),
+            destination_asset_id: swap_2
+                .request
+                .from_token_address
+                .clone(),
         };
 
         let mut swap_3 = default_swap(Uuid::new_v4());
@@ -270,7 +318,10 @@ mod tests  {
         let swap_3_destination = TransferDestinationParams {
             destination_address: swap_3.request.from_address.clone(),
             destination_chain: swap_3.request.from_chain,
-            destination_asset_id: swap_3.request.from_token_address.clone(),
+            destination_asset_id: swap_3
+                .request
+                .from_token_address
+                .clone(),
         };
 
         let mut swaps = vec![swap_1, swap_2, swap_3];
@@ -309,10 +360,14 @@ mod tests  {
         let swaps = vec![swap_1, swap_2, swap_3];
 
         let mut transaction_1 = default_transaction(Uuid::new_v4());
-        transaction_1.transfer_info.source_address = "swap1_address".to_string();
+        transaction_1
+            .transfer_info
+            .source_address = "swap1_address".to_string();
 
         let mut transaction_2 = default_transaction(Uuid::new_v4());
-        transaction_2.transfer_info.source_address = "SWAP2_address".to_string();
+        transaction_2
+            .transfer_info
+            .source_address = "SWAP2_address".to_string();
 
         let transaction_3 = default_transaction(Uuid::new_v4());
 
@@ -342,18 +397,23 @@ mod tests  {
             returned_swap.request.to_chain = returned_swap.request.from_chain;
 
             let expected_destination_params = TransferDestinationParams {
-                destination_address: returned_swap.request.from_address.clone(),
+                destination_address: returned_swap
+                    .request
+                    .from_address
+                    .clone(),
                 destination_chain: returned_swap.request.to_chain,
-                destination_asset_id: returned_swap.request.from_token_address.clone(),
+                destination_asset_id: returned_swap
+                    .request
+                    .from_token_address
+                    .clone(),
             };
 
-            detector.dao
+            detector
+                .dao
                 .expect_get_completed_incoming_swaps_by_invoice()
                 .once()
                 .with(eq(invoice_id))
-                .returning(move |_| {
-                    Ok(vec![returned_swap.clone()])
-                });
+                .returning(move |_| Ok(vec![returned_swap.clone()]));
 
             let result = detector
                 .find_refund_destination(&refund)
@@ -376,18 +436,26 @@ mod tests  {
             transaction.transfer_info.source_address = "TEST".to_string();
 
             let expected_destination_params = TransferDestinationParams {
-                destination_address: transaction.transfer_info.source_address.clone(),
+                destination_address: transaction
+                    .transfer_info
+                    .source_address
+                    .clone(),
                 destination_chain: transaction.transfer_info.chain.into(),
-                destination_asset_id: transaction.transfer_info.asset_id.clone(),
+                destination_asset_id: transaction
+                    .transfer_info
+                    .asset_id
+                    .clone(),
             };
 
-            detector.dao
+            detector
+                .dao
                 .expect_get_completed_incoming_swaps_by_invoice()
                 .once()
                 .with(eq(invoice_id))
                 .returning(move |_| Ok(vec![]));
 
-            detector.dao
+            detector
+                .dao
                 .expect_get_completed_transactions_by_invoice()
                 .once()
                 .with(eq(invoice_id))
@@ -409,13 +477,15 @@ mod tests  {
         // - Get transactions by invoice dao call returns an empty vec
         // - No available destination error
         {
-            detector.dao
+            detector
+                .dao
                 .expect_get_completed_incoming_swaps_by_invoice()
                 .once()
                 .with(eq(invoice_id))
                 .returning(move |_| Ok(vec![]));
 
-            detector.dao
+            detector
+                .dao
                 .expect_get_completed_transactions_by_invoice()
                 .once()
                 .with(eq(invoice_id))
@@ -426,7 +496,10 @@ mod tests  {
                 .await
                 .unwrap_err();
 
-            assert_eq!(result, RefundDestinationDetectorError::NoAvailableDestination);
+            assert_eq!(
+                result,
+                RefundDestinationDetectorError::NoAvailableDestination
+            );
         }
 
         // Test case 4:
@@ -437,7 +510,8 @@ mod tests  {
         // - No other dao calls
         // - Database error
         {
-            detector.dao
+            detector
+                .dao
                 .expect_get_completed_incoming_swaps_by_invoice()
                 .once()
                 .with(eq(invoice_id))
@@ -448,7 +522,10 @@ mod tests  {
                 .await
                 .unwrap_err();
 
-            assert_eq!(result, RefundDestinationDetectorError::DatabaseError);
+            assert_eq!(
+                result,
+                RefundDestinationDetectorError::DatabaseError
+            );
         }
 
         // Test case 5:
@@ -459,13 +536,15 @@ mod tests  {
         // - Get transactions by invoice dao call returns an error
         // - Database error
         {
-            detector.dao
+            detector
+                .dao
                 .expect_get_completed_incoming_swaps_by_invoice()
                 .once()
                 .with(eq(invoice_id))
                 .returning(move |_| Ok(vec![]));
 
-            detector.dao
+            detector
+                .dao
                 .expect_get_completed_transactions_by_invoice()
                 .once()
                 .with(eq(invoice_id))
@@ -476,7 +555,10 @@ mod tests  {
                 .await
                 .unwrap_err();
 
-            assert_eq!(result, RefundDestinationDetectorError::DatabaseError);
+            assert_eq!(
+                result,
+                RefundDestinationDetectorError::DatabaseError
+            );
         }
     }
 }

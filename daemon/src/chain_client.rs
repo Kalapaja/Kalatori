@@ -46,7 +46,10 @@ pub use polygon::{
     PolygonClient,
 };
 #[cfg(test)]
-pub use polygon::{default_polygon_unsigned_transaction, default_polygon_signed_transaction};
+pub use polygon::{
+    default_polygon_signed_transaction,
+    default_polygon_unsigned_transaction,
+};
 
 pub type TransfersStream<T> =
     Pin<Box<dyn stream::Stream<Item = Result<Vec<ChainTransfer<T>>, SubscriptionError>> + Send>>;
@@ -289,6 +292,7 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
         amount: Decimal,
     ) -> Result<UnsignedTransaction<T>, TransactionError<T>>;
 
+    #[expect(dead_code)]
     /// Build transaction to sweep entire balance (all funds minus fees) to
     /// recipient
     async fn build_transfer_all(
@@ -364,8 +368,8 @@ mod tests {
     async fn test_dummy() {
         let mut client = MockBlockChainClient::<AssetHubChainConfig>::default();
         client
-            .expect_build_transfer()
-            .returning(|_, _, _, _| panic!("Unexpected"))
+            .expect_build_transfer_all()
+            .returning(|_, _, _| panic!("Unexpected"))
             .times(0);
     }
 }

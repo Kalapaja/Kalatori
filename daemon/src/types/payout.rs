@@ -19,6 +19,7 @@ use uuid::Uuid;
 use rust_decimal::Decimal;
 use sqlx::types::Text;
 
+use super::Invoice;
 use super::common::{
     ChainType,
     InitiatorType,
@@ -26,7 +27,6 @@ use super::common::{
 };
 use super::refund::TransferDestinationParams;
 use super::swap::SwapChainType;
-use super::Invoice;
 
 /// Payout status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -634,11 +634,14 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
     }
 
     // Get completed incoming swaps by invoice id
-    async fn get_completed_incoming_swaps_by_invoice(&self, invoice_id: Uuid) -> Result<Vec<Swap>, DaoSwapError> {
+    async fn get_completed_incoming_swaps_by_invoice(
+        &self,
+        invoice_id: Uuid,
+    ) -> Result<Vec<Swap>, DaoSwapError> {
         let query = sqlx::query_as::<_, SwapRow>(
             "SELECT * FROM swaps
             WHERE status = 'Completed' AND direction = 'Incoming' AND invoice_id = ?
-            ORDER BY created_at ASC"
+            ORDER BY created_at ASC",
         )
         .bind(invoice_id);
 

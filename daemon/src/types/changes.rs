@@ -502,12 +502,16 @@ impl TryFrom<RefundJson> for Refund {
         let destination_params = if let (
             Some(destination_address),
             Some(destination_chain),
-            Some(destination_asset_id)
-        ) = (json.destination_address, json.destination_chain, json.destination_asset_id) {
+            Some(destination_asset_id),
+        ) = (
+            json.destination_address,
+            json.destination_chain,
+            json.destination_asset_id,
+        ) {
             Some(TransferDestinationParams {
                 destination_address,
                 destination_chain,
-                destination_asset_id
+                destination_asset_id,
             })
         } else {
             None

@@ -125,8 +125,12 @@ impl RetryMeta {
     pub fn trunc_timestamps(&mut self) {
         use chrono::SubsecRound;
 
-        self.last_attempt_at = self.last_attempt_at.map(|dt| dt.trunc_subsecs(0));
-        self.next_retry_at = self.next_retry_at.map(|dt| dt.trunc_subsecs(0));
+        self.last_attempt_at = self
+            .last_attempt_at
+            .map(|dt| dt.trunc_subsecs(0));
+        self.next_retry_at = self
+            .next_retry_at
+            .map(|dt| dt.trunc_subsecs(0));
     }
 }
 

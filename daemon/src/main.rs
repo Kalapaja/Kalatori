@@ -69,14 +69,16 @@ use swaps::{
     SwapsExecutor,
     SwapsTracker,
 };
-use utils::logger;
 use utils::shutdown::{
     self,
     ShutdownNotification,
     ShutdownOutcome,
 };
 use utils::task_tracker::TaskTracker;
-use utils::RefundDestinationDetector;
+use utils::{
+    RefundDestinationDetector,
+    logger,
+};
 
 use crate::balance_checker::BalanceChecker;
 use crate::swaps::SwapsClients;

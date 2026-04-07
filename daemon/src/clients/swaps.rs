@@ -33,13 +33,16 @@ pub use bungee::{
     BungeeClient,
     BungeeRawTransaction,
 };
-#[cfg(test)]
-pub use zeroex::{default_zero_ex_raw_transaction, default_zero_ex_gasless_raw_transaction};
 pub use zeroex::{
     ZeroExClient,
-    ZeroExRawTransaction,
     ZeroExGaslessClient,
     ZeroExGaslessRawTransaction,
+    ZeroExRawTransaction,
+};
+#[cfg(test)]
+pub use zeroex::{
+    default_zero_ex_gasless_raw_transaction,
+    default_zero_ex_raw_transaction,
 };
 
 pub type TransactionHash = String;
@@ -73,9 +76,7 @@ pub enum SwapsClientError {
         to_chain: SwapChainType,
     },
     #[error("Chain {chain} is not supported")]
-    ChainIsNotSupported {
-        chain: SwapChainType,
-    },
+    ChainIsNotSupported { chain: SwapChainType },
     #[error("Signature is not set")]
     SignatureIsNotSet,
     #[error("Wrong raw transaction stored")]
@@ -158,7 +159,10 @@ pub trait SwapsClient {
         Ok(result.into())
     }
 
-    fn extract_raw_details(&self, details: RawSwapDetails) -> Result<Self::RawTransactionDetails, SwapsClientError> {
+    fn extract_raw_details(
+        &self,
+        details: RawSwapDetails,
+    ) -> Result<Self::RawTransactionDetails, SwapsClientError> {
         details.try_into()
     }
 
@@ -179,7 +183,8 @@ pub trait SwapsClient {
             return Err(SwapsClientError::OperationIsNotAllowed)
         }
 
-        self.sign_transaction_internal(keyring_client, swap).await
+        self.sign_transaction_internal(keyring_client, swap)
+            .await
     }
 
     fn extract_signature<'a>(

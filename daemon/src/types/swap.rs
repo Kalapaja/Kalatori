@@ -22,8 +22,10 @@ use crate::clients::{
     // ZeroExRawTransaction,
 };
 
-use super::ChainType;
-use super::TransactionOrigin;
+use super::{
+    ChainType,
+    TransactionOrigin,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateFrontEndSwapParams {
@@ -426,6 +428,7 @@ pub struct SwapQuote {
     pub quote_details: RawSwapDetails,
 }
 
+#[expect(clippy::cast_possible_truncation)]
 #[cfg(test)]
 pub fn default_swap_quote(data: &CreateSwapData) -> SwapQuote {
     use chrono::TimeDelta;
@@ -433,15 +436,17 @@ pub fn default_swap_quote(data: &CreateSwapData) -> SwapQuote {
     use crate::clients::{
         default_across_raw_transaction,
         default_bungee_raw_transaction,
-        default_zero_ex_raw_transaction,
         default_zero_ex_gasless_raw_transaction,
+        default_zero_ex_raw_transaction,
     };
 
     let quote_details = match data.swap_executor {
         SwapExecutorType::Across => RawSwapDetails::Across(default_across_raw_transaction()),
         SwapExecutorType::Bungee => RawSwapDetails::Bungee(default_bungee_raw_transaction()),
         SwapExecutorType::ZeroEx => RawSwapDetails::ZeroEx(default_zero_ex_raw_transaction()),
-        SwapExecutorType::ZeroExGasless => RawSwapDetails::ZeroExGasless(default_zero_ex_gasless_raw_transaction()),
+        SwapExecutorType::ZeroExGasless => {
+            RawSwapDetails::ZeroExGasless(default_zero_ex_gasless_raw_transaction())
+        },
     };
 
     SwapQuote {

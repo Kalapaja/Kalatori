@@ -84,7 +84,10 @@ impl<D: DaoInterface + 'static> ExpirationDetector<D> {
             .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
 
         let new_status = if invoice_status == InvoiceStatus::PartiallyPaid {
-            let refund = Refund::from_invoice(invoice.invoice.clone(), invoice.total_received_amount);
+            let refund = Refund::from_invoice(
+                invoice.invoice.clone(),
+                invoice.total_received_amount,
+            );
 
             let refund = dao_transaction
                 .create_refund(refund)
@@ -101,7 +104,9 @@ impl<D: DaoInterface + 'static> ExpirationDetector<D> {
             tracing::trace!("Invoice hasn't been paid at all, no need to refund anything");
             InvoiceStatus::UnpaidExpired
         } else {
-            tracing::error!("Unexpected invoice status, interrupt expiration operation. It might require manual intervention");
+            tracing::error!(
+                "Unexpected invoice status, interrupt expiration operation. It might require manual intervention"
+            );
             return Err(ExpirationDetectorError::DatabaseError)
         };
 
@@ -129,9 +134,7 @@ impl<D: DaoInterface + 'static> ExpirationDetector<D> {
             .remove_invoice(&invoice_id)
             .await;
 
-        tracing::info!(
-            "Invoice has been marked as expired"
-        );
+        tracing::info!("Invoice has been marked as expired");
 
         Ok(())
     }

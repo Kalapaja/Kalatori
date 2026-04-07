@@ -94,7 +94,10 @@ pub struct Refund {
 }
 
 impl Refund {
-    pub fn from_invoice(invoice: Invoice, amount: Decimal) -> Self {
+    pub fn from_invoice(
+        invoice: Invoice,
+        amount: Decimal,
+    ) -> Self {
         let now = Utc::now();
 
         Self {
@@ -144,12 +147,16 @@ impl From<RefundRow> for Refund {
         let destination_params = if let (
             Some(destination_address),
             Some(destination_chain),
-            Some(destination_asset_id)
-        ) = (row.destination_address, row.destination_chain, row.destination_asset_id) {
+            Some(destination_asset_id),
+        ) = (
+            row.destination_address,
+            row.destination_chain,
+            row.destination_asset_id,
+        ) {
             Some(TransferDestinationParams {
                 destination_address,
                 destination_chain,
-                destination_asset_id
+                destination_asset_id,
             })
         } else {
             None

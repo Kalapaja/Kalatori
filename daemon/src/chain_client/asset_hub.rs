@@ -96,25 +96,34 @@ type TransferExtrinsic = runtime::assets::calls::types::Transfer;
 type TransferAllExtrinsic = runtime::assets::calls::types::TransferAll;
 type TransferredEvent = runtime::assets::events::Transferred;
 
-// For unsigned and signed transaction types use wrappers to be able to compare them in tests
+// For unsigned and signed transaction types use wrappers to be able to compare
+// them in tests
 pub type AssetHubUnsignedTransactionInner =
     subxt::tx::PartialTransaction<SubxtAssetHubConfig, SubxtAssetHubClient>;
 
 pub struct AssetHubUnsignedTransaction(AssetHubUnsignedTransactionInner);
 
 impl std::fmt::Debug for AssetHubUnsignedTransaction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
         f.debug_struct("AssetHubUnsignedTransaction")
-            .field("signer_payload", &self.0.signer_payload())
+            .field(
+                "signer_payload",
+                &self.0.signer_payload(),
+            )
             .field("call_data", &self.0.call_data())
             .finish()
     }
 }
 
 impl PartialEq for AssetHubUnsignedTransaction {
-    fn eq(&self, other: &Self) -> bool {
-        self.signer_payload() == other.signer_payload()
-        && self.call_data() == other.call_data()
+    fn eq(
+        &self,
+        other: &Self,
+    ) -> bool {
+        self.signer_payload() == other.signer_payload() && self.call_data() == other.call_data()
     }
 }
 
@@ -144,7 +153,10 @@ pub type AssetHubSignedTransactionInner =
 pub struct AssetHubSignedTransaction(AssetHubSignedTransactionInner);
 
 impl std::fmt::Debug for AssetHubSignedTransaction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
         f.debug_struct("AssetHubSignedTransaction")
             .field("encoded", &self.0.encoded())
             .field("hash", &self.0.hash())
@@ -153,9 +165,11 @@ impl std::fmt::Debug for AssetHubSignedTransaction {
 }
 
 impl PartialEq for AssetHubSignedTransaction {
-    fn eq(&self, other: &Self) -> bool {
-        self.encoded() == other.encoded()
-        && self.hash() == other.hash()
+    fn eq(
+        &self,
+        other: &Self,
+    ) -> bool {
+        self.encoded() == other.encoded() && self.hash() == other.hash()
     }
 }
 

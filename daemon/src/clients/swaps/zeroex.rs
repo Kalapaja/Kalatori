@@ -13,18 +13,21 @@ use secrecy::{
     ExposeSecret,
     SecretString,
 };
+use serde::de::DeserializeOwned;
 use serde::{
     Deserialize,
     Serialize,
 };
-use serde::de::DeserializeOwned;
 use serde_with::{
     DisplayFromStr,
     serde_as,
 };
 use uuid::Uuid;
 
-use crate::chain_client::{KeyringClient, SignPermitRequestData};
+use crate::chain_client::{
+    KeyringClient,
+    SignPermitRequestData,
+};
 use crate::configs::{
     IntegratorFees,
     SwapsConfig,
@@ -458,13 +461,10 @@ impl ZeroExGaslessClient {
             request.query(&params)
         };
 
-        let response = request
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = ?e, "Error while send request to 0x API");
-                SwapsClientError::UnknownApiError
-            })?;
+        let response = request.send().await.map_err(|e| {
+            tracing::warn!(error = ?e, "Error while send request to 0x API");
+            SwapsClientError::UnknownApiError
+        })?;
 
         let text = response.text().await.map_err(|e| {
             tracing::warn!(error = ?e, "Failed to extract response text from 0x response");
@@ -490,12 +490,10 @@ impl ZeroExGaslessClient {
         invoice_id: Uuid,
         keyring_client: &KeyringClient,
     ) -> Result<String, SwapsClientError> {
-        let hash = B256::from_slice(
-            &const_hex::decode(hash).map_err(|e| {
-                tracing::error!(error = ?e, %hash,  "Failed to decode stored trade hash");
-                SwapsClientError::FailedToSignTransaction
-            })?
-        );
+        let hash = B256::from_slice(&const_hex::decode(hash).map_err(|e| {
+            tracing::error!(error = ?e, %hash,  "Failed to decode stored trade hash");
+            SwapsClientError::FailedToSignTransaction
+        })?);
 
         let data = SignPermitRequestData {
             permit_hash: hash,
@@ -510,7 +508,9 @@ impl ZeroExGaslessClient {
                 SwapsClientError::FailedToSignTransaction
             })?;
 
-        Ok(const_hex::encode_prefixed(signed.signature.as_bytes()))
+        Ok(const_hex::encode_prefixed(
+            signed.signature.as_bytes(),
+        ))
     }
 }
 
@@ -556,26 +556,12 @@ impl SwapsClient for ZeroExGaslessClient {
         &self,
         data: Self::GetQuoteParams,
     ) -> Result<Self::GetQuoteResponse, SwapsClientError> {
-        // let price: ZeroExSwapPrice = self.send_request(
-        //     "/gasless/price",
-        //     reqwest::Method::GET,
-        //     data.clone(),
-        // ).await?;
-
-        // let sell_amount = data.sell_amount - price.total_fees();
-        // tracing::Span::current().record("total_fees_amount", price.total_fees());
-        // tracing::Span::current().record("updated_sell_amount", sell_amount);
-
-        // let data = Self::GetQuoteParams {
-        //     sell_amount,
-        //     ..data
-        // };
-
         self.send_request(
             "/gasless/quote",
             reqwest::Method::GET,
             data,
-        ).await
+        )
+        .await
     }
 
     async fn sign_transaction_internal(
@@ -583,7 +569,11 @@ impl SwapsClient for ZeroExGaslessClient {
         keyring_client: &KeyringClient,
         swap: &Swap,
     ) -> Result<String, SwapsClientError> {
-        let details = self.extract_raw_details(swap.swap_details.raw_transaction.clone())?;
+        let details = self.extract_raw_details(
+            swap.swap_details
+                .raw_transaction
+                .clone(),
+        )?;
 
         let trade_signature = self
             .sign_hash(
@@ -614,8 +604,11 @@ impl SwapsClient for ZeroExGaslessClient {
         &self,
         data: &SwapDetails,
     ) -> Result<super::TransactionHash, SwapsClientError> {
-        let signature = self.extract_signature(&data)?;
-        let raw_details: ZeroExGaslessRawTransaction = data.raw_transaction.clone().try_into()?;
+        let signature = self.extract_signature(data)?;
+        let raw_details: ZeroExGaslessRawTransaction = data
+            .raw_transaction
+            .clone()
+            .try_into()?;
 
         let (approval, signature_bytes) = if let Some(approval) = raw_details.approval {
             // TODO: get rid of unwrap
@@ -630,12 +623,16 @@ impl SwapsClient for ZeroExGaslessClient {
                 },
             };
 
-            (Some(approval), trade_signature.to_string())
+            (
+                Some(approval),
+                trade_signature.to_string(),
+            )
         } else {
             (None, signature.clone())
         };
 
         let params = SubmitTransactionRequest {
+            // TODO: get rid of hardcoded chain id
             chain_id: 137,
             trade: SignedTrade {
                 trade_type: raw_details.raw_trade.trade_type,
@@ -648,11 +645,13 @@ impl SwapsClient for ZeroExGaslessClient {
             approval,
         };
 
-        let result: SubmitTransactionResponse = self.send_request(
-            "/gasless/submit",
-            reqwest::Method::POST,
-            params
-        ).await?;
+        let result: SubmitTransactionResponse = self
+            .send_request(
+                "/gasless/submit",
+                reqwest::Method::POST,
+                params,
+            )
+            .await?;
 
         Ok(result.trade_hash)
     }
@@ -666,15 +665,13 @@ impl SwapsClient for ZeroExGaslessClient {
         let url = format!("/gasless/status/{tx_hash}");
 
         let params = GetTransactionStatusRequest {
-            chain_id: 137
+            chain_id: 137,
         };
 
-        let response: GetTransactionStatusResponse = self.send_request(
-            &url,
-            reqwest::Method::GET,
-            params,
-        ).await?;
+        let response: GetTransactionStatusResponse = self
+            .send_request(&url, reqwest::Method::GET, params)
+            .await?;
 
-        Ok(response.status.into())
+        Ok(response.status)
     }
 }

@@ -148,9 +148,18 @@ impl Transaction {
 
         self.created_at = self.created_at.trunc_subsecs(0);
         self.updated_at = self.updated_at.trunc_subsecs(0);
-        self.outgoing_meta.built_at = self.outgoing_meta.built_at.map(|dt| dt.trunc_subsecs(0));
-        self.outgoing_meta.sent_at = self.outgoing_meta.sent_at.map(|dt| dt.trunc_subsecs(0));
-        self.outgoing_meta.failed_at = self.outgoing_meta.failed_at.map(|dt| dt.trunc_subsecs(0));
+        self.outgoing_meta.built_at = self
+            .outgoing_meta
+            .built_at
+            .map(|dt| dt.trunc_subsecs(0));
+        self.outgoing_meta.sent_at = self
+            .outgoing_meta
+            .sent_at
+            .map(|dt| dt.trunc_subsecs(0));
+        self.outgoing_meta.failed_at = self
+            .outgoing_meta
+            .failed_at
+            .map(|dt| dt.trunc_subsecs(0));
     }
 }
 

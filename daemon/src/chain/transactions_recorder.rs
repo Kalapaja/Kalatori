@@ -14,10 +14,10 @@ use crate::types::{
     InvoiceEventType,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
-    Refund,
     KalatoriEventExt,
     Payout,
     PublicInvoice,
+    Refund,
     SwapChainType,
     TransferDestinationParams,
 };
@@ -146,27 +146,31 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
 
         if invoice_status == InvoiceStatus::Paid {
             // In case when invoice is just "Paid" without refund required,
-            // put here total received amount which might be slightly higher or lower then invoice amount
+            // put here total received amount which might be slightly higher or lower then
+            // invoice amount
             self.add_payout_to_dao_transaction(
                 &dao_transaction,
                 invoice,
                 total_received_amount,
-            ).await?;
+            )
+            .await?;
 
             self.add_webhook_to_dao_transaction(
                 &dao_transaction,
                 public_invoice,
                 InvoiceEventType::Paid,
-            ).await?;
+            )
+            .await?;
         } else if invoice_status == InvoiceStatus::PartiallyPaid {
             self.add_webhook_to_dao_transaction(
                 &dao_transaction,
                 public_invoice,
                 InvoiceEventType::PartiallyPaid,
-            ).await?;
+            )
+            .await?;
         } else if invoice_status == InvoiceStatus::OverPaid {
-            // In case when invoice is overpaid and refund is required, we schedule payout with
-            // original invoice amount and refund with the rest amount
+            // In case when invoice is overpaid and refund is required, we schedule payout
+            // with original invoice amount and refund with the rest amount
             let payout_amount = invoice.amount;
             let refund_amount = total_received_amount - payout_amount;
 
@@ -174,7 +178,8 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 &dao_transaction,
                 invoice.clone(),
                 payout_amount,
-            ).await?;
+            )
+            .await?;
 
             let refund = Refund::from_invoice(invoice, refund_amount);
 
@@ -187,7 +192,8 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 &dao_transaction,
                 public_invoice,
                 InvoiceEventType::Paid,
-            ).await?;
+            )
+            .await?;
         }
 
         dao_transaction
@@ -245,7 +251,12 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             )
             .await
         {
-            Ok(()) if matches!(updated_status, InvoiceStatus::Paid | InvoiceStatus::OverPaid) => {
+            Ok(())
+                if matches!(
+                    updated_status,
+                    InvoiceStatus::Paid | InvoiceStatus::OverPaid
+                ) =>
+            {
                 tracing::info!(
                     invoice_id = %invoice.id,
                     filled_amount = %updated_received_amount,
@@ -269,7 +280,11 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 );
 
                 self.registry
-                    .update_filled_amount(&invoice.id, updated_received_amount, updated_status)
+                    .update_filled_amount(
+                        &invoice.id,
+                        updated_received_amount,
+                        updated_status,
+                    )
                     .await;
 
                 invoice.status = updated_status;
