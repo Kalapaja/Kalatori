@@ -405,12 +405,12 @@ pub fn default_create_swap_data(invoice_id: Uuid) -> CreateSwapData {
         swap_executor: SwapExecutorType::Across,
         from_chain: SwapChainType::Base,
         to_chain: SwapChainType::Polygon,
-        from_token_address: "".to_string(),
-        to_token_address: "".to_string(),
+        from_token_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359".to_string(),
+        to_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F".to_string(),
         from_amount_units: 10_100_000,        // 10.1
         expected_to_amount_units: 10_000_000, // 10
-        from_address: "".to_string(),
-        to_address: "".to_string(),
+        from_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7".to_string(),
+        to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9".to_string(),
         direction: SwapDirection::Incoming,
         origin: TransactionOrigin::default(),
     }
@@ -424,6 +424,34 @@ pub struct SwapQuote {
     pub estimated_to_amount: Decimal,
     pub valid_till: DateTime<Utc>,
     pub quote_details: RawSwapDetails,
+}
+
+#[cfg(test)]
+pub fn default_swap_quote(data: &CreateSwapData) -> SwapQuote {
+    use chrono::TimeDelta;
+
+    use crate::clients::{
+        default_across_raw_transaction,
+        default_bungee_raw_transaction,
+        default_zero_ex_raw_transaction,
+        default_zero_ex_gasless_raw_transaction,
+    };
+
+    let quote_details = match data.swap_executor {
+        SwapExecutorType::Across => RawSwapDetails::Across(default_across_raw_transaction()),
+        SwapExecutorType::Bungee => RawSwapDetails::Bungee(default_bungee_raw_transaction()),
+        SwapExecutorType::ZeroEx => RawSwapDetails::ZeroEx(default_zero_ex_raw_transaction()),
+        SwapExecutorType::ZeroExGasless => RawSwapDetails::ZeroExGasless(default_zero_ex_gasless_raw_transaction()),
+    };
+
+    SwapQuote {
+        swap_executor: data.swap_executor,
+        id: "123".to_string(),
+        estimated_to_amount_units: data.from_amount_units,
+        estimated_to_amount: Decimal::new(data.from_amount_units as i64, 6),
+        valid_till: Utc::now() + TimeDelta::minutes(1),
+        quote_details,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -496,6 +524,7 @@ impl Swap {
         self.finished_at = self
             .finished_at
             .map(|dt| dt.trunc_subsecs(0));
+        self.valid_till = self.valid_till.trunc_subsecs(0);
     }
 }
 

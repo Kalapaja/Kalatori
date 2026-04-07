@@ -86,7 +86,7 @@ pub enum SubscriptionError {
 // ============================================================================
 
 /// Errors for transaction building, submission, and finalization
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TransactionError<T: ChainConfig> {
     // TODO: should be either splitted to different retriable/non-retriable errors or have a flag
     // Asset Hub client makes some requests to the chain that can fail transiently and should be

@@ -41,7 +41,7 @@ use crate::types::{
 };
 use crate::utils::RefundDestinationDetector;
 
-#[derive(Debug, Error)]
+#[derive(Debug, PartialEq, Eq, Clone, Error)]
 pub enum ChainExecutorError {
     // Database related error, we weren't able to fetch payouts/refunds to process
     #[error("Failed to fetch transfers from database")]
@@ -347,12 +347,11 @@ impl<
             .parse()
             .map_err(|_| ChainExecutorError::BuildTransfer { reason: "Invalid asset id".to_string() })?;
 
-        // TODO: build common transfer with amount specified, not transfer all
         let transaction = client
             .build_transfer(
-                &sender,
-                &recipient,
-                &asset_id,
+                sender,
+                recipient,
+                asset_id,
                 request.amount,
             )
             .await
@@ -399,9 +398,10 @@ impl<
         &self,
         request: &OutgoingTransferRequest,
         signed_transaction: &SignedTransaction<T>,
+        transaction_id: Uuid,
     ) -> Result<Transaction, ChainExecutorError> {
         let outgoing = OutgoingTransaction {
-            id: Uuid::new_v4(),
+            id: transaction_id,
             invoice_id: request.invoice_id,
             transfer_info: TransferInfo {
                 chain: request.chain,
@@ -436,18 +436,19 @@ impl<
         Ok(transaction)
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip(self, client, request))]
     async fn prepare_transfer<T: ChainConfig + 'static, C: BlockChainClient<T> + 'static>(
         &self,
         client: Arc<C>,
         request: OutgoingTransferRequest,
+        transaction_id: Uuid,
     ) -> Result<BoxedTransferFuture, ChainExecutorError> {
         let signed_transaction = self
             .build_and_sign_transfer(&client, &request)
             .await?;
 
         let transaction = self
-            .store_built_transfer(&request, &signed_transaction)
+            .store_built_transfer(&request, &signed_transaction, transaction_id)
             .await?;
 
         tracing::trace!(
@@ -471,17 +472,21 @@ impl<
         request: OutgoingTransferRequest,
         futures_set: &mut FuturesUnordered<BoxedTransferFuture>,
     ) -> Result<(), ChainExecutorError> {
+        // Generate transaction id at this point to simplify testing and debugging,
+        // it will be added to span at the prepare_transfer call
+        let transaction_id = Uuid::new_v4();
+
         let transfer = match request.chain {
             ChainType::PolkadotAssetHub => {
                 let client = self.asset_hub_client.clone();
                 self
-                    .prepare_transfer(client, request)
+                    .prepare_transfer(client, request, transaction_id)
                     .await
             },
             ChainType::Polygon => {
                 let client = self.polygon_client.clone();
                 self
-                    .prepare_transfer(client, request)
+                    .prepare_transfer(client, request, transaction_id)
                     .await
             },
         }?;
@@ -521,7 +526,9 @@ impl<
             from_token_address: request.asset_id,
             to_token_address: request.destination_params.destination_asset_id,
             from_amount_units,
-            // TODO: make this field optional
+            // TODO: make this field optional. It's not critical right now as we dont' use it for outgoing transfers
+            // but at least looks weird and might lead to the problems in future. We can either make this field optional
+            // or provide amount as enum with one of values
             expected_to_amount_units: 0,
             from_address: request.source_address,
             to_address: request.destination_params.destination_address,
@@ -697,7 +704,6 @@ impl<
                 }
             })?;
 
-        #[expect(clippy::single_match)]
         match origin.variant() {
             TransactionOriginVariant::Payout(payout_id) => {
                 dao_transaction
@@ -788,7 +794,6 @@ impl<
                 }
             })?;
 
-        #[expect(clippy::single_match)]
         match origin.variant() {
             TransactionOriginVariant::Payout(payout_id) => {
                 dao_transaction
@@ -984,13 +989,37 @@ impl<
 
 #[cfg(test)]
 mod tests {
-    use mockall::predicate;
+    use std::str::FromStr;
 
-    use crate::chain_client::MockBlockChainClient;
-    use crate::dao::MockDaoInterface;
-    use crate::types::default_payout;
+    use alloy::primitives::address;
+    use mockall::predicate::{eq, always};
+    use subxt::utils::AccountId32;
+
+    use crate::chain_client::{MockBlockChainClient, UnsignedTransaction, default_polygon_unsigned_transaction, default_polygon_signed_transaction};
+    use crate::dao::{MockDaoInterface, DaoTransactionError};
+    use crate::types::{default_payout, default_refund, default_swap_quote, Swap};
+    use crate::swaps::SwapsExecutorError;
+    use crate::clients::SwapsClientError;
 
     use super::*;
+
+    fn setup_executor() -> TransfersExecutor<MockDaoInterface, MockBlockChainClient<AssetHubChainConfig>, MockBlockChainClient<PolygonChainConfig>> {
+        let refund_destination_detector = RefundDestinationDetector::default();
+        let dao = MockDaoInterface::default();
+        let asset_hub_client = MockBlockChainClient::<AssetHubChainConfig>::default();
+        let polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        let keyring_client = KeyringClient::default();
+        let swaps_executor = SwapsExecutor::default();
+
+        TransfersExecutor::new(
+            refund_destination_detector,
+            asset_hub_client,
+            polygon_client,
+            dao,
+            keyring_client,
+            swaps_executor,
+        )
+    }
 
     #[tokio::test]
     async fn test_collect_pending_payout_requests() {
@@ -1000,7 +1029,7 @@ mod tests {
 
         dao.expect_get_pending_payouts()
             .once()
-            .with(predicate::eq(10))
+            .with(eq(10))
             .returning(|_| Ok(vec![default_payout(Uuid::new_v4())]));
 
         let asset_hub_client = MockBlockChainClient::<AssetHubChainConfig>::default();
@@ -1023,5 +1052,873 @@ mod tests {
             .unwrap();
 
         assert_eq!(requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_build_and_sign_transfer() {
+        let executor = setup_executor();
+        let invoice_id = Uuid::new_v4();
+        let source_address = address!("0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7");
+        let destination_address = address!("0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9");
+        let asset_id = address!("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359");
+
+        let mut request: OutgoingTransferRequest = default_payout(invoice_id).into();
+        request.source_address = source_address.to_string();
+        request.destination_params.destination_address = destination_address.to_string();
+        request.asset_id = asset_id.to_string();
+
+        // Test case 1:
+        // - Successful flow
+        // Expectations:
+        // - Build transfer call to polygon client with respective params
+        // - Sign transfer call to polygon client with respective invoice id
+        // - Send signed transfer call to polygon client
+        {
+            let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+            polygon_client
+                .expect_build_transfer()
+                .with(
+                    eq(source_address),
+                    eq(destination_address),
+                    eq(asset_id),
+                    eq(request.amount)
+                )
+                .returning(|_, _, _, _| Ok(UnsignedTransaction {
+                    transaction: default_polygon_unsigned_transaction()
+                }));
+
+            polygon_client
+                .expect_sign_transaction()
+                .with(
+                    eq(UnsignedTransaction {
+                        transaction: default_polygon_unsigned_transaction(),
+                    }),
+                    eq(vec![invoice_id.to_string()]),
+                    always()
+                )
+                .returning(|_, _, _| Ok(SignedTransaction {
+                    transaction: default_polygon_signed_transaction(),
+                }));
+
+            let result = executor
+                .build_and_sign_transfer(
+                    &Arc::new(polygon_client),
+                    &request
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(result, SignedTransaction { transaction: default_polygon_signed_transaction() });
+        }
+
+        // Test case 2:
+        // - Unsuccessful flow
+        // - Build transaction error
+        // Expectations:
+        // - build transfer called
+        // - sign transfer not called
+        // - BuildTransfer error with respective reason
+        {
+            let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+            polygon_client
+                .expect_build_transfer()
+                .with(
+                    eq(source_address),
+                    eq(destination_address),
+                    eq(asset_id),
+                    eq(request.amount)
+                )
+                .returning(|_, _, _, _| Err(TransactionError::BuildFailed { reason: "test".to_string() }));
+
+            let result = executor
+                .build_and_sign_transfer(
+                    &Arc::new(polygon_client),
+                    &request
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(result, ChainExecutorError::BuildTransfer { reason: "Failed to build transfer transaction: Transaction building failed: test".to_string() });
+        }
+
+        // Test case 3:
+        // - Unsuccessful flow
+        // - Sign transaction error
+        // Expectations:
+        // - build transfer called
+        // - sign transfer called
+        // - BuildTransfer error with respective reason
+        {
+            let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+            polygon_client
+                .expect_build_transfer()
+                .with(
+                    eq(source_address),
+                    eq(destination_address),
+                    eq(asset_id),
+                    eq(request.amount)
+                )
+                .returning(|_, _, _, _| Ok(UnsignedTransaction {
+                    transaction: default_polygon_unsigned_transaction()
+                }));
+
+            polygon_client
+                .expect_sign_transaction()
+                .with(
+                    eq(UnsignedTransaction {
+                        transaction: default_polygon_unsigned_transaction(),
+                    }),
+                    eq(vec![invoice_id.to_string()]),
+                    always()
+                )
+                .returning(|_, _, _| Err(TransactionError::BuildFailed { reason: "test".to_string() }));
+
+            let result = executor
+                .build_and_sign_transfer(
+                    &Arc::new(polygon_client),
+                    &request
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(result, ChainExecutorError::BuildTransfer { reason: "Failed to sign transfer transaction: Transaction building failed: test".to_string() });
+        }
+
+        // Test case 4:
+        // - Unsuccessful flow
+        // - Invalid asset id
+        // Expectations:
+        // - no calls to client
+        // - BuildTransfer error with respective reason
+        {
+            let polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+            request.asset_id = "Invalid".to_string();
+
+            let result = executor
+                .build_and_sign_transfer(
+                    &Arc::new(polygon_client),
+                    &request
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(result, ChainExecutorError::BuildTransfer { reason: "Invalid asset id".to_string() });
+        }
+
+        // Test case 4:
+        // - Unsuccessful flow
+        // - Invalid asset id
+        // Expectations:
+        // - no calls to client
+        // - BuildTransfer error with respective reason
+        {
+            let polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+            request.asset_id = "Invalid".to_string();
+
+            let result = executor
+                .build_and_sign_transfer(
+                    &Arc::new(polygon_client),
+                    &request
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(result, ChainExecutorError::BuildTransfer { reason: "Invalid asset id".to_string() });
+        }
+
+        // Test case 5:
+        // - Unsuccessful flow
+        // - Invalid destination address
+        // Expectations:
+        // - no calls to client
+        // - BuildTransfer error with respective reason
+        {
+            let polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+            request.destination_params.destination_address = "Invalid".to_string();
+
+            let result = executor
+                .build_and_sign_transfer(
+                    &Arc::new(polygon_client),
+                    &request
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(result, ChainExecutorError::BuildTransfer { reason: "Invalid destination address".to_string() });
+        }
+
+        // Test case 6:
+        // - Unsuccessful flow
+        // - Invalid source address
+        // Expectations:
+        // - no calls to client
+        // - BuildTransfer error with respective reason
+        {
+            let polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+            request.source_address = "Invalid".to_string();
+
+            let result = executor
+                .build_and_sign_transfer(
+                    &Arc::new(polygon_client),
+                    &request
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(result, ChainExecutorError::BuildTransfer { reason: "Invalid source address".to_string() });
+        }
+    }
+
+    #[tokio::test]
+    async fn test_store_built_transfer() {
+        let mut executor = setup_executor();
+
+        let request = OutgoingTransferRequest::from(default_payout(Uuid::new_v4()));
+
+        let signed_transaction = SignedTransaction::<PolygonChainConfig> {
+            transaction: default_polygon_signed_transaction(),
+        };
+
+        let transaction_id = Uuid::new_v4();
+
+        let mut expected_transaction: Transaction = OutgoingTransaction {
+            id: transaction_id,
+            invoice_id: request.invoice_id,
+            transfer_info: TransferInfo {
+                chain: request.chain,
+                asset_id: request.asset_id.clone(),
+                asset_name: request.asset_name.clone(),
+                amount: request.amount,
+                source_address: request.source_address.clone(),
+                destination_address: request.destination_params.destination_address.clone(),
+            },
+            tx_hash: signed_transaction.hash(),
+            transaction_bytes: signed_transaction.to_raw_string(),
+            origin: request.origin.clone(),
+        }
+            .into();
+
+        expected_transaction.trunc_timestamps();
+
+        println!("Expected: {:#?}", expected_transaction);
+
+        let trans_1 = expected_transaction.clone();
+        let trans_2 = expected_transaction.clone();
+
+        executor.dao
+            .expect_create_transaction()
+            .once()
+            .withf(move |transaction| {
+                let mut transaction = transaction.clone();
+                transaction.trunc_timestamps();
+                transaction == trans_1
+            })
+            .returning(|mut trans| {
+                trans.trunc_timestamps();
+                Ok(trans)
+            });
+
+        let result = executor
+            .store_built_transfer(
+                &request,
+                &signed_transaction,
+                transaction_id,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, expected_transaction);
+
+        executor.dao
+            .expect_create_transaction()
+            .once()
+            .withf(move |transaction| {
+                let mut transaction = transaction.clone();
+                transaction.trunc_timestamps();
+                transaction == trans_2
+            })
+            .returning(|_| Err(DaoTransactionError::DatabaseError));
+
+        let result = executor
+            .store_built_transfer(
+                &request,
+                &signed_transaction,
+                transaction_id,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(result, ChainExecutorError::DaoTransactionError {
+            reason: "Failed to store built transfer transaction: Database error during transaction operation".to_string()
+        });
+    }
+
+    #[tokio::test]
+    async fn test_schedule_chain_transfer() {
+        let mut executor = setup_executor();
+
+        let mut queue = FuturesUnordered::new();
+
+        // Test case 1:
+        // - Unsuccessful flow
+        // - Polygon chain, client fails on build
+        // Expectations:
+        // - Polygon client called
+        // - Queue persists empty
+        {
+            let source_address = address!("0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7");
+            let destination_address = address!("0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9");
+            let asset_id = address!("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359");
+
+            let mut request: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+            request.source_address = source_address.to_string();
+            request.destination_params.destination_address = destination_address.to_string();
+            request.asset_id = asset_id.to_string();
+
+            let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+            polygon_client
+                .expect_build_transfer()
+                .with(
+                    eq(source_address),
+                    eq(destination_address),
+                    eq(asset_id),
+                    eq(request.amount)
+                )
+                .returning(|_, _, _, _| Err(TransactionError::BuildFailed { reason: "test".to_string() }));
+
+            executor.polygon_client = Arc::new(polygon_client);
+
+            let result = executor
+                .schedule_chain_transfer(
+                    request.clone(),
+                    &mut queue,
+                )
+                .await;
+
+            // no need to check specific error, we do it in build_and_sign_transfer testing
+            assert!(result.is_err());
+            assert!(queue.is_empty());
+        }
+
+        // Test case 2:
+        // - Unsuccessful flow
+        // - Asset Hub chain, client fails on build
+        // Expectations:
+        // - Asset Hub client called
+        // - Queue persists empty
+        {
+            let mut asset_hub_client = MockBlockChainClient::<AssetHubChainConfig>::default();
+
+            let source_address = AccountId32::from_str("5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY").unwrap();
+            let destination_address = AccountId32::from_str("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap();
+            let asset_id = 1337;
+
+            let mut request: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+            request.source_address = source_address.to_string();
+            request.destination_params.destination_address = destination_address.to_string();
+            request.asset_id = asset_id.to_string();
+
+            asset_hub_client
+                .expect_build_transfer()
+                .with(
+                    eq(source_address),
+                    eq(destination_address),
+                    eq(asset_id),
+                    eq(request.amount)
+                )
+                .returning(|_, _, _, _| Err(TransactionError::BuildFailed { reason: "test".to_string() }));
+
+            executor.asset_hub_client = Arc::new(asset_hub_client);
+
+            let result = executor
+                .schedule_chain_transfer(
+                    request.clone(),
+                    &mut queue,
+                )
+                .await;
+
+            // no need to check specific error, we do it in build_and_sign_transfer testing
+            assert!(result.is_err());
+            assert!(queue.is_empty());
+        }
+
+        // Test case 3:
+        // - Successful flow
+        // - Polygon chain
+        // Expectations:
+        // - Polygon client called
+        // - Dao called
+        // - 1 item in queue
+        {
+            let source_address = address!("0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7");
+            let destination_address = address!("0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9");
+            let asset_id = address!("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359");
+
+            let mut request: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+            request.source_address = source_address.to_string();
+            request.destination_params.destination_address = destination_address.to_string();
+            request.asset_id = asset_id.to_string();
+
+            let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+            polygon_client
+                .expect_build_transfer()
+                .returning(|_, _, _, _| Ok(UnsignedTransaction {
+                    transaction: default_polygon_unsigned_transaction()
+                }));
+
+            polygon_client
+                .expect_sign_transaction()
+                .returning(|_, _, _| Ok(SignedTransaction {
+                    transaction: default_polygon_signed_transaction(),
+                }));
+
+            executor.polygon_client = Arc::new(polygon_client);
+
+            executor.dao
+                .expect_create_transaction()
+                .once()
+                .returning(|trans| Ok(trans));
+
+            let result = executor
+                .schedule_chain_transfer(
+                    request.clone(),
+                    &mut queue,
+                )
+                .await;
+
+            // no need to check specific error, we do it in build_and_sign_transfer testing
+            assert!(result.is_ok());
+            assert_eq!(queue.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_schedule_swap() {
+        let mut executor = setup_executor();
+        let mut request = OutgoingTransferRequest::from(default_payout(Uuid::new_v4()));
+
+        let from_chain = SwapChainType::Polygon;
+        let to_chain = SwapChainType::Polygon;
+        let from_token_address = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359".to_string();
+        let to_token_address = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F".to_string();
+        let amount = Decimal::ONE;
+
+        request.chain = ChainType::Polygon;
+        request.destination_params.destination_chain = to_chain;
+        request.asset_id = from_token_address.clone();
+        request.destination_params.destination_asset_id = to_token_address.clone();
+        request.amount = amount;
+
+        let swap_id = Uuid::new_v4();
+
+        let swap_executor = SwapExecutorType::detect(
+            from_chain,
+            to_chain,
+            SwapDirection::Outgoing,
+        ).unwrap();
+
+        let expected_create_data = CreateSwapData {
+            invoice_id: request.invoice_id,
+            swap_executor,
+            from_chain,
+            to_chain,
+            from_token_address,
+            to_token_address,
+            from_amount_units: 1_000_000,
+            expected_to_amount_units: 0,
+            from_address: request.source_address.clone(),
+            to_address: request.destination_params.destination_address.clone(),
+            direction: SwapDirection::Outgoing,
+            origin: request.origin.clone(),
+        };
+
+        let mut expected_swap = Swap::new(expected_create_data.clone(), default_swap_quote(&expected_create_data));
+        expected_swap.id = swap_id;
+        expected_swap.trunc_timestamps();
+
+        let expected_swap_signature_params = SwapSignatureParams {
+            swap_id,
+            swap_executor,
+            signature: "Signature".to_string(),
+        };
+
+        // Test case 1:
+        // - Successful flow
+        // Expectations:
+        // - Create swap called
+        // - Sign swap called
+        // - Submit swap called
+        {
+            let expected_create_data_cloned = expected_create_data.clone();
+
+            executor.swaps_executor
+                .expect_create_swap()
+                .once()
+                .with(eq(expected_create_data_cloned))
+                .returning(move |data| {
+                    let quote = default_swap_quote(&data);
+                    let mut swap = Swap::new(data, quote);
+                    swap.id = swap_id;
+                    swap.trunc_timestamps();
+                    Ok(swap)
+                });
+
+            executor.swaps_executor
+                .expect_sign_transaction()
+                .once()
+                .with(always(), eq(expected_swap.clone()))
+                .returning(|_, _| Ok("Signature".to_string()));
+
+            let expected_swap_signature_params_cloned = expected_swap_signature_params.clone();
+            let expected_swap_cloned = expected_swap.clone();
+
+            executor.swaps_executor
+                .expect_submit_with_signature()
+                .once()
+                .with(eq(expected_swap_signature_params_cloned))
+                .returning(move |_| Ok(expected_swap_cloned.clone()));
+
+            let result = executor.schedule_swap(request.clone()).await;
+            assert!(result.is_ok());
+        }
+
+        // Test case 2:
+        // - Unsuccessful flow
+        // - Submit swap error
+        // Expectations:
+        // - Create swap called
+        // - Sign swap called
+        // - Submit swap and returned an error
+        {
+            let expected_create_data_cloned = expected_create_data.clone();
+
+            executor.swaps_executor
+                .expect_create_swap()
+                .once()
+                .with(eq(expected_create_data_cloned))
+                .returning(move |data| {
+                    let quote = default_swap_quote(&data);
+                    let mut swap = Swap::new(data, quote);
+                    swap.id = swap_id;
+                    swap.trunc_timestamps();
+                    Ok(swap)
+                });
+
+            executor.swaps_executor
+                .expect_sign_transaction()
+                .once()
+                .with(always(), eq(expected_swap.clone()))
+                .returning(|_, _| Ok("Signature".to_string()));
+
+            let expected_swap_signature_params_cloned = expected_swap_signature_params.clone();
+
+            executor.swaps_executor
+                .expect_submit_with_signature()
+                .once()
+                .with(eq(expected_swap_signature_params_cloned))
+                .returning(move |_| Err(SwapsExecutorError::DatabaseError));
+
+            let result = executor.schedule_swap(request.clone()).await.unwrap_err();
+            assert_eq!(result, ChainExecutorError::BuildTransfer { reason: SwapsExecutorError::DatabaseError.to_string() });
+        }
+
+        // Test case 3:
+        // - Unsuccessful flow
+        // - Sign swap error
+        // Expectations:
+        // - Create swap called
+        // - Sign swap called and returned an error
+        // - Submit swap not called
+        {
+            let expected_create_data_cloned = expected_create_data.clone();
+
+            executor.swaps_executor
+                .expect_create_swap()
+                .once()
+                .with(eq(expected_create_data_cloned))
+                .returning(move |data| {
+                    let quote = default_swap_quote(&data);
+                    let mut swap = Swap::new(data, quote);
+                    swap.id = swap_id;
+                    swap.trunc_timestamps();
+                    Ok(swap)
+                });
+
+            executor.swaps_executor
+                .expect_sign_transaction()
+                .once()
+                .with(always(), eq(expected_swap.clone()))
+                .returning(|_, _| Err(SwapsClientError::FailedToSignTransaction));
+
+            let result = executor.schedule_swap(request.clone()).await.unwrap_err();
+            assert_eq!(result, ChainExecutorError::BuildTransfer { reason: SwapsClientError::FailedToSignTransaction.to_string() });
+        }
+
+        // Test case 4:
+        // - Unsuccessful flow
+        // - Create swap error
+        // Expectations:
+        // - Create swap called and returned an error
+        // - Sign swap not called
+        // - Submit swap not called
+        {
+            let expected_create_data_cloned = expected_create_data.clone();
+
+            executor.swaps_executor
+                .expect_create_swap()
+                .once()
+                .with(eq(expected_create_data_cloned))
+                .returning(|_| Err(SwapsExecutorError::DatabaseError));
+
+            let result = executor.schedule_swap(request.clone()).await.unwrap_err();
+            assert_eq!(result, ChainExecutorError::BuildTransfer { reason: SwapsExecutorError::DatabaseError.to_string() });
+        }
+
+        // Test case 5:
+        // - Unsuccessful flow
+        // - Unsupported swap direction (cross-chain)
+        // Expectations:
+        // - SwapsExecutor not called
+        // - Respective error returned
+        {
+            request.destination_params.destination_chain = SwapChainType::Ethereum;
+            let result = executor.schedule_swap(request).await.unwrap_err();
+            assert_eq!(result, ChainExecutorError::UnsupportedSwapDirection { from_chain, to_chain: SwapChainType::Ethereum });
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_transfer() {
+        let mut executor = setup_executor();
+        let mut request = OutgoingTransferRequest::from(default_payout(Uuid::new_v4()));
+        let mut queue = FuturesUnordered::new();
+
+        let from_chain = SwapChainType::Polygon;
+        let to_chain = SwapChainType::Polygon;
+        let from_token_address = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359".to_string();
+        let to_token_address = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F".to_string();
+        let amount = Decimal::ONE;
+
+        request.chain = ChainType::Polygon;
+        request.destination_params.destination_chain = to_chain;
+        request.asset_id = from_token_address.clone();
+        request.destination_params.destination_asset_id = to_token_address.clone();
+        request.amount = amount;
+
+        let swap_id = Uuid::new_v4();
+
+        let swap_executor = SwapExecutorType::detect(
+            from_chain,
+            to_chain,
+            SwapDirection::Outgoing,
+        ).unwrap();
+
+        let expected_create_data = CreateSwapData {
+            invoice_id: request.invoice_id,
+            swap_executor,
+            from_chain,
+            to_chain,
+            from_token_address: from_token_address.clone(),
+            to_token_address,
+            from_amount_units: 1_000_000,
+            expected_to_amount_units: 0,
+            from_address: request.source_address.clone(),
+            to_address: request.destination_params.destination_address.clone(),
+            direction: SwapDirection::Outgoing,
+            origin: request.origin.clone(),
+        };
+
+        let mut expected_swap = Swap::new(expected_create_data.clone(), default_swap_quote(&expected_create_data));
+        expected_swap.id = swap_id;
+        expected_swap.trunc_timestamps();
+
+        let expected_swap_signature_params = SwapSignatureParams {
+            swap_id,
+            swap_executor,
+            signature: "Signature".to_string(),
+        };
+
+        // Test case 1:
+        // - Successful flow
+        // - Swap flow (same chain, different asset)
+        // Expectations:
+        // - Swap mocks triggered
+        // - No dao calls
+        {
+            let expected_create_data_cloned = expected_create_data.clone();
+
+            executor.swaps_executor
+                .expect_create_swap()
+                .once()
+                .with(eq(expected_create_data_cloned))
+                .returning(move |data| {
+                    let quote = default_swap_quote(&data);
+                    let mut swap = Swap::new(data, quote);
+                    swap.id = swap_id;
+                    swap.trunc_timestamps();
+                    Ok(swap)
+                });
+
+            executor.swaps_executor
+                .expect_sign_transaction()
+                .once()
+                .with(always(), eq(expected_swap.clone()))
+                .returning(|_, _| Ok("Signature".to_string()));
+
+            let expected_swap_signature_params_cloned = expected_swap_signature_params.clone();
+            let expected_swap_cloned = expected_swap.clone();
+
+            executor.swaps_executor
+                .expect_submit_with_signature()
+                .once()
+                .with(eq(expected_swap_signature_params_cloned))
+                .returning(move |_| Ok(expected_swap_cloned.clone()));
+
+            let () = executor.send_transfer(request.clone(), &mut queue).await;
+
+            // as long as method don't return anything in any case, we should just assert that required mocks
+            // has been called and maybe that queue changed/unchanged
+            assert!(queue.is_empty());
+        }
+
+        // Test case 2:
+        // - Successful flow
+        // - Chain direct transfer flow (same chain, same asset)
+        // Expectations:
+        // - Direct transfer mocks triggered
+        // - No set payout/refund error dao calls
+        {
+            request.destination_params.destination_asset_id = from_token_address.clone();
+
+            let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+            polygon_client
+                .expect_build_transfer()
+                .once()
+                .returning(|_, _, _, _| Ok(UnsignedTransaction {
+                    transaction: default_polygon_unsigned_transaction()
+                }));
+
+            polygon_client
+                .expect_sign_transaction()
+                .once()
+                .returning(|_, _, _| Ok(SignedTransaction {
+                    transaction: default_polygon_signed_transaction(),
+                }));
+
+            executor.polygon_client = Arc::new(polygon_client);
+
+            executor.dao
+                .expect_create_transaction()
+                .once()
+                .returning(|trans| Ok(trans));
+
+            let () = executor.send_transfer(request.clone(), &mut queue).await;
+            assert_eq!(queue.len(), 1);
+        }
+
+        // reuse this setup for test cases 3 and 4
+        let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+        let returned_error = TransactionError::BuildFailed { reason: "test".to_string() };
+        let returned_error_string = returned_error.to_string();
+        let expected_failure_message = ChainExecutorError::BuildTransfer { reason: format!("Failed to build transfer transaction: {}", returned_error_string.clone()) }.to_string();
+
+        let mut expected_retry_meta = request.retry_meta.clone();
+        expected_retry_meta.increment_retry(expected_failure_message);
+        expected_retry_meta.trunc_timestamps();
+
+        polygon_client
+            .expect_build_transfer()
+            .times(2)
+            .returning(move |_, _, _, _| Err(returned_error.clone()));
+
+        executor.polygon_client = Arc::new(polygon_client);
+
+        // Test case 3:
+        // - Unsuccessful flow
+        // - Chain direct transfer flow (same chain, same asset)
+        // Expectations:
+        // - Direct transfer mocks triggered and failed
+        // - Payout update retry dao call
+        {
+            let entity_id = request.id;
+            let expected_retry_meta_cloned = expected_retry_meta.clone();
+
+            executor.dao
+                .expect_update_payout_retry()
+                .once()
+                .withf(move |payout_id, retry_meta, is_retriable| {
+                    let mut retry_meta = retry_meta.clone();
+                    retry_meta.trunc_timestamps();                    *payout_id == entity_id
+
+                    && retry_meta == expected_retry_meta_cloned
+                    && *is_retriable
+                })
+                .returning(|_, _, _| Ok(default_payout(Uuid::new_v4())));
+
+            let () = executor.send_transfer(request.clone(), &mut queue).await;
+        }
+
+        // Test case 4:
+        // - Unsuccessful flow
+        // - Chain direct transfer flow (same chain, same asset)
+        // Expectations:
+        // - Direct transfer mocks triggered and failed
+        // - Refund update retry dao call
+        {
+            let entity_id = request.id;
+            let expected_retry_meta_cloned = expected_retry_meta.clone();
+            request.origin = TransactionOrigin::refund(entity_id);
+
+            executor.dao
+                .expect_update_refund_retry()
+                .once()
+                .withf(move |payout_id, retry_meta, is_retriable| {
+                    let mut retry_meta = retry_meta.clone();
+                    retry_meta.trunc_timestamps();
+
+                    *payout_id == entity_id
+                    && retry_meta == expected_retry_meta_cloned
+                    && *is_retriable
+                })
+                .returning(|_, _, _| Ok(default_refund(Uuid::new_v4())));
+
+            let () = executor.send_transfer(request.clone(), &mut queue).await;
+        }
+
+        // Test case 5:
+        // - Unsuccessful flow
+        // - Chain direct transfer flow (same chain, same asset)
+        // Expectations:
+        // - No transfer mocks triggered
+        // - Unsupported direction error set to retry meta
+        // - Is not retriable
+        {
+            let entity_id = request.id;
+            let to_chain = SwapChainType::BnbSmartChain;
+            request.destination_params.destination_chain = to_chain;
+            expected_retry_meta.failure_message = Some(ChainExecutorError::UnsupportedSwapDirection { from_chain, to_chain }.to_string());
+
+            executor.dao
+                .expect_update_refund_retry()
+                .once()
+                .withf(move |payout_id, retry_meta, is_retriable| {
+                    let mut retry_meta = retry_meta.clone();
+                    retry_meta.trunc_timestamps();
+
+                    *payout_id == entity_id
+                    && retry_meta == expected_retry_meta
+                    && !*is_retriable
+                })
+                .returning(|_, _, _| Ok(default_refund(Uuid::new_v4())));
+
+            let () = executor.send_transfer(request, &mut queue).await;
+        }
     }
 }

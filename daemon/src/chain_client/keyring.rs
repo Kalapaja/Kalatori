@@ -154,7 +154,7 @@ impl Keyring {
             derivation_params,
         } = data;
         let derived_keypair = self.generate_asset_hub_derived_keypair(derivation_params)?;
-        Ok(transaction.sign(&derived_keypair))
+        Ok((*transaction).sign(&derived_keypair).into())
     }
 
     fn process_generate_asset_hub_address(

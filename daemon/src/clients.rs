@@ -13,5 +13,7 @@ pub use swaps::{
 #[cfg(test)]
 pub use swaps::{
     default_across_raw_transaction,
+    default_bungee_raw_transaction,
     default_zero_ex_raw_transaction,
+    default_zero_ex_gasless_raw_transaction,
 };

@@ -3,6 +3,7 @@ mod tracker;
 
 #[cfg_attr(test, mockall_double::double)]
 pub use executor::SwapsExecutor;
+pub use executor::SwapsExecutorError;
 pub use tracker::SwapsTracker;
 
 use crate::clients::{

@@ -11,9 +11,14 @@ use serde::{
 use kalatori_client::types::ChainType;
 
 use crate::chain_client::KeyringClient;
-use crate::clients::swaps::bungee::BungeeRawTransaction;
 use crate::types::{
-    CreateSwapData, Swap, SwapChainType, SwapDetails, SwapDirection, SwapExecutorType, SwapQuote
+    CreateSwapData,
+    Swap,
+    SwapChainType,
+    SwapDetails,
+    SwapDirection,
+    SwapExecutorType,
+    SwapQuote,
 };
 
 #[cfg(test)]
@@ -22,9 +27,14 @@ pub use across::{
     AcrossClient,
     AcrossRawTransaction,
 };
-pub use bungee::BungeeClient;
 #[cfg(test)]
-pub use zeroex::default_zero_ex_raw_transaction;
+pub use bungee::default_bungee_raw_transaction;
+pub use bungee::{
+    BungeeClient,
+    BungeeRawTransaction,
+};
+#[cfg(test)]
+pub use zeroex::{default_zero_ex_raw_transaction, default_zero_ex_gasless_raw_transaction};
 pub use zeroex::{
     ZeroExClient,
     ZeroExRawTransaction,

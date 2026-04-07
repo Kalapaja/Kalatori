@@ -120,6 +120,14 @@ impl RetryMeta {
         self.next_retry_at = Some(now + chrono::Duration::seconds(self.retry_delay_secs()));
         self.failure_message = Some(failure_message);
     }
+
+    #[cfg(test)]
+    pub fn trunc_timestamps(&mut self) {
+        use chrono::SubsecRound;
+
+        self.last_attempt_at = self.last_attempt_at.map(|dt| dt.trunc_subsecs(0));
+        self.next_retry_at = self.next_retry_at.map(|dt| dt.trunc_subsecs(0));
+    }
 }
 
 // ── Pagination & sorting ─────────────────────────────────────────────

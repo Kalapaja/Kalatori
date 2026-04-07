@@ -82,16 +82,16 @@ impl<
             ChainType::PolkadotAssetHub => {
                 self.asset_hub_client
                     .fetch_asset_balance(
-                        &asset_id.parse().unwrap(),
-                        &address.parse().unwrap(),
+                        asset_id.parse().unwrap(),
+                        address.parse().unwrap(),
                     )
                     .await
             },
             ChainType::Polygon => {
                 self.polygon_client
                     .fetch_asset_balance(
-                        &asset_id.parse().unwrap(),
-                        &address.parse().unwrap(),
+                        asset_id.parse().unwrap(),
+                        address.parse().unwrap(),
                     )
                     .await
             },

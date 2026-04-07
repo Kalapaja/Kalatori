@@ -141,6 +141,17 @@ impl Transaction {
     pub fn is_incoming(&self) -> bool {
         self.transaction_type == TransactionType::Incoming
     }
+
+    #[cfg(test)]
+    pub fn trunc_timestamps(&mut self) {
+        use chrono::SubsecRound;
+
+        self.created_at = self.created_at.trunc_subsecs(0);
+        self.updated_at = self.updated_at.trunc_subsecs(0);
+        self.outgoing_meta.built_at = self.outgoing_meta.built_at.map(|dt| dt.trunc_subsecs(0));
+        self.outgoing_meta.sent_at = self.outgoing_meta.sent_at.map(|dt| dt.trunc_subsecs(0));
+        self.outgoing_meta.failed_at = self.outgoing_meta.failed_at.map(|dt| dt.trunc_subsecs(0));
+    }
 }
 
 impl From<Transaction> for PublicTransaction {

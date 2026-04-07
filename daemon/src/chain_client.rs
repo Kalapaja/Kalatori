@@ -45,6 +45,8 @@ pub use polygon::{
     PolygonChainConfig,
     PolygonClient,
 };
+#[cfg(test)]
+pub use polygon::{default_polygon_unsigned_transaction, default_polygon_signed_transaction};
 
 pub type TransfersStream<T> =
     Pin<Box<dyn stream::Stream<Item = Result<Vec<ChainTransfer<T>>, SubscriptionError>> + Send>>;
@@ -69,8 +71,8 @@ pub trait ChainConfig: Clone + std::fmt::Debug + Sync + Send + 'static {
         + Send;
     type TransactionHash: FromStr + ToString + Sync + Send;
     type BlockHash: FromStr + ToString + Sync + Send;
-    type UnsignedTransaction: Send;
-    type SignedTransaction: SignedTransactionUtils + Sync + Send;
+    type UnsignedTransaction: Send + std::fmt::Debug + PartialEq;
+    type SignedTransaction: SignedTransactionUtils + Sync + Send + std::fmt::Debug + PartialEq;
     type AccountId: FromStr + ToString + std::fmt::Debug + Sync + Send;
 
     const CHAIN_TYPE: ChainType;
@@ -215,12 +217,14 @@ impl<T: ChainConfig> AssetInfoStore<T> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct UnsignedTransaction<T: ChainConfig> {
-    transaction: T::UnsignedTransaction,
+    pub transaction: T::UnsignedTransaction,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct SignedTransaction<T: ChainConfig> {
-    transaction: T::SignedTransaction,
+    pub transaction: T::SignedTransaction,
 }
 
 impl<T: ChainConfig> SignedTransactionUtils for SignedTransaction<T> {
@@ -267,8 +271,8 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
 
     async fn fetch_asset_balance(
         &self,
-        asset_id: &T::AssetId,
-        account: &T::AccountId,
+        asset_id: T::AssetId,
+        account: T::AccountId,
     ) -> Result<Decimal, QueryError>;
 
     async fn subscribe_transfers(
@@ -279,9 +283,9 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
     /// Build transaction to transfer exact amount to recipient
     async fn build_transfer(
         &self,
-        sender: &T::AccountId,
-        recipient: &T::AccountId,
-        asset_id: &T::AssetId,
+        sender: T::AccountId,
+        recipient: T::AccountId,
+        asset_id: T::AssetId,
         amount: Decimal,
     ) -> Result<UnsignedTransaction<T>, TransactionError<T>>;
 
@@ -289,9 +293,9 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
     /// recipient
     async fn build_transfer_all(
         &self,
-        sender: &T::AccountId,
-        recipient: &T::AccountId,
-        asset_id: &T::AssetId,
+        sender: T::AccountId,
+        recipient: T::AccountId,
+        asset_id: T::AssetId,
     ) -> Result<UnsignedTransaction<T>, TransactionError<T>>;
 
     async fn sign_transaction(
