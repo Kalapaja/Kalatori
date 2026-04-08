@@ -266,7 +266,7 @@ fn set_session_cookie(
     token: &str,
 ) {
     let cookie_value = format!(
-        "{COOKIE_NAME}={token}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age={COOKIE_MAX_AGE_SECS}"
+        "{COOKIE_NAME}={token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age={COOKIE_MAX_AGE_SECS}"
     );
     if let Ok(value) = HeaderValue::from_str(&cookie_value) {
         response
