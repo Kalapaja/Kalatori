@@ -13,6 +13,7 @@ use secrecy::{
     ExposeSecret,
     SecretString,
 };
+use serde::de::DeserializeOwned;
 use serde::{
     Deserialize,
     Serialize,
@@ -21,12 +22,18 @@ use serde_with::{
     DisplayFromStr,
     serde_as,
 };
+use uuid::Uuid;
 
+use crate::chain_client::{
+    KeyringClient,
+    SignPermitRequestData,
+};
 use crate::configs::{
     IntegratorFees,
     SwapsConfig,
 };
 use crate::types::{
+    Swap,
     SwapChainType,
     SwapDetails,
     SwapExecutorType,
@@ -116,6 +123,130 @@ impl TryFrom<RawSwapDetails> for ZeroExRawTransaction {
 }
 
 pub type ZeroExQuoteDetails = ZeroExRawTransaction;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZeroExGaslessRawTransaction {
+    pub raw_trade: ZeroExTrade,
+    pub approval: Option<ZeroExTrade>,
+}
+
+#[cfg(test)]
+pub fn default_zero_ex_gasless_raw_transaction() -> ZeroExGaslessRawTransaction {
+    ZeroExGaslessRawTransaction {
+        raw_trade: ZeroExTrade {
+            trade_type: "settler_metatransaction".to_string(),
+            hash: "0x3ff032fa3a970a3f2b763afce093fd133ced63c0b097ab12ae1441b42de4a167".to_string(),
+            eip712: serde_json::json!({
+                "types": {
+                    "PermitWitnessTransferFrom": [
+                    {
+                        "name": "permitted",
+                        "type": "TokenPermissions"
+                    },
+                    {
+                        "name": "spender",
+                        "type": "address"
+                    },
+                    {
+                        "name": "nonce",
+                        "type": "uint256"
+                    },
+                    {
+                        "name": "deadline",
+                        "type": "uint256"
+                    },
+                    {
+                        "name": "slippageAndActions",
+                        "type": "SlippageAndActions"
+                    }
+                    ],
+                    "EIP712Domain": [
+                    {
+                        "name": "name",
+                        "type": "string"
+                    },
+                    {
+                        "name": "chainId",
+                        "type": "uint256"
+                    },
+                    {
+                        "name": "verifyingContract",
+                        "type": "address"
+                    }
+                    ],
+                    "TokenPermissions": [
+                    {
+                        "name": "token",
+                        "type": "address"
+                    },
+                    {
+                        "name": "amount",
+                        "type": "uint256"
+                    }
+                    ],
+                    "SlippageAndActions": [
+                    {
+                        "name": "recipient",
+                        "type": "address"
+                    },
+                    {
+                        "name": "buyToken",
+                        "type": "address"
+                    },
+                    {
+                        "name": "minAmountOut",
+                        "type": "uint256"
+                    },
+                    {
+                        "name": "actions",
+                        "type": "bytes[]"
+                    }
+                    ]
+                },
+                "domain": {
+                    "name": "Permit2",
+                    "chainId": 1,
+                    "verifyingContract": "0x000000000022d473030f116ddee9f6b43ac78ba3"
+                },
+                "message": {
+                    "permitted": {
+                    "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                    "amount": "300000000"
+                    },
+                    "spender": "0x7c39a136ea20b3483e402ea031c1f3c019bab24b",
+                    "nonce": "2241959297937691820908574931991567",
+                    "deadline": "1718670104",
+                    "slippageAndActions": {
+                    "recipient": "0x70a9f34f9b34c64957b9c401a97bfed35b95049e",
+                    "buyToken": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+                    "minAmountOut": "292116101",
+                    "actions": [
+                        "0x0dfeb4190000000000000000000000007c39a136ea20b3483e402ea031c1f3c019bab24b000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000000000000000000000000000000000000011e1a3000000000000000000000000000000000000006e898131631616b1779bad70bc0f000000000000000000000000000000000000000000000000000000006670d318",
+                        "0x38c9c147000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4800000000000000000000000000000000000000000000000000000000000027100000000000000000000000006146be494fee4c73540cb1c5f87536abf1452500000000000000000000000000000000000000000000000000000000000000004400000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000084c31b8d7a0000000000000000000000007c39a136ea20b3483e402ea031c1f3c019bab24b00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000011e1a30000000000000000000000000000000000000000000000000000000001000276a400000000000000000000000000000000000000000000000000000000",
+                        "0x38c9c147000000000000000000000000dac17f958d2ee523a2206206994597c13d831ec700000000000000000000000000000000000000000000000000000000000000ec000000000000000000000000dac17f958d2ee523a2206206994597c13d831ec7000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000044a9059cbb00000000000000000000000038f5e5b4da37531a6e85161e337e0238bb27aa90000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                    ]
+                    }
+                },
+                "primaryType": "PermitWitnessTransferFrom"
+            }),
+        },
+        approval: None,
+    }
+}
+
+impl TryFrom<RawSwapDetails> for ZeroExGaslessRawTransaction {
+    type Error = SwapsClientError;
+
+    fn try_from(value: RawSwapDetails) -> Result<Self, Self::Error> {
+        let RawSwapDetails::ZeroExGasless(raw_transaction) = value else {
+            return Err(SwapsClientError::WrongRawTransaction)
+        };
+
+        Ok(raw_transaction)
+    }
+}
+
+pub type ZeroExGaslessQuoteDetails = ZeroExGaslessRawTransaction;
 
 impl From<ZeroExErrorResponse> for SwapsClientError {
     fn from(_value: ZeroExErrorResponse) -> Self {
@@ -281,5 +412,266 @@ impl SwapsClient for ZeroExClient {
         };
 
         Ok(status)
+    }
+}
+
+#[derive(Clone)]
+pub struct ZeroExGaslessClient {
+    client: reqwest::Client,
+    #[expect(dead_code)]
+    fees: Option<IntegratorFees>,
+    api_key: SecretString,
+}
+
+impl ZeroExGaslessClient {
+    pub fn new(config: &SwapsConfig) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            fees: config.fees.clone(),
+            api_key: config.zero_ex.api_key.clone(),
+        }
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn send_request<T, R>(
+        &self,
+        url: &str,
+        method: reqwest::Method,
+        params: T,
+    ) -> Result<R, SwapsClientError>
+    where
+        T: Serialize + std::fmt::Debug,
+        R: DeserializeOwned + std::fmt::Debug,
+    {
+        // let full_url = format!("{}{}", self.base_url, url);
+        let full_url = format!("https://api.0x.org{}", url);
+
+        let request = self
+            .client
+            .request(method.clone(), full_url)
+            .header(
+                "0x-api-key",
+                self.api_key.expose_secret(),
+            )
+            .header("0x-version", "v2");
+
+        let request = if let reqwest::Method::POST = method {
+            request.json(&params)
+        } else {
+            request.query(&params)
+        };
+
+        let response = request.send().await.map_err(|e| {
+            tracing::warn!(error = ?e, "Error while send request to 0x API");
+            SwapsClientError::UnknownApiError
+        })?;
+
+        let text = response.text().await.map_err(|e| {
+            tracing::warn!(error = ?e, "Failed to extract response text from 0x response");
+            SwapsClientError::UnknownApiError
+        })?;
+
+        tracing::trace!(%text, "Got raw text response from 0x gasless API");
+
+        let result = serde_json::from_str(&text).map_err(|e| {
+            tracing::warn!(error = ?e, "Failed to deserialize response from 0x API");
+            SwapsClientError::UnknownApiError
+        })?;
+
+        match result {
+            ZeroExResponse::Ok(resp) => Ok(resp),
+            ZeroExResponse::Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn sign_hash(
+        &self,
+        hash: &str,
+        invoice_id: Uuid,
+        keyring_client: &KeyringClient,
+    ) -> Result<String, SwapsClientError> {
+        let hash = B256::from_slice(&const_hex::decode(hash).map_err(|e| {
+            tracing::error!(error = ?e, %hash,  "Failed to decode stored trade hash");
+            SwapsClientError::FailedToSignTransaction
+        })?);
+
+        let data = SignPermitRequestData {
+            permit_hash: hash,
+            derivation_params: vec![invoice_id.to_string()],
+        };
+
+        let signed = keyring_client
+            .sign_polygon_permit(data)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = ?e, "Failed to sign transaction");
+                SwapsClientError::FailedToSignTransaction
+            })?;
+
+        Ok(const_hex::encode_prefixed(
+            signed.signature.as_bytes(),
+        ))
+    }
+}
+
+impl SwapsClient for ZeroExGaslessClient {
+    type GetQuoteParams = ZeroExGetQuoteRequest;
+    type GetQuoteResponse = ZeroExGaslessGetQuoteResponse;
+    type RawTransactionDetails = ZeroExGaslessRawTransaction;
+    type SwapStatus = ZeroExGaslessTransactionStatus;
+
+    const CROSS_CHAIN_SUPPORTED: bool = false;
+    const EXECUTOR: SwapExecutorType = SwapExecutorType::ZeroExGasless;
+    const GASLESS: bool = true;
+    const SINGLE_CHAIN_SUPPORTED: bool = true;
+    const SUPPORTED_CHAINS: &[ChainType] = &[ChainType::Polygon];
+    // https://docs.0x.org/docs/introduction/supported-chains
+    const SUPPORTED_SWAP_CHAINS: &[SwapChainType] = &[
+        SwapChainType::Ethereum,
+        SwapChainType::Abstract,
+        SwapChainType::Arbitrum,
+        SwapChainType::Avalanche,
+        SwapChainType::Base,
+        SwapChainType::Berachain,
+        SwapChainType::Blast,
+        SwapChainType::BnbSmartChain,
+        SwapChainType::HyperEvm,
+        SwapChainType::Ink,
+        SwapChainType::Linea,
+        SwapChainType::Mantle,
+        SwapChainType::Mode,
+        SwapChainType::Monad,
+        SwapChainType::Optimism,
+        SwapChainType::Plasma,
+        SwapChainType::Polygon,
+        SwapChainType::Scroll,
+        SwapChainType::Sonic,
+        SwapChainType::Tempo,
+        SwapChainType::Unichain,
+        SwapChainType::WorldChain,
+    ];
+
+    #[tracing::instrument(skip(self))]
+    async fn get_quote_internal(
+        &self,
+        data: Self::GetQuoteParams,
+    ) -> Result<Self::GetQuoteResponse, SwapsClientError> {
+        self.send_request(
+            "/gasless/quote",
+            reqwest::Method::GET,
+            data,
+        )
+        .await
+    }
+
+    async fn sign_transaction_internal(
+        &self,
+        keyring_client: &KeyringClient,
+        swap: &Swap,
+    ) -> Result<String, SwapsClientError> {
+        let details = self.extract_raw_details(
+            swap.swap_details
+                .raw_transaction
+                .clone(),
+        )?;
+
+        let trade_signature = self
+            .sign_hash(
+                &details.raw_trade.hash,
+                swap.request.invoice_id,
+                keyring_client,
+            )
+            .await?;
+
+        let signature = if let Some(approval) = details.approval.as_ref() {
+            let approval_signature = self
+                .sign_hash(
+                    &approval.hash,
+                    swap.request.invoice_id,
+                    keyring_client,
+                )
+                .await?;
+
+            format!("{trade_signature}|{approval_signature}")
+        } else {
+            trade_signature
+        };
+
+        Ok(signature)
+    }
+
+    async fn submit_transaction_internal(
+        &self,
+        data: &SwapDetails,
+    ) -> Result<super::TransactionHash, SwapsClientError> {
+        let signature = self.extract_signature(data)?;
+        let raw_details: ZeroExGaslessRawTransaction = data
+            .raw_transaction
+            .clone()
+            .try_into()?;
+
+        let (approval, signature_bytes) = if let Some(approval) = raw_details.approval {
+            // TODO: get rid of unwrap
+            let (trade_signature, approval_signature) = signature.split_once("|").unwrap();
+
+            let approval = SignedTrade {
+                trade_type: approval.trade_type,
+                eip712: approval.eip712,
+                signature: TypedSignature {
+                    signature_type: 5,
+                    signature_bytes: approval_signature.to_string(),
+                },
+            };
+
+            (
+                Some(approval),
+                trade_signature.to_string(),
+            )
+        } else {
+            (None, signature.clone())
+        };
+
+        let params = SubmitTransactionRequest {
+            // TODO: get rid of hardcoded chain id
+            chain_id: 137,
+            trade: SignedTrade {
+                trade_type: raw_details.raw_trade.trade_type,
+                eip712: raw_details.raw_trade.eip712,
+                signature: TypedSignature {
+                    signature_type: 5,
+                    signature_bytes,
+                },
+            },
+            approval,
+        };
+
+        let result: SubmitTransactionResponse = self
+            .send_request(
+                "/gasless/submit",
+                reqwest::Method::POST,
+                params,
+            )
+            .await?;
+
+        Ok(result.trade_hash)
+    }
+
+    async fn get_transaction_status_internal(
+        &self,
+        data: &SwapDetails,
+    ) -> Result<Self::SwapStatus, SwapsClientError> {
+        let tx_hash = self.extract_transaction_hash(data)?;
+
+        let url = format!("/gasless/status/{tx_hash}");
+
+        let params = GetTransactionStatusRequest {
+            chain_id: 137,
+        };
+
+        let response: GetTransactionStatusResponse = self
+            .send_request(&url, reqwest::Method::GET, params)
+            .await?;
+
+        Ok(response.status)
     }
 }

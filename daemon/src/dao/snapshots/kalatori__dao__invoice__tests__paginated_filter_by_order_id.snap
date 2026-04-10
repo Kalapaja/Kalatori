@@ -5,11 +5,11 @@ expression: result
 - invoice:
     id: "[uuid]"
     order_id: SHOP-2024-002
-    asset_id: "1984"
-    asset_name: USDT
-    chain: PolkadotAssetHub
+    asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    asset_name: USDC
+    chain: Polygon
     amount: "100.00"
-    payment_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+    payment_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
     status: Waiting
     cart:
       items: []
@@ -21,11 +21,11 @@ expression: result
 - invoice:
     id: "[uuid]"
     order_id: SHOP-2024-001
-    asset_id: "1984"
-    asset_name: USDT
-    chain: PolkadotAssetHub
+    asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    asset_name: USDC
+    chain: Polygon
     amount: "100.00"
-    payment_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+    payment_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
     status: Waiting
     cart:
       items: []

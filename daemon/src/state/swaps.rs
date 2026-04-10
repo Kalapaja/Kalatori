@@ -121,6 +121,7 @@ impl<D: DaoInterface> AppState<D> {
             to_address: invoice.invoice.payment_address,
             expected_to_amount_units,
             direction,
+            origin: Default::default(),
         };
 
         let swap = self

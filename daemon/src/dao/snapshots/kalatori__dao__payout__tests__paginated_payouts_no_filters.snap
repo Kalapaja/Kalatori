@@ -13,8 +13,10 @@ expression: result
   asset_id: USDC
   asset_name: USDC
   amount: "99.99"
-  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-  destination_address: 1NthTCKurNHLW52mMa6iA8Gz7UFYW5UnM3yTSpVdGu4Th7h
+  source_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+  destination_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
+  destination_chain: Polygon
+  destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
 - id: "[uuid]"
   invoice_id: "[uuid]"
@@ -27,8 +29,10 @@ expression: result
   asset_id: "1984"
   asset_name: USDT
   amount: "180.00"
-  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-  destination_address: 1NthTCKurNHLW52mMa6iA8Gz7UFYW5UnM3yTSpVdGu4Th7h
+  source_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+  destination_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
+  destination_chain: Polygon
+  destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
 - id: "[uuid]"
   invoice_id: "[uuid]"
@@ -41,8 +45,10 @@ expression: result
   asset_id: "1984"
   asset_name: USDT
   amount: "42.00"
-  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-  destination_address: 1NthTCKurNHLW52mMa6iA8Gz7UFYW5UnM3yTSpVdGu4Th7h
+  source_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+  destination_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
+  destination_chain: Polygon
+  destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 5
   last_attempt_at: "[timestamp]"
   failure_message: Permanent failure
@@ -57,8 +63,10 @@ expression: result
   asset_id: USDC
   asset_name: USDC
   amount: "300.00"
-  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-  destination_address: 1NthTCKurNHLW52mMa6iA8Gz7UFYW5UnM3yTSpVdGu4Th7h
+  source_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+  destination_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
+  destination_chain: Polygon
+  destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 1
   last_attempt_at: "[timestamp]"
   next_retry_at: "[timestamp]"
@@ -74,8 +82,10 @@ expression: result
   asset_id: USDC
   asset_name: USDC
   amount: "500.00"
-  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-  destination_address: 1NthTCKurNHLW52mMa6iA8Gz7UFYW5UnM3yTSpVdGu4Th7h
+  source_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+  destination_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
+  destination_chain: Polygon
+  destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
 - id: "[uuid]"
   invoice_id: "[uuid]"
@@ -88,8 +98,10 @@ expression: result
   asset_id: "1984"
   asset_name: USDT
   amount: "75.00"
-  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-  destination_address: 1NthTCKurNHLW52mMa6iA8Gz7UFYW5UnM3yTSpVdGu4Th7h
+  source_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+  destination_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
+  destination_chain: Polygon
+  destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
 - id: "[uuid]"
   invoice_id: "[uuid]"
@@ -102,8 +114,10 @@ expression: result
   asset_id: USDC
   asset_name: USDC
   amount: "250.50"
-  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-  destination_address: 1NthTCKurNHLW52mMa6iA8Gz7UFYW5UnM3yTSpVdGu4Th7h
+  source_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+  destination_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
+  destination_chain: Polygon
+  destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
 - id: "[uuid]"
   invoice_id: "[uuid]"
@@ -116,6 +130,8 @@ expression: result
   asset_id: "1984"
   asset_name: USDT
   amount: "100.00"
-  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-  destination_address: 1NthTCKurNHLW52mMa6iA8Gz7UFYW5UnM3yTSpVdGu4Th7h
+  source_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+  destination_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
+  destination_chain: Polygon
+  destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0

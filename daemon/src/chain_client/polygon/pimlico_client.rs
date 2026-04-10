@@ -17,7 +17,7 @@ use super::consts::{
     PAYMASTER,
 };
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Eip7702Auth {
     pub chain_id: U256,
@@ -85,7 +85,7 @@ impl GasParams {
 //    `factory` and `factory_data`)
 // 4. Some fields are wrapped into structures which are returned from other
 //    calls in order to simplify the code
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserOperationParams {
     pub sender: Address,
@@ -102,7 +102,7 @@ pub struct UserOperationParams {
     pub eip7702_auth: Eip7702Auth,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GasPrice {
     pub max_fee_per_gas: U256,

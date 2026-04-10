@@ -73,7 +73,7 @@ const DEFAULT_MULTILOCATION_PARENTS: u8 = 0;
 const DEFAULT_PALLET_INSTANCE: u8 = 50;
 
 // We don't need to construct this at runtime, so an empty enum is appropriate.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubxtAssetHubConfig {}
 
 impl Config for SubxtAssetHubConfig {
@@ -96,19 +96,106 @@ type TransferExtrinsic = runtime::assets::calls::types::Transfer;
 type TransferAllExtrinsic = runtime::assets::calls::types::TransferAll;
 type TransferredEvent = runtime::assets::events::Transferred;
 
-pub type AssetHubUnsignedTransaction =
+// For unsigned and signed transaction types use wrappers to be able to compare
+// them in tests
+pub type AssetHubUnsignedTransactionInner =
     subxt::tx::PartialTransaction<SubxtAssetHubConfig, SubxtAssetHubClient>;
-pub type AssetHubSignedTransaction =
+
+pub struct AssetHubUnsignedTransaction(AssetHubUnsignedTransactionInner);
+
+impl std::fmt::Debug for AssetHubUnsignedTransaction {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("AssetHubUnsignedTransaction")
+            .field(
+                "signer_payload",
+                &self.0.signer_payload(),
+            )
+            .field("call_data", &self.0.call_data())
+            .finish()
+    }
+}
+
+impl PartialEq for AssetHubUnsignedTransaction {
+    fn eq(
+        &self,
+        other: &Self,
+    ) -> bool {
+        self.signer_payload() == other.signer_payload() && self.call_data() == other.call_data()
+    }
+}
+
+impl std::ops::Deref for AssetHubUnsignedTransaction {
+    type Target = AssetHubUnsignedTransactionInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for AssetHubUnsignedTransaction {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<AssetHubUnsignedTransactionInner> for AssetHubUnsignedTransaction {
+    fn from(value: AssetHubUnsignedTransactionInner) -> Self {
+        Self(value)
+    }
+}
+
+pub type AssetHubSignedTransactionInner =
     subxt::tx::SubmittableTransaction<SubxtAssetHubConfig, SubxtAssetHubClient>;
+
+pub struct AssetHubSignedTransaction(AssetHubSignedTransactionInner);
+
+impl std::fmt::Debug for AssetHubSignedTransaction {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("AssetHubSignedTransaction")
+            .field("encoded", &self.0.encoded())
+            .field("hash", &self.0.hash())
+            .finish()
+    }
+}
+
+impl PartialEq for AssetHubSignedTransaction {
+    fn eq(
+        &self,
+        other: &Self,
+    ) -> bool {
+        self.encoded() == other.encoded() && self.hash() == other.hash()
+    }
+}
+
+impl std::ops::Deref for AssetHubSignedTransaction {
+    type Target = AssetHubSignedTransactionInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<AssetHubSignedTransactionInner> for AssetHubSignedTransaction {
+    fn from(value: AssetHubSignedTransactionInner) -> Self {
+        Self(value)
+    }
+}
+
 pub type AssetHubAccountId = subxt::utils::AccountId32;
 
 impl SignedTransactionUtils for AssetHubSignedTransaction {
     fn to_raw_string(&self) -> String {
-        const_hex::encode_prefixed(self.encoded())
+        const_hex::encode_prefixed(self.0.encoded())
     }
 
     fn hash(&self) -> String {
-        self.hash().to_string()
+        self.0.hash().to_string()
     }
 }
 
@@ -440,14 +527,14 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
     #[instrument(skip(self))]
     async fn fetch_asset_balance(
         &self,
-        asset_id: &u32,
-        account_id: &AssetHubAccountId,
+        asset_id: u32,
+        account_id: AssetHubAccountId,
     ) -> Result<Decimal, QueryError> {
         debug!("Trying to fetch asset balance...");
 
         let decimals = self
             .asset_info_store
-            .get_asset_info(asset_id)
+            .get_asset_info(&asset_id)
             .await
             .or_else(|| {
                 warn!("AssetInfo wasn't found in local AssetInfoStore");
@@ -460,7 +547,7 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
 
         let request_data = runtime::storage()
             .assets()
-            .account(*asset_id, account_id.clone());
+            .account(asset_id, account_id.clone());
 
         let amount = self
             .client
@@ -576,9 +663,9 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
     #[instrument(skip(self), fields(asset_id = %asset_id, amount = %amount))]
     async fn build_transfer(
         &self,
-        sender: &AssetHubAccountId,
-        recipient: &AssetHubAccountId,
-        asset_id: &u32,
+        sender: AssetHubAccountId,
+        recipient: AssetHubAccountId,
+        asset_id: u32,
         amount: Decimal,
     ) -> Result<UnsignedTransaction<AssetHubChainConfig>, TransactionError<AssetHubChainConfig>>
     {
@@ -586,7 +673,7 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
         // use other methods to build transfer_all for native asset
         let decimals = self
             .asset_info_store()
-            .get_asset_info(asset_id)
+            .get_asset_info(&asset_id)
             .await
             .ok_or_else(|| TransactionError::BuildFailed {
                 reason: format!("Asset ID {asset_id} not found in asset info store"),
@@ -609,10 +696,10 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
                 }
             })?;
 
-        let tx_config = self.build_tx_config(*asset_id);
+        let tx_config = self.build_tx_config(asset_id);
 
         let call = runtime::tx().assets().transfer(
-            *asset_id,
+            asset_id,
             recipient.clone().into(),
             transaction_amount,
         );
@@ -620,7 +707,7 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
         let transaction = self
             .client
             .tx()
-            .create_partial(&call, sender, tx_config)
+            .create_partial(&call, &sender, tx_config)
             .await
             .inspect_err(|e| {
                 tracing::debug!(
@@ -634,7 +721,8 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
             })
             .map_err(|_e| TransactionError::BuildFailed {
                 reason: "Failed to create partial transaction".to_string(),
-            })?;
+            })?
+            .into();
 
         Ok(UnsignedTransaction {
             transaction,
@@ -644,17 +732,17 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
     #[instrument(skip(self), fields(asset_id = %asset_id))]
     async fn build_transfer_all(
         &self,
-        sender: &AssetHubAccountId,
-        recipient: &AssetHubAccountId,
-        asset_id: &u32,
+        sender: AssetHubAccountId,
+        recipient: AssetHubAccountId,
+        asset_id: u32,
     ) -> Result<UnsignedTransaction<AssetHubChainConfig>, TransactionError<AssetHubChainConfig>>
     {
         // TODO: in order to support native asset, we need to check if asset_id = 0 and
         // use other methods to build transfer_all for native asset
-        let tx_config = self.build_tx_config(*asset_id);
+        let tx_config = self.build_tx_config(asset_id);
 
         let call = runtime::tx().assets().transfer_all(
-            *asset_id,
+            asset_id,
             recipient.clone().into(),
             false,
         );
@@ -662,7 +750,7 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
         let transaction = self
             .client
             .tx()
-            .create_partial(&call, sender, tx_config)
+            .create_partial(&call, &sender, tx_config)
             .await
             .inspect_err(|e| {
                 tracing::debug!(
@@ -675,7 +763,8 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
             })
             .map_err(|_e| TransactionError::BuildFailed {
                 reason: "Failed to create partial transaction for transfer_all".to_string(),
-            })?;
+            })?
+            .into();
 
         Ok(UnsignedTransaction {
             transaction,

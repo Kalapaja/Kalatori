@@ -1,6 +1,5 @@
 ---
 source: daemon/src/dao/swap.rs
-assertion_line: 1157
 expression: result
 ---
 - id: "[uuid]"
@@ -9,13 +8,14 @@ expression: result
     swap_executor: Bungee
     from_chain: Ethereum
     to_chain: Polygon
-    from_token_address: ""
-    to_token_address: ""
+    from_token_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    to_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
     from_amount_units: "10100000"
     expected_to_amount_units: "10000000"
-    from_address: ""
-    to_address: ""
+    from_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+    to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
     direction: Incoming
+    origin: {}
   status: Pending
   estimated_to_amount: "10"
   swap_details:
@@ -43,13 +43,14 @@ expression: result
     swap_executor: Across
     from_chain: Base
     to_chain: Polygon
-    from_token_address: ""
-    to_token_address: ""
+    from_token_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    to_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
     from_amount_units: "10100000"
     expected_to_amount_units: "10000000"
-    from_address: ""
-    to_address: ""
+    from_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+    to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
     direction: Incoming
+    origin: {}
   status: Completed
   estimated_to_amount: "10"
   swap_details:
@@ -77,13 +78,14 @@ expression: result
     swap_executor: Bungee
     from_chain: Arbitrum
     to_chain: Polygon
-    from_token_address: ""
-    to_token_address: ""
+    from_token_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    to_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
     from_amount_units: "10100000"
     expected_to_amount_units: "10000000"
-    from_address: ""
-    to_address: ""
+    from_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+    to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
     direction: Incoming
+    origin: {}
   status: Created
   estimated_to_amount: "10"
   swap_details:
@@ -111,13 +113,14 @@ expression: result
     swap_executor: Across
     from_chain: Ethereum
     to_chain: Polygon
-    from_token_address: ""
-    to_token_address: ""
+    from_token_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    to_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
     from_amount_units: "10100000"
     expected_to_amount_units: "10000000"
-    from_address: ""
-    to_address: ""
+    from_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+    to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
     direction: Incoming
+    origin: {}
   status: Failed
   estimated_to_amount: "10"
   swap_details:
@@ -145,13 +148,14 @@ expression: result
     swap_executor: Bungee
     from_chain: Base
     to_chain: Polygon
-    from_token_address: ""
-    to_token_address: ""
+    from_token_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    to_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
     from_amount_units: "10100000"
     expected_to_amount_units: "10000000"
-    from_address: ""
-    to_address: ""
+    from_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+    to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
     direction: Incoming
+    origin: {}
   status: Completed
   estimated_to_amount: "10"
   swap_details:
@@ -179,13 +183,14 @@ expression: result
     swap_executor: Across
     from_chain: Arbitrum
     to_chain: Polygon
-    from_token_address: ""
-    to_token_address: ""
+    from_token_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    to_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
     from_amount_units: "10100000"
     expected_to_amount_units: "10000000"
-    from_address: ""
-    to_address: ""
+    from_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+    to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
     direction: Incoming
+    origin: {}
   status: Pending
   estimated_to_amount: "10"
   swap_details:
@@ -213,13 +218,14 @@ expression: result
     swap_executor: Bungee
     from_chain: Ethereum
     to_chain: Polygon
-    from_token_address: ""
-    to_token_address: ""
+    from_token_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    to_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
     from_amount_units: "10100000"
     expected_to_amount_units: "10000000"
-    from_address: ""
-    to_address: ""
+    from_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+    to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
     direction: Incoming
+    origin: {}
   status: Pending
   estimated_to_amount: "10"
   swap_details:
@@ -247,13 +253,14 @@ expression: result
     swap_executor: Across
     from_chain: Base
     to_chain: Polygon
-    from_token_address: ""
-    to_token_address: ""
+    from_token_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+    to_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
     from_amount_units: "10100000"
     expected_to_amount_units: "10000000"
-    from_address: ""
-    to_address: ""
+    from_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"
+    to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"
     direction: Incoming
+    origin: {}
   status: Created
   estimated_to_amount: "10"
   swap_details:

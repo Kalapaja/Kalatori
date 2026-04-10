@@ -502,6 +502,7 @@ mod tests {
             from_address: "0xA4d353BBc130cbeF1811f27ac70989F9d568CeAB".to_string(),
             to_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9".to_string(),
             direction: SwapDirection::Incoming,
+            origin: Default::default(),
         };
 
         let mock = server.mock(|when, then| {

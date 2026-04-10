@@ -69,13 +69,16 @@ use swaps::{
     SwapsExecutor,
     SwapsTracker,
 };
-use utils::logger;
 use utils::shutdown::{
     self,
     ShutdownNotification,
     ShutdownOutcome,
 };
 use utils::task_tracker::TaskTracker;
+use utils::{
+    RefundDestinationDetector,
+    logger,
+};
 
 use crate::balance_checker::BalanceChecker;
 use crate::swaps::SwapsClients;
@@ -370,12 +373,20 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         shutdown_notification.token.clone(),
     );
 
+    let swaps_clients = SwapsClients::new(swaps_config).await;
+
+    let swaps_executor = SwapsExecutor::new(dao.clone(), swaps_clients.clone());
+
+    let refund_destination_detector = RefundDestinationDetector::new(dao.clone());
+
     // Single executor handles both chains
     let transfer_executor = TransfersExecutor::new(
+        refund_destination_detector,
         asset_hub_client,
         polygon_client,
         dao.clone(),
         keyring_client.clone(),
+        swaps_executor.clone(),
     );
 
     let transfer_executor_handle = transfer_executor.ignite(shutdown_notification.token.clone());
@@ -387,10 +398,6 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     );
 
     let webhook_sender_handle = webhook_sender.ignite(shutdown_notification.token.clone());
-
-    let swaps_clients = SwapsClients::new(swaps_config).await;
-
-    let swaps_executor = SwapsExecutor::new(dao.clone(), swaps_clients.clone());
 
     let swaps_tracker = SwapsTracker::new(
         dao.clone(),

@@ -324,7 +324,6 @@ impl PaymentsConfig {
             .underpayment_tolerance
     }
 
-    #[expect(dead_code)]
     pub fn get_asset_overpayment_tolerance(
         &self,
         chain: ChainType,

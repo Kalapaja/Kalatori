@@ -10,11 +10,16 @@ use crate::types::{
     ChainType,
     GeneralTransactionId,
     IncomingTransaction,
+    Invoice,
     InvoiceEventType,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
     KalatoriEventExt,
     Payout,
+    PublicInvoice,
+    Refund,
+    SwapChainType,
+    TransferDestinationParams,
 };
 
 use super::InvoiceRegistry;
@@ -50,6 +55,57 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
         }
     }
 
+    async fn add_webhook_to_dao_transaction(
+        &self,
+        dao_transaction: &D::Transaction,
+        public_invoice: PublicInvoice,
+        event_type: InvoiceEventType,
+    ) -> Result<(), TransactionsRecorderError> {
+        let event = public_invoice
+            .build_event(event_type)
+            .into();
+
+        dao_transaction
+            .create_webhook_event(event)
+            .await
+            .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
+
+        Ok(())
+    }
+
+    async fn add_payout_to_dao_transaction(
+        &self,
+        dao_transaction: &D::Transaction,
+        invoice: Invoice,
+        amount: Decimal,
+    ) -> Result<(), TransactionsRecorderError> {
+        let chain = invoice.chain;
+
+        let payout_address = self
+            .config
+            .recipient
+            .get(&chain)
+            // unwrap should be safe cause on program startup we check
+            // that recipient is set for all required chains
+            .unwrap()
+            .clone();
+
+        let destination_params = TransferDestinationParams {
+            destination_address: payout_address,
+            destination_chain: SwapChainType::from(chain),
+            destination_asset_id: invoice.asset_id.clone(),
+        };
+
+        let payout = Payout::from_invoice(invoice, destination_params, amount);
+
+        dao_transaction
+            .create_payout(payout)
+            .await
+            .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
+
+        Ok(())
+    }
+
     async fn store_transaction(
         &self,
         transaction: IncomingTransaction,
@@ -63,7 +119,6 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
 
         let invoice_id = transaction.invoice_id;
-        let chain = transaction.transfer_info.chain;
 
         dao_transaction
             .create_transaction(transaction.into())
@@ -90,42 +145,56 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             .into_public_invoice(&self.config.payment_url_base);
 
         if invoice_status == InvoiceStatus::Paid {
-            let payout = Payout::from_invoice(
+            // In case when invoice is just "Paid" without refund required,
+            // put here total received amount which might be slightly higher or lower then
+            // invoice amount
+            self.add_payout_to_dao_transaction(
+                &dao_transaction,
                 invoice,
-                self.config
-                    .recipient
-                    .get(&chain)
-                    // unwrap should be safe cause on program startup we check
-                    // that recipient is set for all required chains
-                    .unwrap()
-                    .clone(),
-            );
+                total_received_amount,
+            )
+            .await?;
 
-            dao_transaction
-                .create_payout(payout)
-                .await
-                .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
-
-            let event = public_invoice
-                .build_event(InvoiceEventType::Paid)
-                .into();
-
-            dao_transaction
-                .create_webhook_event(event)
-                .await
-                .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
+            self.add_webhook_to_dao_transaction(
+                &dao_transaction,
+                public_invoice,
+                InvoiceEventType::Paid,
+            )
+            .await?;
         } else if invoice_status == InvoiceStatus::PartiallyPaid {
-            let event = public_invoice
-                .build_event(InvoiceEventType::PartiallyPaid)
-                .into();
+            self.add_webhook_to_dao_transaction(
+                &dao_transaction,
+                public_invoice,
+                InvoiceEventType::PartiallyPaid,
+            )
+            .await?;
+        } else if invoice_status == InvoiceStatus::OverPaid {
+            // In case when invoice is overpaid and refund is required, we schedule payout
+            // with original invoice amount and refund with the rest amount
+            let payout_amount = invoice.amount;
+            let refund_amount = total_received_amount - payout_amount;
+
+            self.add_payout_to_dao_transaction(
+                &dao_transaction,
+                invoice.clone(),
+                payout_amount,
+            )
+            .await?;
+
+            let refund = Refund::from_invoice(invoice, refund_amount);
 
             dao_transaction
-                .create_webhook_event(event)
+                .create_refund(refund)
                 .await
                 .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
-        }
 
-        // TODO: handle overpayments
+            self.add_webhook_to_dao_transaction(
+                &dao_transaction,
+                public_invoice,
+                InvoiceEventType::Paid,
+            )
+            .await?;
+        }
 
         dao_transaction
             .commit()
@@ -158,11 +227,20 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             .get_asset_underpayment_tolerance(invoice.chain, &invoice.asset_id);
         let min_paid_amount = invoice.amount - underpayment_tolerance;
 
-        // TODO: handle overpayments
-        let updated_status = if updated_received_amount >= min_paid_amount {
+        let overpayment_tolerance = self
+            .config
+            .get_asset_overpayment_tolerance(invoice.chain, &invoice.asset_id);
+        let max_paid_amount = invoice.amount + overpayment_tolerance;
+
+        let is_underpaid = updated_received_amount < min_paid_amount;
+        let is_overpaid = updated_received_amount > max_paid_amount;
+
+        let updated_status = if !is_underpaid && !is_overpaid {
             InvoiceStatus::Paid
-        } else {
+        } else if is_underpaid {
             InvoiceStatus::PartiallyPaid
+        } else {
+            InvoiceStatus::OverPaid
         };
 
         match self
@@ -173,7 +251,12 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             )
             .await
         {
-            Ok(()) if updated_status == InvoiceStatus::Paid => {
+            Ok(())
+                if matches!(
+                    updated_status,
+                    InvoiceStatus::Paid | InvoiceStatus::OverPaid
+                ) =>
+            {
                 tracing::info!(
                     invoice_id = %invoice.id,
                     filled_amount = %updated_received_amount,
@@ -197,7 +280,11 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 );
 
                 self.registry
-                    .update_filled_amount(&invoice.id, updated_received_amount)
+                    .update_filled_amount(
+                        &invoice.id,
+                        updated_received_amount,
+                        updated_status,
+                    )
                     .await;
 
                 invoice.status = updated_status;
@@ -279,15 +366,15 @@ mod tests {
 
     fn default_payments_config() -> PaymentsConfig {
         PaymentsConfig {
-            default_chain: ChainType::PolkadotAssetHub,
+            default_chain: ChainType::Polygon,
             default_asset_id: HashMap::from([(
-                ChainType::PolkadotAssetHub,
-                1337.to_string(),
+                ChainType::Polygon,
+                "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359".to_string(),
             )]),
             invoice_lifetime_millis: 600_000,
             recipient: HashMap::from([(
-                ChainType::PolkadotAssetHub,
-                "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+                ChainType::Polygon,
+                "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9".to_string(),
             )]),
             payment_url_base: "https://payments.example.com".to_string(),
             slippage_params: HashMap::new(),
@@ -379,6 +466,76 @@ mod tests {
 
         dao_transaction
             .expect_create_payout()
+            .once()
+            .withf(move |p| p.amount == amount)
+            .returning(Ok);
+
+        dao_transaction
+            .expect_create_webhook_event()
+            .once()
+            .withf(move |event| {
+                let generic_event: KalatoriEvent =
+                    serde_json::from_value(event.payload.clone()).unwrap();
+                #[expect(irrefutable_let_patterns)]
+                let KalatoriEvent::Invoice(invoice_event) = generic_event else {
+                    return false
+                };
+
+                invoice_event.event_type == expected_event_type
+                    && event.entity_id == invoice_id
+                    && invoice_event
+                        .payload
+                        .total_received_amount
+                        == expected_amount
+            })
+            .returning(Ok);
+
+        dao_transaction
+            .expect_commit()
+            .once()
+            .returning(|| Ok(()));
+
+        dao_transaction
+    }
+
+    fn overpaid_dao_transaction_mock(
+        invoice: &Invoice,
+        amount: Decimal,
+        payout_amount: Decimal,
+        refund_amount: Decimal,
+    ) -> MockDaoTransactionInterface {
+        let invoice_id = invoice.id;
+        let status = InvoiceStatus::OverPaid;
+        let expected_amount = amount;
+        let expected_event_type = InvoiceEventType::Paid;
+
+        let returning_invoice = Invoice {
+            status,
+            ..invoice.clone()
+        };
+
+        let mut dao_transaction = MockDaoTransactionInterface::default();
+
+        dao_transaction
+            .expect_create_transaction()
+            .once()
+            .returning(Ok);
+
+        dao_transaction
+            .expect_update_invoice_status()
+            .once()
+            .with(eq(invoice_id), eq(status))
+            .returning(move |_, _| Ok(returning_invoice.clone()));
+
+        dao_transaction
+            .expect_create_payout()
+            .once()
+            .withf(move |p| p.amount == payout_amount)
+            .returning(Ok);
+
+        dao_transaction
+            .expect_create_refund()
+            .withf(move |r| r.amount == refund_amount)
             .once()
             .returning(Ok);
 
@@ -597,7 +754,7 @@ mod tests {
         //   - Invoice status updated
         //   - Invoice total received amount updated
         //   - Respective database calls
-        //   - Invoice remains in registry with updated total received amount
+        //   - Invoice remains in registry with updated total received amount and status
         {
             // Setup test
             let invoice = Invoice {
@@ -647,6 +804,10 @@ mod tests {
             assert_eq!(
                 invoice_in_registry.total_received_amount,
                 amount
+            );
+            assert_eq!(
+                invoice_in_registry.invoice.status,
+                InvoiceStatus::PartiallyPaid
             );
         }
 
@@ -768,7 +929,138 @@ mod tests {
             assert!(invoice_in_registry.is_none());
         }
 
-        // Shared setup for test cases 4 and 5
+        // Test case 4:
+        // - Successful flow
+        // - Check overpayment tolerance
+        // - Paid
+        // - Expectations:
+        //   - Invoice status updated
+        //   - Invoice total received amount updated
+        //   - Respective database calls
+        //   - Invoice is removed from registry
+        {
+            // Setup test
+
+            let invoice = Invoice {
+                amount: Decimal::ONE_THOUSAND,
+                ..default_invoice()
+            };
+            let invoice_id = invoice.id;
+
+            recorder.config.slippage_params.insert(
+                invoice.chain,
+                HashMap::from([(
+                    invoice.asset_id.clone(),
+                    SlippageParams {
+                        underpayment_tolerance: Decimal::ZERO,
+                        overpayment_tolerance: Decimal::ONE_HUNDRED,
+                    },
+                )]),
+            );
+
+            let mut invoice_with_amount = invoice
+                .clone()
+                .with_amount(Decimal::ZERO);
+
+            let mut transaction = default_incoming_transaction(invoice_id);
+            transaction.transfer_info.amount = Decimal::ONE_HUNDRED * Decimal::new(11, 0);
+            let expected_amount = transaction.transfer_info.amount;
+
+            let dao_transaction = paid_dao_transaction_mock(&invoice, expected_amount);
+
+            recorder
+                .dao
+                .expect_begin_transaction()
+                .once()
+                .return_once(move || Ok(dao_transaction));
+
+            // Test and assert
+            let result = recorder
+                .process_invoice_transaction(&mut invoice_with_amount, transaction)
+                .await;
+            assert!(result.is_ok());
+
+            assert_eq!(
+                invoice_with_amount.invoice.status,
+                InvoiceStatus::Paid
+            );
+            assert_eq!(
+                invoice_with_amount.total_received_amount,
+                expected_amount
+            );
+            let invoice_in_registry = registry.get_invoice(&invoice_id).await;
+            assert!(invoice_in_registry.is_none());
+        }
+
+        // Test case 5:
+        // - Successful flow
+        // - OverPaid
+        // - Expectations:
+        //   - Invoice status updated
+        //   - Invoice total received amount updated
+        //   - Refund created
+        //   - Respective database calls
+        //   - Invoice is removed from registry
+        {
+            // Setup test
+
+            let invoice = Invoice {
+                amount: Decimal::ONE_HUNDRED,
+                ..default_invoice()
+            };
+            let invoice_id = invoice.id;
+
+            recorder.config.slippage_params.insert(
+                invoice.chain,
+                HashMap::from([(
+                    invoice.asset_id.clone(),
+                    SlippageParams {
+                        underpayment_tolerance: Decimal::ZERO,
+                        overpayment_tolerance: Decimal::ZERO,
+                    },
+                )]),
+            );
+
+            let mut invoice_with_amount = invoice
+                .clone()
+                .with_amount(Decimal::ZERO);
+
+            let mut transaction = default_incoming_transaction(invoice_id);
+            transaction.transfer_info.amount = Decimal::ONE_HUNDRED * Decimal::new(3, 0);
+            let expected_amount = transaction.transfer_info.amount;
+
+            let dao_transaction = overpaid_dao_transaction_mock(
+                &invoice,
+                expected_amount,
+                Decimal::ONE_HUNDRED,
+                Decimal::ONE_HUNDRED * Decimal::new(2, 0),
+            );
+
+            recorder
+                .dao
+                .expect_begin_transaction()
+                .once()
+                .return_once(move || Ok(dao_transaction));
+
+            // Test and assert
+            let result = recorder
+                .process_invoice_transaction(&mut invoice_with_amount, transaction)
+                .await;
+            assert!(result.is_ok());
+
+            assert_eq!(
+                invoice_with_amount.invoice.status,
+                InvoiceStatus::OverPaid
+            );
+            assert_eq!(
+                invoice_with_amount.total_received_amount,
+                expected_amount
+            );
+            let invoice_in_registry = registry.get_invoice(&invoice_id).await;
+            assert!(invoice_in_registry.is_none());
+        }
+
+        // Shared setup for test cases 6 and 7
         let invoice = Invoice {
             amount: Decimal::ONE_THOUSAND,
             ..default_invoice()
@@ -785,7 +1077,7 @@ mod tests {
         let mut transaction = default_incoming_transaction(invoice_id);
         transaction.transfer_info.amount = Decimal::ONE_HUNDRED;
 
-        // Test case 4:
+        // Test case 6:
         // - Unsuccessful flow
         // - Database error
         // - Expectations:
@@ -841,7 +1133,7 @@ mod tests {
             );
         }
 
-        // Test case 5:
+        // Test case 7:
         // - Unsuccessful flow
         // - Transaction duplicate error
         // - Expectations:

@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::types::{
     ChainType,
+    InvoiceStatus,
     InvoiceWithReceivedAmount,
 };
 
@@ -101,11 +102,13 @@ impl InvoiceRegistry {
         &self,
         invoice_id: &Uuid,
         new_filled_amount: Decimal,
+        updated_status: InvoiceStatus,
     ) {
         let mut invoices = self.invoices.write().await;
 
         if let Some(record) = invoices.get_mut(invoice_id) {
             record.total_received_amount = new_filled_amount;
+            record.invoice.status = updated_status;
         }
     }
 
@@ -347,27 +350,47 @@ mod tests {
         // Update filled amounts for each invoice and check it
         let invoice_1_new_amount = invoice_1_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_1_id, invoice_1_new_amount)
+            .update_filled_amount(
+                &invoice_1_id,
+                invoice_1_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let invoice_2_new_amount = invoice_2_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_2_id, invoice_2_new_amount)
+            .update_filled_amount(
+                &invoice_2_id,
+                invoice_2_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let invoice_3_new_amount = invoice_3_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_3_id, invoice_3_new_amount)
+            .update_filled_amount(
+                &invoice_3_id,
+                invoice_3_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let invoice_4_new_amount = invoice_1_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_4_id, invoice_4_new_amount)
+            .update_filled_amount(
+                &invoice_4_id,
+                invoice_4_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let invoice_5_new_amount = invoice_1_amount + Decimal::TEN;
         registry
-            .update_filled_amount(&invoice_5_id, invoice_5_new_amount)
+            .update_filled_amount(
+                &invoice_5_id,
+                invoice_5_new_amount,
+                InvoiceStatus::Waiting,
+            )
             .await;
 
         let updated_1 = registry
