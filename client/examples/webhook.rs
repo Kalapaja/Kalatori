@@ -15,7 +15,8 @@ use kalatori_client::types::{
     CreateInvoiceParams,
     GenericEvent,
     Invoice,
-    InvoiceCart, InvoiceCartItem,
+    InvoiceCart,
+    InvoiceCartItem,
 };
 use kalatori_client::utils::HmacConfig;
 

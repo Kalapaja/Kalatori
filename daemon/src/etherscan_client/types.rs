@@ -1,8 +1,11 @@
 use rust_decimal::Decimal;
 use serde::{
     Deserialize,
-    Deserializer,
     Serialize,
+};
+use serde_with::{
+    DisplayFromStr,
+    serde_as,
 };
 use uuid::Uuid;
 
@@ -13,27 +16,11 @@ use crate::types::{
     TransferInfo,
 };
 
-fn deserialize_string_to_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = Deserialize::deserialize(deserializer)?;
-    s.parse::<u32>()
-        .map_err(serde::de::Error::custom)
-}
-
-// fn deserialize_string_to_u64<'de, D>(deserializer: D) -> Result<u64,
-// D::Error> where
-//     D: Deserializer<'de>,
-// {
-//     let s: String = Deserialize::deserialize(deserializer)?;
-//     s.parse::<u64>().map_err(serde::de::Error::custom)
-// }
-
+#[serde_as]
 #[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct EtherscanResponseData<T> {
-    #[serde(deserialize_with = "deserialize_string_to_u32")]
+    #[serde_as(as = "DisplayFromStr")]
     pub status: u32,
     pub message: String,
     pub result: T,
@@ -60,10 +47,11 @@ pub struct GetAccountTokenTransactionsParams<'a> {
     pub api_key: &'a str,
 }
 
+#[serde_as]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EtherscanTransaction {
-    #[serde(deserialize_with = "deserialize_string_to_u32")]
+    #[serde_as(as = "DisplayFromStr")]
     pub block_number: u32,
     // #[serde(deserialize_with = "deserialize_string_to_u64")]
     // pub time_stamp: u64,
@@ -74,13 +62,13 @@ pub struct EtherscanTransaction {
     pub from: String,
     pub contract_address: String,
     pub to: String,
-    #[serde(deserialize_with = "deserialize_string_to_u32")]
-    pub value: u32,
+    #[serde_as(as = "DisplayFromStr")]
+    pub value: u128,
     // pub token_name: String,
     pub token_symbol: String,
-    #[serde(deserialize_with = "deserialize_string_to_u32")]
+    #[serde_as(as = "DisplayFromStr")]
     pub token_decimal: u32,
-    #[serde(deserialize_with = "deserialize_string_to_u32")]
+    #[serde_as(as = "DisplayFromStr")]
     pub transaction_index: u32,
     // #[serde(deserialize_with = "deserialize_string_to_u64")]
     // pub gas: u64,
@@ -95,6 +83,7 @@ pub struct EtherscanTransaction {
 }
 
 impl EtherscanTransaction {
+    #[expect(clippy::cast_possible_truncation)]
     pub fn into_incoming_transaction(
         self,
         invoice_id: Uuid,

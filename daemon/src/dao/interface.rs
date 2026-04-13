@@ -446,7 +446,7 @@ pub trait DaoTransactionInterface {
         data: UpdateInvoiceData,
     ) -> Result<Invoice, DaoInvoiceError>;
 
-    async fn update_invoices_expired(&self) -> Result<Vec<Invoice>, DaoInvoiceError>;
+    async fn get_expired_invoices(&self) -> Result<Vec<Invoice>, DaoInvoiceError>;
 
     async fn get_invoices_paginated(
         &self,
@@ -1116,7 +1116,7 @@ impl DaoTransactionInterface for DaoTransaction {
         DaoInvoiceMethods::update_invoice_data(self, data).await
     }
 
-    async fn update_invoices_expired(&self) -> Result<Vec<Invoice>, DaoInvoiceError> {
+    async fn get_expired_invoices(&self) -> Result<Vec<Invoice>, DaoInvoiceError> {
         DaoInvoiceMethods::get_expired_invoices(self).await
     }
 

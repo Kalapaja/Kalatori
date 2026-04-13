@@ -485,7 +485,7 @@ mod tests {
                 .is_some()
         );
 
-        // Remove multiple invocies
+        // Remove multiple invoices
         registry
             .remove_invoices(&[
                 invoice_1_id, // it's already removed, shouldn't affect the others
