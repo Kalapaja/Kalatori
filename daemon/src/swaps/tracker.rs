@@ -295,10 +295,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS,
         ));
 
-        // First of all need to fetch pending swaps which has left after service realod.
-        // Need to either handle an error and retry loading or just panic and restart
-        // the daemon, we can't just leave those pending swaps in this state
-        // forever.
+        // First of all need to fetch pending swaps which has left after service
+        // reaload. Need to either handle an error and retry loading or just
+        // panic and restart the daemon, we can't just leave those pending swaps
+        // in this state forever.
         let pending_swaps = self
             .dao
             .get_pending_swaps()
