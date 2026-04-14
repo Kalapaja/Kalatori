@@ -107,6 +107,8 @@ pub struct SwapTransactionInternal {
     #[serde(default)]
     #[serde_as(as = "DisplayFromStr")]
     pub value: u128,
+    // Not presented in Solana transactions
+    #[serde(default)]
     #[serde_as(as = "DisplayFromStr")]
     pub gas: u128,
     #[serde(default)]
