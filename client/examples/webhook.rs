@@ -59,9 +59,39 @@ async fn main() {
     let mut cart = InvoiceCart::empty();
 
     cart.items.push(InvoiceCartItem {
+        name: "Something".to_string(),
+        quantity: 2,
+        price: Decimal::new(2, 1),
+        product_url: None,
+        image_url: None,
+        tax: Some(Decimal::new(1, 1)),
+        discount: Some(Decimal::new(1, 1)),
+    });
+
+    cart.items.push(InvoiceCartItem {
         name: "Yet another item".to_string(),
         quantity: 1,
-        price: Decimal::new(1, 0),
+        price: Decimal::new(1, 1),
+        product_url: None,
+        image_url: None,
+        tax: None,
+        discount: None,
+    });
+
+    cart.items.push(InvoiceCartItem {
+        name: "Something".to_string(),
+        quantity: 2,
+        price: Decimal::new(2, 1),
+        product_url: None,
+        image_url: None,
+        tax: Some(Decimal::new(1, 1)),
+        discount: Some(Decimal::new(1, 1)),
+    });
+
+    cart.items.push(InvoiceCartItem {
+        name: "Yet another item".to_string(),
+        quantity: 1,
+        price: Decimal::new(1, 1),
         product_url: None,
         image_url: None,
         tax: None,

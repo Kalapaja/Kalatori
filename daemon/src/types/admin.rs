@@ -181,4 +181,72 @@ pub struct KalatoriIntegrationSettings {
     pub signature_max_age_secs: u64,
     pub private_api_base_url: String,
     pub api_secret_key: String,
+    pub supported_platforms: Vec<ShopPlatform>,
+    pub shop_platform: DetectedShopPlatform,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShopPlatformConfig {
+    pub daemon_url: String,
+    pub secret_key: String,
+    pub admin_url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShopPlatform {
+    WooCommerce,
+}
+
+impl ShopPlatform {
+    pub fn all() -> Vec<Self> {
+        vec![Self::WooCommerce]
+    }
+
+    pub fn plugin_repo(&self) -> &'static str {
+        match self {
+            ShopPlatform::WooCommerce => "Kalapaja/kalatori-woocommerce-plugin",
+        }
+    }
+
+    pub fn plugin_asset_name(&self) -> &'static str {
+        match self {
+            ShopPlatform::WooCommerce => "kalatori-woocommerce-plugin.zip",
+        }
+    }
+
+    pub fn supported_versions(&self) -> &[u8] {
+        match self {
+            ShopPlatform::WooCommerce => &[0],
+        }
+    }
+
+    pub fn config_file_name(&self) -> &'static str {
+        "kalatori-woocommerce-plugin/woocommerce-kalatori-config.json"
+    }
+
+    pub fn build_config_file(
+        &self,
+        secret_key: String,
+        daemon_url: String,
+        admin_url: String,
+    ) -> ShopPlatformConfig {
+        match self {
+            ShopPlatform::WooCommerce => ShopPlatformConfig {
+                daemon_url,
+                secret_key,
+                admin_url,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DetectedShopPlatform {
+    #[default]
+    Unknown,
+    // keep it last, see https://serde.rs/variant-attrs.html#untagged
+    #[serde(untagged)]
+    Known(ShopPlatform),
+    #[serde(untagged)]
+    Unsupported(String),
 }

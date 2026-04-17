@@ -1,4 +1,10 @@
+mod github;
 mod swaps;
+
+pub use github::{
+    GithubClient,
+    GithubClientError,
+};
 
 pub use swaps::{
     AcrossClient,
