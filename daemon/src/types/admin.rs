@@ -194,6 +194,7 @@ pub struct ShopPlatformConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShopPlatform {
+    #[serde(alias = "woocommerce")]
     WooCommerce,
 }
 
