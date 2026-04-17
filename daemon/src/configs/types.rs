@@ -15,7 +15,10 @@ use serde::{
 };
 
 use crate::chain::utils::to_base58_string;
-use crate::types::ChainType;
+use crate::types::{
+    ChainType,
+    DetectedShopPlatform,
+};
 
 use super::consts::{
     DEFAULT_ALLOW_INSECURE_ENDPOINTS,
@@ -389,6 +392,8 @@ pub struct ShopConfig {
     pub private_api_base_url: Option<String>,
     #[serde(flatten)]
     pub meta: ShopMetaConfig,
+    #[serde(default)]
+    pub shop_platform: DetectedShopPlatform,
 }
 
 fn default_log_directives() -> String {

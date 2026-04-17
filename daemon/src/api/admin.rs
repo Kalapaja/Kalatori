@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use kalatori_client::types::ApiResultStructured;
 
+use crate::api::utils::ErrorWrapper;
 use crate::auth::session::AuthenticatedUser;
 use crate::auth::token::Role;
 use crate::dao::{
@@ -47,6 +48,7 @@ use crate::types::{
     PublicInvoice,
     PublicSwap,
     PublicTransaction,
+    ShopPlatform,
 };
 
 use super::ApiState;
@@ -75,6 +77,11 @@ struct TransactionIdParam {
 #[derive(Debug, PartialEq, Eq, Deserialize)]
 struct SwapIdParam {
     swap_id: Uuid,
+}
+
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+struct ShopPlatformParam {
+    shop_platform: ShopPlatform,
 }
 
 // ============================================================================
@@ -287,6 +294,43 @@ async fn kalatori_integration_settings_handler(
         .into()
 }
 
+#[tracing::instrument(skip_all)]
+async fn get_plugin_handler(
+    State(state): State<ApiState>,
+    AppQuery(param): AppQuery<ShopPlatformParam>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> Response {
+    let platform = param.shop_platform;
+    let result = state.get_shop_plugin(platform).await;
+
+    match result {
+        Ok(plugin_bytes) => {
+            let filename = platform.plugin_asset_name();
+            let content_length = plugin_bytes.len().to_string();
+            (
+                StatusCode::OK,
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        "application/zip".to_owned(),
+                    ),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        format!(r#"attachment; filename="{filename}""#),
+                    ),
+                    (
+                        axum::http::header::CONTENT_LENGTH,
+                        content_length,
+                    ),
+                ],
+                plugin_bytes,
+            )
+                .into_response()
+        },
+        Err(error) => ErrorWrapper::from(error).into_response(),
+    }
+}
+
 /// Admin routes.
 pub fn routes() -> Router<ApiState> {
     Router::new()
@@ -331,6 +375,10 @@ pub fn routes() -> Router<ApiState> {
         .route(
             "/api/integration-settings",
             get(kalatori_integration_settings_handler),
+        )
+        .route(
+            "/api/get-plugin",
+            get(get_plugin_handler),
         )
         .route_service(
             "/",

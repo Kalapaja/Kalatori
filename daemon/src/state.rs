@@ -3,6 +3,7 @@ mod dev_api;
 mod swaps;
 
 use std::collections::HashMap;
+use std::io::Cursor;
 
 use chrono::{
     Duration,
@@ -21,12 +22,18 @@ use kalatori_client::types::{
     InvoiceStatus,
     UpdateInvoiceParams,
 };
+use zip::ZipWriter;
+use zip::write::SimpleFileOptions;
 
 use crate::chain::InvoiceRegistry;
 use crate::chain::utils::to_base58_string;
 use crate::chain_client::{
     GenerateAddressData,
     KeyringClient,
+};
+use crate::clients::{
+    GithubClient,
+    GithubClientError,
 };
 use crate::configs::{
     PaymentsConfig,
@@ -68,6 +75,7 @@ use crate::types::{
     PublicSwap,
     PublicTransaction,
     RefundChanges,
+    ShopPlatform,
     Swap,
     Transaction,
     TransferDestinationParams,
@@ -81,6 +89,7 @@ pub struct AppState<D: DaoInterface = DAO> {
     dao: D,
     registry: InvoiceRegistry,
     swaps_executor: SwapsExecutor<D>,
+    github_client: GithubClient,
     asset_names_map: HashMap<String, String>,
     payments_config: PaymentsConfig,
     shop_config: ShopConfig,
@@ -99,11 +108,14 @@ impl<D: DaoInterface> AppState<D> {
         shop_config: ShopConfig,
         api_secret_key: SecretString,
     ) -> Self {
+        let github_client = GithubClient::new();
+
         Self {
             keyring,
             dao,
             registry,
             swaps_executor,
+            github_client,
             asset_names_map,
             payments_config,
             shop_config,
@@ -764,7 +776,85 @@ impl<D: DaoInterface> AppState<D> {
                 .api_secret_key
                 .expose_secret()
                 .to_string(),
+            supported_platforms: ShopPlatform::all(),
+            shop_platform: self.shop_config.shop_platform.clone(),
         }
+    }
+
+    #[tracing::instrument(skip(self))]
+    pub async fn get_shop_plugin(
+        &self,
+        platform: ShopPlatform,
+    ) -> Result<Vec<u8>, GithubClientError> {
+        let plugin = self
+            .github_client
+            .find_and_fetch_plugin(
+                platform.plugin_repo(),
+                platform.supported_versions(),
+                platform.plugin_asset_name(),
+            )
+            .await?;
+
+        let mut archive = ZipWriter::new_append(Cursor::new(plugin.to_vec())).map_err(|error| {
+            tracing::error!(
+                ?error,
+                "Error while trying to open plugin archive"
+            );
+
+            GithubClientError::UnknownApiError
+        })?;
+
+        let options = SimpleFileOptions::default();
+
+        archive
+            .start_file(platform.config_file_name(), options)
+            .map_err(|error| {
+                tracing::error!(
+                    ?error,
+                    "Error while trying to append file to plugin archive"
+                );
+
+                GithubClientError::UnknownApiError
+            })?;
+
+        let url = self
+            .shop_config
+            .private_api_base_url
+            .as_ref()
+            .unwrap_or(&self.payments_config.payment_url_base)
+            .clone();
+
+        let admin_url = format!("{url}/admin");
+
+        let config = platform.build_config_file(
+            self.api_secret_key
+                .expose_secret()
+                .to_string(),
+            url,
+            admin_url,
+        );
+
+        serde_json::to_writer(&mut archive, &config).map_err(|error| {
+            tracing::error!(
+                ?error,
+                "Error while trying to write config to plugin archive"
+            );
+
+            GithubClientError::UnknownApiError
+        })?;
+
+        let finished = archive.finish().map_err(|error| {
+            tracing::error!(
+                ?error,
+                "Error while trying to finish archive after config write"
+            );
+
+            GithubClientError::UnknownApiError
+        })?;
+
+        let result = finished.into_inner();
+
+        Ok(result)
     }
 
     pub async fn create_front_end_swap(
@@ -789,6 +879,7 @@ mod tests {
         MockDaoTransactionInterface,
     };
     use crate::types::{
+        DetectedShopPlatform,
         Invoice,
         InvoiceCart,
         default_invoice,
@@ -830,6 +921,7 @@ mod tests {
             signature_max_age_secs: 300,
             private_api_base_url: None,
             meta,
+            shop_platform: DetectedShopPlatform::Unknown,
         };
 
         let keyring = KeyringClient::default();
