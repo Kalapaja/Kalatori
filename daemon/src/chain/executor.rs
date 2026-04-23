@@ -42,7 +42,6 @@ use crate::types::{
     GeneralTransactionId,
     OutgoingTransaction,
     Payout,
-    PayoutStatus,
     Refund,
     RefundStatus,
     RetryMeta,
@@ -786,16 +785,16 @@ impl<
         match origin.variant() {
             TransactionOriginVariant::Payout(payout_id) => {
                 dao_transaction
-                    .update_payout_status(payout_id, PayoutStatus::Completed)
+                    .update_payout_completed(payout_id, transfer.fee)
                     .await
                     .map_err(|e| {
                         tracing::error!(
                             error = %e,
-                            "Failed to update payout as completed in database",
+                            "Failed to mark payout as completed in database",
                         );
 
                         ChainExecutorError::DaoTransactionError {
-                            reason: "Failed to update payout as completed in database".to_string(),
+                            reason: "Failed to mark payout as completed in database".to_string(),
                         }
                     })?;
             },

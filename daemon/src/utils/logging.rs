@@ -7,6 +7,7 @@
 pub mod category {
     pub const AUTH: &str = "auth";
     pub const CHAIN_CLIENT: &str = "chain_client";
+    pub const FEE: &str = "fee_client";
 }
 
 /// Log operation constants for identifying specific operations within

@@ -218,6 +218,7 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
         let &mut InvoiceWithReceivedAmount {
             ref mut invoice,
             ref mut total_received_amount,
+            total_fee: _,
         } = invoice;
 
         let updated_received_amount = *total_received_amount + transaction.transfer_info.amount;

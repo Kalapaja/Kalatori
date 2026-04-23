@@ -19,6 +19,8 @@ use uuid::Uuid;
 use rust_decimal::Decimal;
 use sqlx::types::Text;
 
+use crate::fee_client::FeeSource;
+use super::fee_payout::FeePayout;
 use super::Invoice;
 use super::common::{
     ChainType,
@@ -90,6 +92,7 @@ pub struct Payout {
     pub destination_params: TransferDestinationParams,
     #[serde(flatten)]
     pub retry_meta: RetryMeta,
+    pub fee: Option<FeePayout>,
 }
 
 impl Payout {
@@ -113,6 +116,7 @@ impl Payout {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             retry_meta: RetryMeta::default(),
+            fee: None,
         }
     }
 }
@@ -138,6 +142,10 @@ pub struct PayoutRow {
     pub destination_asset_id: String,
     #[sqlx(flatten)]
     pub retry_meta: RetryMeta,
+    pub fee_wallet: Option<String>,
+    pub fee_bps: Option<i64>,
+    pub fee_source: Option<String>,
+    pub fee_amount: Option<Text<Decimal>>,
 }
 
 impl From<PayoutRow> for Payout {
@@ -161,8 +169,47 @@ impl From<PayoutRow> for Payout {
                 destination_asset_id: value.destination_asset_id,
             },
             retry_meta: value.retry_meta,
+            fee: reconstruct_fee_payout(
+                value.fee_wallet,
+                value.fee_bps,
+                value.fee_source,
+                value.fee_amount,
+            ),
         }
     }
+}
+
+fn reconstruct_fee_payout(
+    fee_wallet: Option<String>,
+    fee_bps: Option<i64>,
+    source: Option<String>,
+    amount: Option<Text<Decimal>>,
+) -> Option<FeePayout> {
+    // All None means the payout was created without fee — normal.
+    if fee_wallet.is_none() && fee_bps.is_none() && source.is_none() && amount.is_none() {
+        return None;
+    }
+
+    let result = (|| {
+        let fee_wallet = fee_wallet?.parse().ok()?;
+        let fee_bps = u16::try_from(fee_bps?).ok()?;
+        let source = source?.parse::<FeeSource>().ok()?;
+        let amount = amount?.into_inner();
+        Some(FeePayout {
+            fee_wallet,
+            fee_bps,
+            source,
+            amount,
+        })
+    })();
+
+    if result.is_none() {
+        tracing::warn!(
+            "Fee fields present in database but reconstruction failed; row may be corrupt"
+        );
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -187,5 +234,6 @@ pub fn default_payout(invoice_id: Uuid) -> Payout {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         retry_meta: RetryMeta::default(),
+        fee: None,
     }
 }

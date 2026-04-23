@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::types::{
     ChangesResponse,
+    FeePayout,
     CreateFrontEndSwapParams,
     CreateInvoiceData,
     FrontEndSwap,
@@ -243,6 +244,13 @@ pub trait DaoInterface: Send + Sync + 'static {
         &self,
         payout_id: Uuid,
         new_status: PayoutStatus,
+    ) -> Result<Payout, DaoPayoutError>;
+
+    /// Mark a payout as Completed and record fee in a single UPDATE.
+    async fn update_payout_completed(
+        &self,
+        payout_id: Uuid,
+        fee: Option<FeePayout>,
     ) -> Result<Payout, DaoPayoutError>;
 
     /// Update payout retry metadata and status.
@@ -530,6 +538,12 @@ pub trait DaoTransactionInterface {
         &self,
         payout_id: Uuid,
         new_status: PayoutStatus,
+    ) -> Result<Payout, DaoPayoutError>;
+
+    async fn update_payout_completed(
+        &self,
+        payout_id: Uuid,
+        fee: Option<FeePayout>,
     ) -> Result<Payout, DaoPayoutError>;
 
     async fn update_payout_retry(
@@ -862,6 +876,14 @@ impl DaoInterface for DAO {
         new_status: PayoutStatus,
     ) -> Result<Payout, DaoPayoutError> {
         DaoPayoutMethods::update_payout_status(self, payout_id, new_status).await
+    }
+
+    async fn update_payout_completed(
+        &self,
+        payout_id: Uuid,
+        fee: Option<FeePayout>,
+    ) -> Result<Payout, DaoPayoutError> {
+        DaoPayoutMethods::update_payout_completed(self, payout_id, fee).await
     }
 
     async fn update_payout_retry(
@@ -1243,6 +1265,14 @@ impl DaoTransactionInterface for DaoTransaction {
         new_status: PayoutStatus,
     ) -> Result<Payout, DaoPayoutError> {
         DaoPayoutMethods::update_payout_status(self, payout_id, new_status).await
+    }
+
+    async fn update_payout_completed(
+        &self,
+        payout_id: Uuid,
+        fee: Option<FeePayout>,
+    ) -> Result<Payout, DaoPayoutError> {
+        DaoPayoutMethods::update_payout_completed(self, payout_id, fee).await
     }
 
     async fn update_payout_retry(

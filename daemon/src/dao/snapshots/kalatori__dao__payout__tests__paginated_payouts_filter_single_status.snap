@@ -18,6 +18,7 @@ expression: result
   destination_chain: Polygon
   destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
+  fee: ~
 - id: "[uuid]"
   invoice_id: "[uuid]"
   initiator_type: System
@@ -34,6 +35,7 @@ expression: result
   destination_chain: Polygon
   destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
+  fee: ~
 - id: "[uuid]"
   invoice_id: "[uuid]"
   initiator_type: System
@@ -50,3 +52,4 @@ expression: result
   destination_chain: Polygon
   destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
+  fee: ~

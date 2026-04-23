@@ -436,6 +436,7 @@ mod tests {
                 .unwrap(),
             transaction_id: (1000, 2),
             timestamp: 1000,
+            fee: None,
         };
 
         let transfers = vec![transfer.clone(), transfer.clone(), transfer.clone()];

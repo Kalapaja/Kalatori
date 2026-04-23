@@ -53,6 +53,7 @@ impl Invoice {
         InvoiceWithReceivedAmount {
             invoice: self,
             total_received_amount,
+            total_fee: Decimal::ZERO,
         }
     }
 }
@@ -61,6 +62,7 @@ impl Invoice {
 pub struct InvoiceWithReceivedAmount {
     pub invoice: Invoice,
     pub total_received_amount: Decimal,
+    pub total_fee: Decimal,
 }
 
 impl InvoiceWithReceivedAmount {
@@ -88,6 +90,7 @@ impl InvoiceWithReceivedAmount {
             created_at: self.invoice.created_at,
             updated_at: self.invoice.updated_at,
             total_received_amount: self.total_received_amount,
+            total_fee: self.total_fee,
             transactions: vec![],
         }
     }

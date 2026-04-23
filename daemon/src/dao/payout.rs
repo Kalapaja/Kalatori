@@ -4,6 +4,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::types::{
+    FeePayout,
     ListPayoutsParams,
     Payout,
     PayoutRow,
@@ -131,9 +132,11 @@ pub trait DaoPayoutMethods: DaoExecutor + 'static {
         &self,
         payout: Payout,
     ) -> Result<Payout, DaoPayoutError> {
+        let (c_wallet, c_bps, c_source, c_amount) = fee_columns(payout.fee.as_ref());
+
         let query = sqlx::query_as::<_, PayoutRow>(
-        "INSERT INTO payouts (id, invoice_id, asset_id, asset_name, chain, source_address, destination_address, amount, destination_chain, destination_asset_id, initiator_type, initiator_id, status, created_at, updated_at, retry_count, last_attempt_at, next_retry_at, failure_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO payouts (id, invoice_id, asset_id, asset_name, chain, source_address, destination_address, amount, destination_chain, destination_asset_id, initiator_type, initiator_id, status, created_at, updated_at, retry_count, last_attempt_at, next_retry_at, failure_message, fee_wallet, fee_bps, fee_source, fee_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *"
         )
             .bind(payout.id)
@@ -154,7 +157,11 @@ pub trait DaoPayoutMethods: DaoExecutor + 'static {
             .bind(payout.retry_meta.retry_count)
             .bind(payout.retry_meta.last_attempt_at.map(|dt| dt.naive_utc()))
             .bind(payout.retry_meta.next_retry_at.map(|dt| dt.naive_utc()))
-            .bind(&payout.retry_meta.failure_message);
+            .bind(&payout.retry_meta.failure_message)
+            .bind(c_wallet)
+            .bind(c_bps)
+            .bind(c_source)
+            .bind(c_amount);
 
         self.fetch_one(query)
             .await
@@ -375,6 +382,54 @@ pub trait DaoPayoutMethods: DaoExecutor + 'static {
         Ok(row.count as u32)
     }
 
+    async fn update_payout_completed(
+        &self,
+        payout_id: Uuid,
+        fee: Option<FeePayout>,
+    ) -> Result<Payout, DaoPayoutError> {
+        let (c_wallet, c_bps, c_source, c_amount) = fee_columns(fee.as_ref());
+
+        let query = sqlx::query_as::<_, PayoutRow>(
+            "UPDATE payouts
+            SET status = 'Completed',
+                fee_wallet = ?,
+                fee_bps = ?,
+                fee_source = ?,
+                fee_amount = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+            RETURNING *",
+        )
+        .bind(c_wallet)
+        .bind(c_bps)
+        .bind(c_source)
+        .bind(c_amount)
+        .bind(payout_id);
+
+        self.fetch_one(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.payout",
+                    error.operation = "update_payout_completed",
+                    %payout_id,
+                    error.source = ?e,
+                    "Failed to mark payout as completed"
+                );
+
+                if let Some(error) = PayoutStatus::from_sqlx_error(&e) {
+                    return error;
+                }
+
+                match e {
+                    sqlx::Error::RowNotFound => DaoPayoutError::NotFound {
+                        payout_id,
+                    },
+                    _ => DaoPayoutError::DatabaseError,
+                }
+            })
+    }
+
     async fn update_payout_retry(
         &self,
         payout_id: Uuid,
@@ -442,6 +497,20 @@ pub trait DaoPayoutMethods: DaoExecutor + 'static {
 
 impl<T: DaoExecutor + 'static> DaoPayoutMethods for T {}
 
+type FeeColumns = (Option<String>, Option<i64>, Option<&'static str>, Option<Text<rust_decimal::Decimal>>);
+
+fn fee_columns(c: Option<&FeePayout>) -> FeeColumns {
+    match c {
+        None => (None, None, None, None),
+        Some(c) => (
+            Some(c.fee_wallet.to_string()),
+            Some(i64::from(c.fee_bps)),
+            Some(c.source.as_str()),
+            Some(Text(c.amount)),
+        ),
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct CountRow {
     count: i64,
@@ -492,11 +561,15 @@ fn push_payout_filters(
 
 #[cfg(test)]
 mod tests {
+    use alloy::primitives::Address;
     use chrono::Utc;
+    use rust_decimal::Decimal;
 
     use crate::dao::create_test_dao;
     use crate::dao::invoice::DaoInvoiceMethods;
+    use crate::fee_client::FeeSource;
     use crate::types::{
+        FeePayout,
         default_create_invoice_data,
         default_payout,
     };
@@ -674,6 +747,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_payout_completed_with_fee() {
+        let dao = create_test_dao().await;
+        let invoice = dao.create_invoice(default_create_invoice_data()).await.unwrap();
+        let payout = default_payout(invoice.id);
+        let payout_id = payout.id;
+        dao.create_payout(payout).await.unwrap();
+        dao.update_payout_status(payout_id, PayoutStatus::InProgress).await.unwrap();
+
+        let fee_wallet: Address = "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9".parse().unwrap();
+        let fee = FeePayout {
+            fee_wallet,
+            fee_bps: 50,
+            source: FeeSource::Service,
+            amount: Decimal::new(5, 2),
+        };
+
+        let result = dao.update_payout_completed(payout_id, Some(fee)).await.unwrap();
+
+        assert_eq!(result.status, PayoutStatus::Completed);
+        let stored = result.fee.expect("fee should be stored");
+        assert_eq!(stored.fee_wallet, fee_wallet);
+        assert_eq!(stored.fee_bps, 50);
+        assert_eq!(stored.source, FeeSource::Service);
+        assert_eq!(stored.amount, Decimal::new(5, 2));
+    }
+
+    #[tokio::test]
+    async fn test_update_payout_completed_without_fee() {
+        let dao = create_test_dao().await;
+        let invoice = dao.create_invoice(default_create_invoice_data()).await.unwrap();
+        let payout = default_payout(invoice.id);
+        let payout_id = payout.id;
+        dao.create_payout(payout).await.unwrap();
+        dao.update_payout_status(payout_id, PayoutStatus::InProgress).await.unwrap();
+
+        let result = dao.update_payout_completed(payout_id, None).await.unwrap();
+
+        assert_eq!(result.status, PayoutStatus::Completed);
+        assert!(result.fee.is_none());
+    }
+
+    #[tokio::test]
     async fn test_update_payout_retry() {
         let dao = create_test_dao().await;
         let invoice = dao
@@ -844,8 +959,6 @@ mod tests {
     // Paginated payout listing — snapshot tests
     // ========================================================================
 
-    use rust_decimal::Decimal;
-
     use crate::types::{
         ChainType,
         CreateInvoiceData,
@@ -969,7 +1082,12 @@ mod tests {
         dao.update_payout_status(p_id, PayoutStatus::InProgress)
             .await
             .unwrap();
-        dao.update_payout_status(p_id, PayoutStatus::Completed)
+        dao.update_payout_completed(p_id, Some(FeePayout {
+            fee_wallet: Address::ZERO,
+            fee_bps: 50,
+            source: FeeSource::Config,
+            amount: Decimal::new(30, 2),
+        }))
             .await
             .unwrap();
 
@@ -1048,7 +1166,7 @@ mod tests {
         payout_ids.push(p.id);
         dao.create_payout(p).await.unwrap();
 
-        // Payout 8: Polygon, USDC, 99.99, Completed
+        // Payout 8: Polygon, USDC, 99.99, Completed (with fee via Service)
         let p = make_payout(
             inv_poly_id,
             ChainType::Polygon,
@@ -1061,7 +1179,12 @@ mod tests {
         dao.update_payout_status(p_id, PayoutStatus::InProgress)
             .await
             .unwrap();
-        dao.update_payout_status(p_id, PayoutStatus::Completed)
+        dao.update_payout_completed(p_id, Some(FeePayout {
+            fee_wallet: Address::ZERO,
+            fee_bps: 50,
+            source: FeeSource::Service,
+            amount: Decimal::new(50, 2),
+        }))
             .await
             .unwrap();
 

@@ -402,6 +402,7 @@ impl AssetHubClient {
                             recipient: event.to,
                             transaction_id: (block_number, index),
                             timestamp,
+                            fee: None,
                         })
                     })
                     .collect::<Vec<_>>()
@@ -972,6 +973,7 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
             // TODO: fetch block's timestamp
             #[expect(clippy::cast_sign_loss)]
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            fee: None,
         })
     }
 }

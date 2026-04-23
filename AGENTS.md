@@ -111,6 +111,7 @@ daemon/examples/              Integration test examples (crud, webhook)
 | [docs/DATABASE.md](docs/DATABASE.md) | SQLite schema, DAO pattern, status transitions | DB schema changes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Prerequisites, dev setup, release process | Releasing, onboarding |
 | [README.md](README.md) | User-facing setup, compilation, usage | End-user documentation |
+| [docs/fee.md](docs/fee.md) | Fee system: product behavior, architecture, decision service, config | Implementing or modifying the fee feature |
 
 ## MCP Tooling Summary
 

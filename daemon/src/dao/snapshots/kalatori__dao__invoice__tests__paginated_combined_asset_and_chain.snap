@@ -1,6 +1,5 @@
 ---
 source: daemon/src/dao/invoice.rs
-assertion_line: 1617
 expression: result
 ---
 - invoice:
@@ -19,3 +18,4 @@ expression: result
     created_at: "[timestamp]"
     updated_at: "[timestamp]"
   total_received_amount: "325.00"
+  total_fee: "1.30"

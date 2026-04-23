@@ -20,6 +20,7 @@ expression: result
   retry_count: 5
   last_attempt_at: "[timestamp]"
   failure_message: Permanent failure
+  fee: ~
 - id: "[uuid]"
   invoice_id: "[uuid]"
   initiator_type: System
@@ -39,3 +40,4 @@ expression: result
   last_attempt_at: "[timestamp]"
   next_retry_at: "[timestamp]"
   failure_message: Network error
+  fee: ~

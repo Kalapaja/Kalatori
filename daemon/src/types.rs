@@ -13,6 +13,7 @@
 /// ```
 mod admin;
 mod changes;
+mod fee_payout;
 mod common;
 mod invoice;
 mod payout;
@@ -24,6 +25,7 @@ mod webhook_event;
 // Re-export commonly used types for convenience
 pub use admin::*;
 pub use changes::*;
+pub use fee_payout::*;
 pub use common::*;
 pub use invoice::*;
 pub use payout::*;

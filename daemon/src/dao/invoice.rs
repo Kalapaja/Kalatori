@@ -168,6 +168,7 @@ struct InvoiceWithAmountsRow {
     #[sqlx(flatten)]
     invoice: InvoiceRow,
     amounts: sqlx::types::Json<Vec<String>>,
+    fee_amounts: sqlx::types::Json<Vec<String>>,
 }
 
 impl From<InvoiceWithAmountsRow> for InvoiceWithReceivedAmount {
@@ -176,16 +177,20 @@ impl From<InvoiceWithAmountsRow> for InvoiceWithReceivedAmount {
             .amounts
             .0
             .into_iter()
-            .filter_map(|amt_str| {
-                amt_str
-                    .parse::<rust_decimal::Decimal>()
-                    .ok()
-            })
+            .filter_map(|s| s.parse::<rust_decimal::Decimal>().ok())
+            .sum();
+
+        let total_fee = row
+            .fee_amounts
+            .0
+            .into_iter()
+            .filter_map(|s| s.parse::<rust_decimal::Decimal>().ok())
             .sum();
 
         Self {
             invoice: row.invoice.into(),
             total_received_amount: incoming_amount,
+            total_fee,
         }
     }
 }
@@ -294,18 +299,25 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
         invoice_id: Uuid,
     ) -> Result<Option<InvoiceWithReceivedAmount>, DaoInvoiceError> {
         let query = sqlx::query_as::<_, InvoiceWithAmountsRow>(
-            "SELECT
-                i.*,
-                CASE
-                    WHEN COUNT(t.amount) = 0 THEN '[]'
-                    ELSE json_group_array(t.amount)
-                END as amounts
-            FROM invoices i
-            LEFT JOIN transactions t
-                ON i.id = t.invoice_id
-                AND t.transaction_type = 'Incoming'
-            WHERE i.id = ?
-            GROUP BY i.id",
+            "WITH inv AS (SELECT * FROM invoices WHERE id = ?)
+            SELECT inv.*,
+                COALESCE(t_agg.amounts, '[]') as amounts,
+                COALESCE(p_agg.fee_amounts, '[]') as fee_amounts
+            FROM inv
+            LEFT JOIN (
+                SELECT invoice_id, json_group_array(amount) as amounts
+                FROM transactions
+                WHERE transaction_type = 'Incoming'
+                AND invoice_id IN (SELECT id FROM inv)
+                GROUP BY invoice_id
+            ) as t_agg ON inv.id = t_agg.invoice_id
+            LEFT JOIN (
+                SELECT invoice_id, json_group_array(fee_amount) as fee_amounts
+                FROM payouts
+                WHERE fee_amount IS NOT NULL
+                AND invoice_id IN (SELECT id FROM inv)
+                GROUP BY invoice_id
+            ) as p_agg ON inv.id = p_agg.invoice_id",
         )
         .bind(invoice_id);
 
@@ -337,7 +349,8 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
                 CASE
                     WHEN COUNT(t.amount) = 0 THEN '[]'
                     ELSE json_group_array(t.amount)
-                END as amounts
+                END as amounts,
+                '[]' as fee_amounts
             FROM invoices i
             LEFT JOIN transactions t
                 ON i.id = t.invoice_id
@@ -474,33 +487,46 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
         &self,
         params: &ListInvoicesParams,
     ) -> Result<Vec<InvoiceWithReceivedAmount>, DaoInvoiceError> {
+        let sort_order = params.sort_order.unwrap_or_default();
+        let per_page = params.pagination.validated_per_page();
+        let offset = params.pagination.offset();
+
         let mut builder = QueryBuilder::new(
-            "SELECT i.*,
-                CASE
-                    WHEN COUNT(t.amount) = 0 THEN '[]'
-                    ELSE json_group_array(t.amount)
-                END as amounts
-            FROM invoices i
-            LEFT JOIN transactions t
-                ON i.id = t.invoice_id
-                AND t.transaction_type = 'Incoming'
-            WHERE 1=1",
+            "WITH page AS (
+                SELECT * FROM invoices i
+                WHERE 1=1",
         );
 
         push_invoice_filters(&mut builder, params);
 
-        let sort_order = params.sort_order.unwrap_or_default();
-
-        builder.push(" GROUP BY i.id ORDER BY i.created_at ");
+        builder.push(" ORDER BY i.created_at ");
         builder.push(sort_order.as_sql());
-
-        let per_page = params.pagination.validated_per_page();
-        let offset = params.pagination.offset();
-
         builder.push(" LIMIT ");
         builder.push_bind(per_page);
         builder.push(" OFFSET ");
         builder.push_bind(offset);
+
+        builder.push(
+            ")
+            SELECT page.*,
+                COALESCE(t_agg.amounts, '[]') as amounts,
+                COALESCE(p_agg.fee_amounts, '[]') as fee_amounts
+            FROM page
+            LEFT JOIN (
+                SELECT invoice_id, json_group_array(amount) as amounts
+                FROM transactions
+                WHERE transaction_type = 'Incoming'
+                AND invoice_id IN (SELECT id FROM page)
+                GROUP BY invoice_id
+            ) as t_agg ON page.id = t_agg.invoice_id
+            LEFT JOIN (
+                SELECT invoice_id, json_group_array(fee_amount) as fee_amounts
+                FROM payouts
+                WHERE fee_amount IS NOT NULL
+                AND invoice_id IN (SELECT id FROM page)
+                GROUP BY invoice_id
+            ) as p_agg ON page.id = p_agg.invoice_id",
+        );
 
         let query = builder.build_query_as::<InvoiceWithAmountsRow>();
 
@@ -598,20 +624,26 @@ fn push_invoice_filters(
 
 #[cfg(test)]
 mod tests {
+    use alloy::primitives::Address;
     use rust_decimal::Decimal;
 
     use crate::dao::create_test_dao;
+    use crate::dao::payout::DaoPayoutMethods;
     use crate::dao::transaction::DaoTransactionMethods;
+    use crate::fee_client::FeeSource;
     use crate::types::{
         ChainType,
         CreateInvoiceData,
+        FeePayout,
         InvoiceCart,
         ListInvoicesParams,
         PaginationParams,
+        PayoutStatus,
         SortOrder,
         Transaction,
         TransactionType,
         default_create_invoice_data,
+        default_payout,
         default_transaction,
         default_update_invoice_data,
     };
@@ -831,6 +863,85 @@ mod tests {
             results[3].invoice.id, invoice4_id,
             "Fourth invoice should be invoice4"
         );
+    }
+
+    #[tokio::test]
+    async fn test_invoice_total_fee_aggregation() {
+        use alloy::primitives::Address;
+        use crate::dao::payout::DaoPayoutMethods;
+        use crate::fee_client::FeeSource;
+        use crate::types::{
+            FeePayout,
+            PayoutStatus,
+            default_payout,
+        };
+
+        let dao = create_test_dao().await;
+
+        // Invoice with a paid payout that has fee
+        let inv = make_invoice(
+            ChainType::Polygon,
+            Decimal::new(10000, 2), // 100.00
+            "USDC",
+        );
+        let inv_id = inv.id;
+        dao.create_invoice(inv).await.unwrap();
+        add_incoming_tx(&dao, inv_id, Decimal::new(10000, 2), 1).await;
+        dao.update_invoice_status(inv_id, InvoiceStatus::Paid).await.unwrap();
+
+        let fee_wallet: Address = "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9".parse().unwrap();
+
+        // First payout: 0.50 fee (Service source)
+        let p1 = default_payout(inv_id);
+        let p1_id = p1.id;
+        dao.create_payout(p1).await.unwrap();
+        dao.update_payout_status(p1_id, PayoutStatus::InProgress).await.unwrap();
+        dao.update_payout_completed(p1_id, Some(FeePayout {
+            fee_wallet,
+            fee_bps: 50,
+            source: FeeSource::Service,
+            amount: Decimal::new(50, 2),
+        })).await.unwrap();
+
+        let result = dao
+            .get_invoice_with_received_amount_by_id(inv_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.total_fee, Decimal::new(50, 2), "single fee payout");
+
+        // Second payout: 0.30 fee (Config source) — fees accumulate
+        let p2 = default_payout(inv_id);
+        let p2_id = p2.id;
+        dao.create_payout(p2).await.unwrap();
+        dao.update_payout_status(p2_id, PayoutStatus::InProgress).await.unwrap();
+        dao.update_payout_completed(p2_id, Some(FeePayout {
+            fee_wallet,
+            fee_bps: 30,
+            source: FeeSource::Config,
+            amount: Decimal::new(30, 2),
+        })).await.unwrap();
+
+        let result2 = dao
+            .get_invoice_with_received_amount_by_id(inv_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result2.total_fee, Decimal::new(80, 2), "two fee payouts sum");
+
+        // Payout with no fee: does not affect total_fee
+        let p3 = default_payout(inv_id);
+        let p3_id = p3.id;
+        dao.create_payout(p3).await.unwrap();
+        dao.update_payout_status(p3_id, PayoutStatus::InProgress).await.unwrap();
+        dao.update_payout_completed(p3_id, None).await.unwrap();
+
+        let result3 = dao
+            .get_invoice_with_received_amount_by_id(inv_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result3.total_fee, Decimal::new(80, 2), "no-fee payout unchanged total");
     }
 
     #[tokio::test]
@@ -1216,7 +1327,7 @@ mod tests {
         ids.push(inv.id);
         dao.create_invoice(inv).await.unwrap();
 
-        // Invoice 3: AssetHub, USDT, 75.00, Paid, 1 incoming tx (75.00)
+        // Invoice 3: AssetHub, USDT, 75.00, Paid, 1 incoming tx (75.00), 1 payout with fee
         let inv = make_invoice(
             ChainType::PolkadotAssetHub,
             Decimal::new(7500, 2),
@@ -1229,6 +1340,20 @@ mod tests {
         dao.update_invoice_status(inv_id, InvoiceStatus::Paid)
             .await
             .unwrap();
+        let payout = default_payout(inv_id);
+        let payout_id = payout.id;
+        dao.create_payout(payout).await.unwrap();
+        dao.update_payout_status(payout_id, PayoutStatus::InProgress)
+            .await
+            .unwrap();
+        dao.update_payout_completed(payout_id, Some(FeePayout {
+            fee_wallet: Address::ZERO,
+            fee_bps: 50,
+            source: FeeSource::Config,
+            amount: Decimal::new(38, 2),
+        }))
+        .await
+        .unwrap();
 
         // Invoice 4: Polygon, USDC, 500.00, PartiallyPaid, 2 incoming txs
         // (150.00 + 50.00 = 200.00)
@@ -1252,7 +1377,7 @@ mod tests {
         // --- Second batch (after the sleep) ---
 
         // Invoice 5: AssetHub, USDC, 300.00, OverPaid, 2 incoming txs
-        // (300.00 + 25.00 = 325.00)
+        // (300.00 + 25.00 = 325.00), 2 payouts with fees (0.38 + 0.92 = 1.30)
         let inv = make_invoice(
             ChainType::PolkadotAssetHub,
             Decimal::new(30000, 2),
@@ -1266,6 +1391,34 @@ mod tests {
         dao.update_invoice_status(inv_id, InvoiceStatus::OverPaid)
             .await
             .unwrap();
+        let payout = default_payout(inv_id);
+        let payout_id = payout.id;
+        dao.create_payout(payout).await.unwrap();
+        dao.update_payout_status(payout_id, PayoutStatus::InProgress)
+            .await
+            .unwrap();
+        dao.update_payout_completed(payout_id, Some(FeePayout {
+            fee_wallet: Address::ZERO,
+            fee_bps: 40,
+            source: FeeSource::Service,
+            amount: Decimal::new(38, 2),
+        }))
+        .await
+        .unwrap();
+        let payout2 = default_payout(inv_id);
+        let payout2_id = payout2.id;
+        dao.create_payout(payout2).await.unwrap();
+        dao.update_payout_status(payout2_id, PayoutStatus::InProgress)
+            .await
+            .unwrap();
+        dao.update_payout_completed(payout2_id, Some(FeePayout {
+            fee_wallet: Address::ZERO,
+            fee_bps: 40,
+            source: FeeSource::Service,
+            amount: Decimal::new(92, 2),
+        }))
+        .await
+        .unwrap();
 
         // Invoice 6: Polygon, USDT, 42.00, UnpaidExpired, no txs
         let inv = make_invoice(

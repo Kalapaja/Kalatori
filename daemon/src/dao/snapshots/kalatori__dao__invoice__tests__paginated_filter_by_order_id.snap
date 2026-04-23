@@ -18,6 +18,7 @@ expression: result
     created_at: "[timestamp]"
     updated_at: "[timestamp]"
   total_received_amount: "0"
+  total_fee: "0"
 - invoice:
     id: "[uuid]"
     order_id: SHOP-2024-001
@@ -34,3 +35,4 @@ expression: result
     created_at: "[timestamp]"
     updated_at: "[timestamp]"
   total_received_amount: "0"
+  total_fee: "0"

@@ -491,6 +491,7 @@ impl TryFrom<PayoutJson> for Payout {
                 next_retry_at: json.next_retry_at,
                 failure_message: json.failure_message,
             },
+            fee: None,
         })
     }
 }

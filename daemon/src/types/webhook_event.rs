@@ -57,6 +57,7 @@ pub fn default_webhook_event(invoice_id: Uuid) -> GenericEvent<super::PublicInvo
         created_at: Utc::now(),
         updated_at: Utc::now(),
         total_received_amount: rust_decimal::Decimal::ZERO,
+        total_fee: rust_decimal::Decimal::ZERO,
         transactions: vec![],
     };
 

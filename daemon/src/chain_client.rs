@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::types::{
     ChainType,
+    FeePayout,
     GeneralTransactionId,
     TransferInfo,
 };
@@ -102,6 +103,7 @@ pub struct GeneralChainTransfer {
     pub transaction_hash: Option<String>,
     // TODO: use DateTime<Utc> for consistency
     pub timestamp: u64, // milliseconds since epoch
+    pub fee: Option<FeePayout>,
 }
 
 impl GeneralChainTransfer {
@@ -139,6 +141,7 @@ pub fn default_general_chain_transfer() -> GeneralChainTransfer {
         position_in_block: Some(2),
         transaction_hash: Some("0x1234567890abcdef".to_string()),
         timestamp: chrono::Utc::now().timestamp() as u64,
+        fee: None,
     }
 }
 
@@ -151,6 +154,7 @@ pub struct ChainTransfer<T: ChainConfig> {
     pub recipient: T::AccountId, // base58 ss58 format
     pub transaction_id: T::TransactionId,
     pub timestamp: u64, // milliseconds since epoch
+    pub fee: Option<FeePayout>,
 }
 
 impl<T: ChainConfig> From<ChainTransfer<T>> for GeneralChainTransfer {
@@ -169,6 +173,7 @@ impl<T: ChainConfig> From<ChainTransfer<T>> for GeneralChainTransfer {
             position_in_block: trans_id.position_in_block,
             transaction_hash: trans_id.tx_hash,
             timestamp: transfer.timestamp,
+            fee: transfer.fee,
         }
     }
 }

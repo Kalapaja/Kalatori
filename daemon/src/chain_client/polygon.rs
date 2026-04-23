@@ -69,6 +69,12 @@ use super::{
 
 use super::keyring::SignTransactionRequestData;
 
+use crate::fee_client::{
+    FeeClient,
+    FeeDecision,
+};
+use crate::types::FeePayout;
+
 pub(super) use consts::{
     ACCOUNT_IMPL,
     CHAIN_ID,
@@ -93,13 +99,20 @@ const WS_MESSAGES_TIMEOUT_DURATION: Duration = Duration::from_secs(10);
 sol! {
     /// Standard ERC-20 interface for token interactions
     #[sol(rpc)]
-    interface IERC20 {
+    interface ABI {
+        struct Call {
+            address target;
+            uint256 value;
+            bytes data;
+        }
+
         function name() external view returns (string memory);
         function symbol() external view returns (string memory);
         function decimals() external view returns (uint8);
         function balanceOf(address account) external view returns (uint256);
         function transfer(address to, uint256 amount) external returns (bool);
         function execute(address dest, uint256 value, bytes calldata func) external;
+        function executeBatch(Call[] calldata calls) external;
         function getNonce(address sender, uint192 key) external view returns (uint256);
         function nonces(address owner) external view returns (uint256);
 
@@ -121,7 +134,7 @@ pub type PolygonAssetId = Address;
 pub type PolygonTransactionHash = TxHash;
 
 /// Polygon block hash
-pub type PolygonBlockHash = alloy::primitives::B256;
+pub type PolygonBlockHash = B256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolygonUnsignedTransaction {
@@ -138,6 +151,8 @@ pub struct PolygonUnsignedTransaction {
     pub transfer_all: bool,
     pub op_hash: Option<B256>,
     pub paymaster_data: Option<String>,
+    pub fee: Option<FeeDecision>,
+    pub fee_amount_wei: Option<U256>,
 }
 
 #[cfg(test)]
@@ -165,6 +180,8 @@ pub fn default_polygon_unsigned_transaction() -> PolygonUnsignedTransaction {
         transfer_all: false,
         op_hash: None,
         paymaster_data: None,
+        fee: None,
+        fee_amount_wei: None,
     }
 }
 
@@ -324,14 +341,27 @@ pub struct PolygonClient {
     provider: PolygonProvider,
     subscription_provider: PolygonProvider,
     pimlico_client: PimlicoClient,
+    fee_client: Option<FeeClient>,
+    fee_config: Option<crate::configs::FeeConfig>,
+    fee_client_id: Option<String>,
 }
 
 impl PolygonClient {
+    pub async fn new(
+        config: &crate::configs::ChainConfig,
+        fee_config: Option<crate::configs::FeeConfig>,
+        fee_client_id: Option<String>,
+    ) -> Result<Self, ClientError> {
+        Self::from_config(config, AssetInfoStore::new(), fee_config, fee_client_id).await
+    }
+
     /// Create a new Polygon client from configuration
-    #[instrument(skip(config, asset_info_store))]
+    #[instrument(skip(config, asset_info_store, fee_config, fee_client_id))]
     async fn from_config(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
+        fee_config: Option<crate::configs::FeeConfig>,
+        fee_client_id: Option<String>,
     ) -> Result<Self, ClientError> {
         let endpoint = config
             .get_random_requests_endpoint()
@@ -410,12 +440,23 @@ impl PolygonClient {
             "Connected to Polygon network"
         );
 
+        let fee_client = fee_config
+            .as_ref()
+            .map(|config| FeeClient::new(config.clone(), fee_client_id.clone()))
+            .transpose()
+            .map_err(|_| ClientError::InvalidConfiguration {
+                field: "fee_config".to_string(),
+            })?;
+
         Ok(Self {
             config: config.clone(),
             asset_info_store,
             provider,
             subscription_provider,
             pimlico_client: PimlicoClient::new(),
+            fee_client,
+            fee_config,
+            fee_client_id,
         })
     }
 
@@ -423,7 +464,7 @@ impl PolygonClient {
     async fn log_to_transfer(
         &self,
         log: &Log,
-        event: &IERC20::Transfer,
+        event: &ABI::Transfer,
     ) -> Result<ChainTransfer<PolygonChainConfig>, SubscriptionError> {
         let asset_id = log.address();
 
@@ -462,7 +503,7 @@ impl PolygonClient {
 
         // Use current time for timestamp (we could fetch block, but it's expensive)
         #[expect(clippy::cast_sign_loss)]
-        let timestamp = chrono::Utc::now().timestamp_millis() as u64;
+        let timestamp = Utc::now().timestamp_millis() as u64;
 
         let amount = u256_to_decimal(event.value, asset_info.decimals);
 
@@ -474,6 +515,7 @@ impl PolygonClient {
             recipient: event.to,
             transaction_id: const_hex::encode_prefixed(tx_hash),
             timestamp,
+            fee: None,
         })
     }
 
@@ -544,15 +586,49 @@ impl PolygonClient {
         amount_wei: U256,
         token: Address,
     ) -> Vec<u8> {
-        let inner_call = IERC20::transferCall {
+        let inner_call = ABI::transferCall {
             to: recipient,
             amount: amount_wei,
         };
 
-        IERC20::executeCall {
+        ABI::executeCall {
             dest: token,
             value: U256::ZERO,
             func: inner_call.abi_encode().into(),
+        }
+        .abi_encode()
+    }
+
+    fn build_batch_call(
+        &self,
+        recipient: Address,
+        amount_wei: U256,
+        fee_recipient: Address,
+        fee_amount_wei: U256,
+        token: Address,
+    ) -> Vec<u8> {
+        let merchant_transfer = ABI::transferCall {
+            to: recipient,
+            amount: amount_wei,
+        };
+        let fee_transfer = ABI::transferCall {
+            to: fee_recipient,
+            amount: fee_amount_wei,
+        };
+
+        ABI::executeBatchCall {
+            calls: vec![
+                ABI::Call {
+                    target: token,
+                    value: U256::ZERO,
+                    data: merchant_transfer.abi_encode().into(),
+                },
+                ABI::Call {
+                    target: token,
+                    value: U256::ZERO,
+                    data: fee_transfer.abi_encode().into(),
+                },
+            ],
         }
         .abi_encode()
     }
@@ -668,7 +744,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
     #[instrument(skip(config))]
     async fn new(config: &crate::configs::ChainConfig) -> Result<Self, ClientError> {
-        Self::from_config(config, AssetInfoStore::new()).await
+        Self::from_config(config, AssetInfoStore::new(), None, None).await
     }
 
     #[instrument(skip(config, asset_info_store))]
@@ -676,16 +752,16 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
     ) -> Result<Self, ClientError> {
-        Self::from_config(config, asset_info_store).await
+        Self::from_config(config, asset_info_store, None, None).await
     }
 
     #[instrument(skip(self))]
     async fn recreate(&self) -> Result<Self, ClientError> {
-        // For now, just return a clone
-        // TODO: Implement proper reconnection logic
         Self::from_config(
             &self.config,
             self.asset_info_store.clone(),
+            self.fee_config.clone(),
+            self.fee_client_id.clone(),
         )
         .await
     }
@@ -696,10 +772,10 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         asset_id: &PolygonAssetId,
     ) -> Result<AssetInfo<PolygonChainConfig>, QueryError> {
         tracing::trace!("Fetching ERC-20 token info...");
-        let contract = IERC20::new(*asset_id, self.provider.clone());
+        let token_contract = ABI::new(*asset_id, self.provider.clone());
 
         // Fetch symbol
-        let symbol = contract
+        let symbol = token_contract
             .symbol()
             .call()
             .await
@@ -715,7 +791,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             .map_err(|_| QueryError::RpcRequestFailed)?;
 
         // Fetch decimals
-        let decimals = contract
+        let decimals = token_contract
             .decimals()
             .call()
             .await
@@ -761,9 +837,9 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             })?
             .decimals;
 
-        let contract = IERC20::new(asset_id, self.provider.clone());
+        let token_contract = ABI::new(asset_id, self.provider.clone());
 
-        let balance_result = contract
+        let balance_result = token_contract
             .balanceOf(account)
             .call()
             .await
@@ -814,7 +890,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         // Build filter for Transfer events from all tracked ERC-20 contracts
         let filter = Filter::new()
             .address(asset_ids.to_vec())
-            .event_signature(IERC20::Transfer::SIGNATURE_HASH);
+            .event_signature(ABI::Transfer::SIGNATURE_HASH);
 
         let client = self.clone();
 
@@ -850,7 +926,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                         };
 
                         // Decode Transfer event from log
-                        match log.log_decode::<IERC20::Transfer>() {
+                        match log.log_decode::<ABI::Transfer>() {
                             Ok(decoded) => {
                                 let event = decoded.inner.data;
                                 match client.log_to_transfer(&log, &event).await {
@@ -922,8 +998,8 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         let amount_wei = decimal_to_u256(amount, decimals);
 
-        let contract = IERC20::new(asset_id, self.provider.clone());
-        let entrypoint_contract = IERC20::new(ENTRYPOINT, self.provider.clone());
+        let token_contract = ABI::new(asset_id, self.provider.clone());
+        let entrypoint_contract = ABI::new(ENTRYPOINT, self.provider.clone());
 
         let sender_nonce = self
             .provider
@@ -939,7 +1015,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                 }
             })?;
 
-        let permit_nonce = contract
+        let permit_nonce = token_contract
             .nonces(sender)
             .call()
             .await
@@ -990,6 +1066,13 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         // a real signed permit which we can get only on signing step
         let gas_params = GasParams::dummy();
         let permit_hash = self.build_permit_hash(&sender, permit_nonce);
+        let fee = if let Some(ref fc) = self.fee_client {
+            fc.decide(PolygonChainConfig::CHAIN_TYPE, amount).await
+        } else {
+            None
+        };
+        // call_data is a placeholder; the final encoding (single or batch) is
+        // built in sign_transaction() once gas costs are known.
         let call_data = self.build_call(recipient, amount_wei, asset_id);
 
         let authorization = Authorization {
@@ -1012,6 +1095,8 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             authorization,
             paymaster_data: None,
             op_hash: None,
+            fee,
+            fee_amount_wei: None,
         };
 
         Ok(UnsignedTransaction {
@@ -1092,11 +1177,17 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         // if the amount we put is full balance amount we'll get an error that we don't
         // have enough balance for transfer + fees, so we put some dummy amount for now,
         // paymaster fee shouldn't be significantly different depending on amount
-        let call_data_for_estimate = self.build_call(
-            inner.recipient,
-            U256::from(100),
-            inner.asset_id,
-        );
+        let call_data_for_estimate = if let Some(ref fee) = inner.fee {
+            self.build_batch_call(
+                inner.recipient,
+                U256::from(10),
+                fee.fee_wallet,
+                U256::from(10),
+                inner.asset_id,
+            )
+        } else {
+            self.build_call(inner.recipient, U256::from(100), inner.asset_id)
+        };
 
         let mut gas_params = self
             .pimlico_client
@@ -1163,11 +1254,24 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             .saturating_sub(max_cost_in_usdc_wei)
             .saturating_sub(U256::from(100));
 
-        let call_data = self.build_call(
-            inner.recipient,
-            amount_wei,
-            inner.asset_id,
-        );
+        let call_data = if let Some(ref fee) = inner.fee {
+            // Safe: FeeClient caps fee_bps at MAX_FEE_BPS (100), so the
+            // intermediate product fits well within U256.
+            #[expect(clippy::arithmetic_side_effects)]
+            let fee_amount = amount_wei * U256::from(u32::from(fee.fee_bps))
+                / U256::from(10_000u32);
+            let merchant_amount = amount_wei.saturating_sub(fee_amount);
+            inner.fee_amount_wei = Some(fee_amount);
+            self.build_batch_call(
+                inner.recipient,
+                merchant_amount,
+                fee.fee_wallet,
+                fee_amount,
+                inner.asset_id,
+            )
+        } else {
+            self.build_call(inner.recipient, amount_wei, inner.asset_id)
+        };
         inner.call_data = call_data;
         let op_hash = self.compute_user_op_hash(&inner, &paymaster_data);
 
@@ -1250,6 +1354,13 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             // to fill it from saved transaction parameters
             match receipt {
                 Ok(Some(data)) if data.success => {
+                    let fee = unsigned.fee.as_ref()
+                        .zip(unsigned.fee_amount_wei)
+                        .map(|(decision, fee_wei)| FeePayout::from_decision(
+                            decision,
+                            u256_to_decimal(fee_wei, asset_info.decimals),
+                        ));
+
                     return Ok(ChainTransfer {
                         asset_id,
                         asset_name: asset_info.name,
@@ -1258,6 +1369,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                         recipient: data.receipt.to,
                         transaction_id: data.receipt.transaction_hash,
                         timestamp: Utc::now().timestamp_millis() as u64,
+                        fee,
                     })
                 },
                 Ok(Some(data)) => {
@@ -1274,7 +1386,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                 ),
             };
 
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
 
         Err(

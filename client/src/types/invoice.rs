@@ -149,6 +149,7 @@ pub struct Invoice {
     pub redirect_url: String,
     pub cart: InvoiceCart,
     pub total_received_amount: Decimal,
+    pub total_fee: Decimal,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transactions: Vec<Transaction>,
     pub valid_till: DateTime<Utc>,

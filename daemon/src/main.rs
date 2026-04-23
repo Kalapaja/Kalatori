@@ -4,6 +4,7 @@ mod balance_checker;
 mod chain;
 mod chain_client;
 mod clients;
+mod fee_client;
 mod configs;
 mod dao;
 mod error;
@@ -45,6 +46,7 @@ use configs::{
     PaymentsConfig,
     auth_config_with_prefix,
     chains_config_with_prefix,
+    fee_config_with_prefix,
     database_config_with_prefix,
     etherscan_client_config_with_prefix,
     logger_config_with_prefix,
@@ -225,6 +227,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let etherscan_client_config = etherscan_client_config_with_prefix(&configs_path, &env_prefix);
     let swaps_config = swaps_config_with_prefix(&configs_path, &env_prefix);
     let auth_config = auth_config_with_prefix(&configs_path, &env_prefix);
+    let fee_config = fee_config_with_prefix(&configs_path, &env_prefix);
 
     let hmac_config = HmacConfig::new(
         secrets_config
@@ -289,12 +292,16 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let polygon_client = PolygonClient::new(polygon_chain_config)
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = ?e, "Failed to initialize Polygon client, continuing without it");
-            Error::Fatal
-        })?;
+    let polygon_client = PolygonClient::new(
+        polygon_chain_config,
+        fee_config,
+        auth_config.as_ref().map(|a| a.client_id.clone()),
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(error = ?e, "Failed to initialize Polygon client, continuing without it");
+        Error::Fatal
+    })?;
 
     polygon_client
         .init_asset_info(polygon_assets)

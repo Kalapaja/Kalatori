@@ -1,0 +1,7 @@
+{
+  "Polygon": {
+    "fee_wallet": "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9",
+    "fee_bps": 40,
+    "fee_service_url": "https://your-fee-service.example.com/decide"
+  }
+}

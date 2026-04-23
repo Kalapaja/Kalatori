@@ -18,6 +18,7 @@ expression: result
   destination_chain: Polygon
   destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
+  fee: ~
 - id: "[uuid]"
   invoice_id: "[uuid]"
   initiator_type: System
@@ -37,6 +38,7 @@ expression: result
   last_attempt_at: "[timestamp]"
   next_retry_at: "[timestamp]"
   failure_message: Network error
+  fee: ~
 - id: "[uuid]"
   invoice_id: "[uuid]"
   initiator_type: System
@@ -53,6 +55,11 @@ expression: result
   destination_chain: Polygon
   destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
+  fee:
+    fee_wallet: "0x0000000000000000000000000000000000000000"
+    fee_bps: 50
+    source: Config
+    amount: "0.30"
 - id: "[uuid]"
   invoice_id: "[uuid]"
   initiator_type: System
@@ -69,3 +76,4 @@ expression: result
   destination_chain: Polygon
   destination_asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
   retry_count: 0
+  fee: ~

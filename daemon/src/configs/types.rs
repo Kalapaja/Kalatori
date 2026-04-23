@@ -2,10 +2,10 @@ use std::collections::{
     HashMap,
     HashSet,
 };
+use alloy::primitives::Address;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::str::FromStr;
-
 use rand::prelude::*;
 use rust_decimal::Decimal;
 use secrecy::SecretString;
@@ -582,3 +582,18 @@ pub struct SwapsConfig {
     #[serde(default)]
     pub fees: Option<IntegratorFees>,
 }
+
+/// Per-chain fee parameters.
+#[derive(Deserialize, Clone, Debug)]
+pub struct ChainFeeConfig {
+    /// Address that receives fee transfers (fallback when no service configured).
+    pub fee_wallet: Address,
+    /// Fee rate in basis points. Runtime hard cap of 100 (1%) enforced by `FeeClient`.
+    pub fee_bps: u16,
+    /// Optional URL of the fee decision service.
+    #[serde(default)]
+    pub fee_service_url: Option<String>,
+}
+
+/// Fee config keyed by chain. JSON: `{ "Polygon": { ... } }`.
+pub type FeeConfig = HashMap<ChainType, ChainFeeConfig>;
