@@ -43,6 +43,7 @@ pub struct Invoice {
     pub valid_till: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub paid_at: Option<DateTime<Utc>>,
 }
 
 impl Invoice {
@@ -87,6 +88,7 @@ impl InvoiceWithReceivedAmount {
             valid_till: self.invoice.valid_till,
             created_at: self.invoice.created_at,
             updated_at: self.invoice.updated_at,
+            paid_at: self.invoice.paid_at,
             total_received_amount: self.total_received_amount,
             transactions: vec![],
         }
@@ -113,6 +115,7 @@ pub struct InvoiceRow {
     pub valid_till: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub paid_at: Option<DateTime<Utc>>,
 }
 
 impl From<InvoiceRow> for Invoice {
@@ -131,6 +134,7 @@ impl From<InvoiceRow> for Invoice {
             valid_till: row.valid_till,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            paid_at: row.paid_at,
         }
     }
 }
@@ -167,6 +171,7 @@ impl From<CreateInvoiceData> for Invoice {
             valid_till: data.valid_till,
             created_at: now,
             updated_at: now,
+            paid_at: None,
         }
     }
 }

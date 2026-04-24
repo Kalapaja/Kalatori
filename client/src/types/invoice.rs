@@ -154,4 +154,6 @@ pub struct Invoice {
     pub valid_till: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paid_at: Option<DateTime<Utc>>,
 }

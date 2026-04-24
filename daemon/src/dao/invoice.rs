@@ -366,10 +366,12 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
         let query = sqlx::query_as::<_, InvoiceRow>(
             "UPDATE invoices
             SET status = ?,
-                updated_at = datetime('now')
+                updated_at = datetime('now'),
+                paid_at = CASE WHEN ? IN ('Paid', 'OverPaid') THEN datetime('now') ELSE paid_at END
             WHERE id = ?
             RETURNING *",
         )
+        .bind(status)
         .bind(status)
         .bind(invoice_id);
 

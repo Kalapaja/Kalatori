@@ -19,3 +19,5 @@ static/
 
 # mutants output files
 mutants.out*
+
+.idea

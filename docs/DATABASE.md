@@ -28,6 +28,7 @@ Primary entity. Tracks payment requests from merchants.
 | redirect_url | TEXT | Post-payment redirect |
 | valid_till | TEXT | ISO 8601 expiration |
 | created_at, updated_at | TEXT | ISO 8601 timestamps |
+| paid_at | TEXT | ISO 8601 timestamp; set when status becomes `Paid` or `OverPaid`, NULL otherwise |
 
 **Invoice statuses**: `Waiting` -> `PartiallyPaid` -> `Paid` / `OverPaid` / `PartiallyPaidExpired` / `AdminCanceled`. Also: `Waiting` -> `UnpaidExpired` / `CustomerCanceled` / `AdminCanceled`. Final statuses cannot transition further (enforced by DB trigger).
 
