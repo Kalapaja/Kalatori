@@ -281,6 +281,37 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         }
     }
 
+    async fn get_submitted_swaps(&mut self) {
+        match self.dao.get_submitted_swaps().await {
+            Ok(swaps) => {
+                if !swaps.is_empty() {
+                    let swaps_count = swaps.len();
+                    self.store.add_swaps(swaps);
+                    tracing::info!(%swaps_count, "Added submitted swaps for tracking");
+                }
+            },
+            Err(e) => tracing::warn!(
+                error = ?e,
+                "Error while fetching submitted swaps for monitoring"
+            ),
+        };
+    }
+
+    async fn get_outdated_swaps(&mut self) {
+        match self.dao.get_outdated_swaps().await {
+            Ok(swaps) => {
+                if !swaps.is_empty() {
+                    let swaps_count = swaps.len();
+                    tracing::info!(%swaps_count, "Marked swaps as abandoned");
+                }
+            },
+            Err(e) => tracing::warn!(
+                error = ?e,
+                "Error while markind swaps abandoned"
+            ),
+        }
+    }
+
     async fn perform(
         mut self,
         token: CancellationToken,
@@ -295,7 +326,7 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS,
         ));
 
-        // First of all need to fetch pending swaps which has left after service
+        // TODO: First of all need to fetch pending swaps which has left after service
         // reaload. Need to either handle an error and retry loading or just
         // panic and restart the daemon, we can't just leave those pending swaps
         // in this state forever.
@@ -304,6 +335,7 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             .get_pending_swaps()
             .await
             .unwrap();
+
         self.store.add_swaps(pending_swaps);
 
         loop {
@@ -313,19 +345,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                 },
                 _ = database_polling_interval.tick() => {
                     // TODO: also fetch swaps which has valid_till < now and are still active
-                    match self.dao.get_submitted_swaps().await {
-                        Ok(swaps) => {
-                            if !swaps.is_empty() {
-                                let swaps_count = swaps.len();
-                                self.store.add_swaps(swaps);
-                                tracing::info!(%swaps_count, "Added submitted swaps for tracking");
-                            }
-                        },
-                        Err(e) => tracing::warn!(
-                            error = ?e,
-                            "Error while fetching submitted swaps for monitoring"
-                        ),
-                    };
+                    self.get_submitted_swaps().await;
+                    self.get_outdated_swaps().await;
                 },
                 () = token.cancelled() => {
                     tracing::info!(

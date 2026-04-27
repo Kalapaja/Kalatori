@@ -431,6 +431,29 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             })
     }
 
+    async fn get_outdated_swaps(&self) -> Result<Vec<Swap>, DaoSwapError> {
+        let query = sqlx::query_as::<_, SwapRow>(
+            "UPDATE swaps
+            SET status = 'Abandoned', finished_at = datetime('now')
+            WHERE status = 'Created'
+            AND valid_till < datetime('now')
+            RETURNING *",
+        );
+
+        self.fetch_all(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.swap",
+                    error.operation = "get_outdated_swaps",
+                    error.source = ?e,
+                    "Failed to get outdated swaps and set their status to 'Abandoned'"
+                );
+
+                DaoSwapError::DatabaseError
+            })
+    }
+
     async fn update_swap_submitted(
         &self,
         swap_id: Uuid,
@@ -508,14 +531,6 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             })
     }
 
-    // TODO: probably this might be unified for all front-end submitting swaps. We
-    // can provide some "common" structure like
-    // ```
-    // struct FrontEndSubmittableSwapData<T> {
-    //     transaction_hash: Option<String>,
-    //     data: T,
-    // }
-    // ```
     async fn update_swap_submitted_with_hash(
         &self,
         swap_id: Uuid,
@@ -978,6 +993,98 @@ mod tests {
                 invoice_id
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_outdated_swaps() {
+        let dao = create_test_dao().await;
+
+        // Empty: no swaps at all
+        let outdated = dao.get_outdated_swaps().await.unwrap();
+        assert!(outdated.is_empty());
+
+        let invoice = default_create_invoice_data();
+        let invoice_id = invoice.id;
+        dao.create_invoice(invoice)
+            .await
+            .unwrap();
+
+        // Created + valid_till in the past — should be returned and abandoned
+        let outdated_swap = Swap {
+            valid_till: Utc::now() - chrono::Duration::hours(1),
+            ..default_swap(invoice_id)
+        };
+        let outdated_swap_id = outdated_swap.id;
+        dao.create_swap(outdated_swap)
+            .await
+            .unwrap();
+
+        // Created + valid_till in the future — should be untouched
+        let future_swap = Swap {
+            valid_till: Utc::now() + chrono::Duration::hours(1),
+            ..default_swap(invoice_id)
+        };
+        let future_swap_id = future_swap.id;
+        dao.create_swap(future_swap)
+            .await
+            .unwrap();
+
+        // Submitted + valid_till in the past — should be untouched (status filter)
+        let submitted_swap = Swap {
+            valid_till: Utc::now() - chrono::Duration::hours(1),
+            ..default_swap(invoice_id)
+        };
+        let submitted_swap_id = submitted_swap.id;
+        dao.create_swap(submitted_swap)
+            .await
+            .unwrap();
+        dao.update_swap_submitted(submitted_swap_id)
+            .await
+            .unwrap();
+
+        let outdated = dao.get_outdated_swaps().await.unwrap();
+        assert_eq!(outdated.len(), 1);
+        assert_eq!(outdated[0].id, outdated_swap_id);
+        assert_eq!(
+            outdated[0].status,
+            SwapStatus::Abandoned
+        );
+        assert!(outdated[0].finished_at.is_some());
+
+        // Persisted state matches the returned row
+        let stored = dao
+            .get_swap_by_id(outdated_swap_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, SwapStatus::Abandoned);
+        assert!(stored.finished_at.is_some());
+
+        // Future-valid Created swap is unchanged
+        let stored_future = dao
+            .get_swap_by_id(future_swap_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored_future.status,
+            SwapStatus::Created
+        );
+
+        // Submitted swap is unchanged by get_outdated_swaps
+        let stored_submitted = dao
+            .get_swap_by_id(submitted_swap_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored_submitted.status,
+            SwapStatus::Submitted
+        );
+
+        // Idempotent: second call has nothing to abandon
+        let outdated_again = dao.get_outdated_swaps().await.unwrap();
+        assert!(outdated_again.is_empty());
     }
 
     // ========================================================================
