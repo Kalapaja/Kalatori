@@ -1,24 +1,13 @@
 .PHONY: help
 
-# absolute path to this makefile
+# absolute path to this makefile (computed before includes so MAKEFILE_LIST has
+# only the top-level Makefile)
 mkfile_path := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-# Keep in sync with subxt version in Cargo.toml
-subxt_cli_version := 0.44.0
-
-# Keep in sync with sqlx version in Cargo.toml
-sqlx_cli_version := 0.8.6
-
-nextest_version := 0.9.129
-
-llvm_cov_version := 0.8.4
-
-mutants_version := 26.2.0
-
-insta_version := 1.46.3
-
-# Front end release version compatible with current daemon version
-front_end_version := 0.0.22
+# Tool versions live in dedicated files so CI can hash each one independently
+# as a cache key (tool bumps and front-end bumps invalidate different caches).
+include tools.mk
+include front-end.mk
 
 help: # Show help for each of the Makefile recipes
 	@grep -E '^[a-zA-Z0-9 -]+:.*#'  Makefile | sort | while read -r l; do printf "\033[1;32m$$(echo $$l | cut -f 1 -d':')\033[00m:$$(echo $$l | cut -f 2- -d'#')\n"; done
@@ -27,23 +16,29 @@ help: # Show help for each of the Makefile recipes
 ### Setup Project ###
 #####################
 
-install-subxt-cli: # Install subxt-cli into the project directory
-	cargo install --root $(mkfile_path) --version $(subxt_cli_version) --locked subxt-cli
+install-cargo-binstall: # Install cargo-binstall (used by other install targets to fetch prebuilt binaries)
+	@if ! command -v cargo-binstall >/dev/null 2>&1; then \
+		curl -L --proto '=https' --tlsv1.2 -sSf \
+			https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash; \
+	fi
 
-install-sqlx-cli: # Install sqlx-cli into the project directory
-	cargo install --root $(mkfile_path) --version $(sqlx_cli_version) --locked sqlx-cli --no-default-features --features sqlite,completions
+install-subxt-cli: install-cargo-binstall # Install subxt-cli into the project directory
+	cargo binstall --root $(mkfile_path) --version $(subxt_cli_version) --locked --no-confirm subxt-cli
 
-install-nextest: # Install cargo-nextest into the project directory
-	cargo install --root $(mkfile_path) --version $(nextest_version) --locked cargo-nextest
+install-sqlx-cli: install-cargo-binstall # Install sqlx-cli into the project directory
+	cargo binstall --root $(mkfile_path) --version $(sqlx_cli_version) --locked --no-confirm --no-default-features --features sqlite,completions sqlx-cli
 
-install-llvm-cov: # Install llvm-cov into the project directory
-	cargo install --root $(mkfile_path) --version $(llvm_cov_version) --locked cargo-llvm-cov
+install-nextest: install-cargo-binstall # Install cargo-nextest into the project directory
+	cargo binstall --root $(mkfile_path) --version $(nextest_version) --locked --no-confirm cargo-nextest
 
-install-mutants: # Install cargo-mutants into the project directory
-	cargo install --root $(mkfile_path) --version $(mutants_version) --locked cargo-mutants
+install-llvm-cov: install-cargo-binstall # Install llvm-cov into the project directory
+	cargo binstall --root $(mkfile_path) --version $(llvm_cov_version) --locked --no-confirm cargo-llvm-cov
 
-install-insta: # Install cargo-insta for snapshot test review
-	cargo install --root $(mkfile_path) --version $(insta_version) --locked cargo-insta
+install-mutants: install-cargo-binstall # Install cargo-mutants into the project directory
+	cargo binstall --root $(mkfile_path) --version $(mutants_version) --locked --no-confirm cargo-mutants
+
+install-insta: install-cargo-binstall # Install cargo-insta for snapshot test review
+	cargo binstall --root $(mkfile_path) --version $(insta_version) --locked --no-confirm cargo-insta
 
 # TODO: read URL from json config and/or env var instead of hardcode
 download-node-metadata: # Download metadata of configured Asset Hub node. Required for subxt compilation. By default use ws://localhost:9000 url.

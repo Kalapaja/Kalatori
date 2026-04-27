@@ -109,7 +109,6 @@ zeroize = "1"
 shadow-rs = { version = "0.36", default-features = false }
 thiserror = "2"
 trait-variant = "0.1"
-hmac = "0.12"
 sha2 = "0.10"
 # Let's add some random and fun to financial operations :) (it's a joke, we don't really do anything like that)
 rand = "0.10"
@@ -121,7 +120,6 @@ mockall = "0.14"
 mockall_double = "0.3"
 httpmock = "0.8"
 indoc = "2"
-serial_test = "3.2"
 tracing-test = "0.2"
 insta = { version = "1", features = ["json", "yaml", "redactions"] }
 
@@ -132,6 +130,12 @@ shadow-rs = { version = "0.36", default-features = false }
 [features]
 default = []
 dev_api = []
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 strip = true

@@ -1,17 +1,38 @@
 name: Setup Rust Build Environment
-description: Install subxt-cli, download chain metadata, and download front-end
+description: Install project-local Rust tooling, download chain metadata, and download the front-end
 
 runs:
   using: composite
   steps:
-    - name: Install subxt-cli
+    # Cache project-local tool binaries (subxt-cli, nextest, llvm-cov, ...).
+    # Keyed on tools.mk so unrelated Makefile edits and front-end version bumps
+    # do not invalidate this cache.
+    - name: Cache project-local tool binaries
+      id: cache-bin
+      uses: actions/cache@v5
+      with:
+        path: bin/
+        key: cargo-tools-${{ runner.os }}-${{ hashFiles('tools.mk') }}
+
+    - name: Install Rust tools (subxt-cli, nextest, llvm-cov)
+      if: steps.cache-bin.outputs.cache-hit != 'true'
       shell: bash
-      run: make install-subxt-cli
+      run: make install-subxt-cli install-nextest install-llvm-cov
 
     - name: Download chain metadata
       shell: bash
       run: make download-node-metadata-ci
 
+    # Cache the unpacked front-end. Keyed on front-end.mk only, so tool bumps
+    # do not bust this cache.
+    - name: Cache front-end
+      id: cache-front-end
+      uses: actions/cache@v5
+      with:
+        path: static/
+        key: front-end-${{ runner.os }}-${{ hashFiles('front-end.mk') }}
+
     - name: Download front-end
+      if: steps.cache-front-end.outputs.cache-hit != 'true'
       shell: bash
       run: make download-front-end
