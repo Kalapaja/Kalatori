@@ -14,23 +14,16 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v6
 
+      # Restore cargo registry / target cache before any compilation step so the
+      # first build benefits from a warm registry.
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.8.2
+
       - name: Setup SQLite
         uses: ./.github/actions/setup-sqlite
 
       - name: Setup Rust build environment
         uses: ./.github/actions/setup-rust-build-env
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2.8.2
-
-      - name: Install cargo-nextest
-        run: make install-nextest
-
-      - name: Install cargo-llvm-cov
-        run: make install-llvm-cov
-
-      - name: Install llvm-tools-preview
-        run: rustup component add llvm-tools-preview
 
       - name: Run tests with coverage
         # NOTE: insta snapshot tests require CI=true to fail on mismatches instead of writing .snap.new files.
