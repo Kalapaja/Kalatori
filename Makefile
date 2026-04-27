@@ -1,12 +1,5 @@
 .PHONY: help
 
-# absolute path to this makefile (computed before includes so MAKEFILE_LIST has
-# only the top-level Makefile)
-mkfile_path := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-
-# Tool versions live in dedicated files so CI can hash each one independently
-# as a cache key (tool bumps and front-end bumps invalidate different caches).
-include tools.mk
 include front-end.mk
 
 help: # Show help for each of the Makefile recipes
@@ -22,31 +15,12 @@ install-cargo-binstall: # Install cargo-binstall (used by other install targets 
 			https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash; \
 	fi
 
-install-subxt-cli: install-cargo-binstall # Install subxt-cli into the project directory
-	cargo binstall --root $(mkfile_path) --version $(subxt_cli_version) --locked --no-confirm subxt-cli
-
-install-sqlx-cli: install-cargo-binstall # Install sqlx-cli into the project directory
-	cargo binstall --root $(mkfile_path) --version $(sqlx_cli_version) --locked --no-confirm --no-default-features --features sqlite,completions sqlx-cli
-
-install-nextest: install-cargo-binstall # Install cargo-nextest into the project directory
-	cargo binstall --root $(mkfile_path) --version $(nextest_version) --locked --no-confirm cargo-nextest
-
-install-llvm-cov: install-cargo-binstall # Install llvm-cov into the project directory
-	cargo binstall --root $(mkfile_path) --version $(llvm_cov_version) --locked --no-confirm cargo-llvm-cov
-
-install-mutants: install-cargo-binstall # Install cargo-mutants into the project directory
-	cargo binstall --root $(mkfile_path) --version $(mutants_version) --locked --no-confirm cargo-mutants
-
-install-insta: install-cargo-binstall # Install cargo-insta for snapshot test review
-	cargo binstall --root $(mkfile_path) --version $(insta_version) --locked --no-confirm cargo-insta
-
 # TODO: read URL from json config and/or env var instead of hardcode
 download-node-metadata: # Download metadata of configured Asset Hub node. Required for subxt compilation. By default use ws://localhost:9000 url.
-	PATH="${PWD}/bin:${PATH}" subxt metadata -f bytes --url wss://asset-hub-polkadot-rpc.n.dwellir.com > metadata.scale
+	cargo bin subxt metadata -f bytes --url wss://asset-hub-polkadot-rpc.n.dwellir.com > metadata.scale
 
-# TODO: read alternative value from env
-download-node-metadata-ci: # Download metadata of Asset Hub node. Required for subxt compilation. By default use wss://polkadot-asset-hub-rpc.polkadot.io url.
-	PATH="${PWD}/bin:${PATH}" subxt metadata -f bytes --url wss://asset-hub-polkadot-rpc.n.dwellir.com > metadata.scale
+download-node-metadata-docker: # Download metadata using globally installed subxt-cli
+	subxt metadata -f bytes --url wss://asset-hub-polkadot-rpc.n.dwellir.com > metadata.scale
 
 copy-configs: # Copy .example configs to actual configs
 	cd configs; \
@@ -64,24 +38,24 @@ download-front-end: # Download front-end release and unpack it into static folde
 	rm -r dist; \
 	rm payment-page-v$(front_end_version).zip
 
-setup: install-subxt-cli download-node-metadata copy-configs # Sets up the project for local run
-	echo "Make sure you have SQLite installed. Check README.md for the instructions"
+setup-utils: install-cargo-binstall # Sets up different utilities for running tests, coverage etc which are not required for the project run
+	cargo bin --install
 
-setup-utils: install-nextest install-llvm-cov install-insta install-mutants # Sets up different utilities for running tests, coverage etc which are not required for the project run
-	echo "Installed nextest, llvm-cov, insta and cargo-mutants"
+setup: setup-utils download-node-metadata copy-configs # Sets up the project for local run
+	echo "Make sure you have SQLite installed. Check README.md for the instructions"
 
 #####################
 ### Build and run ###
 #####################
 
 sqlx-create-db: # Create an empty SQLite database file
-	PATH="${PWD}/bin:${PATH}" sqlx db create --database-url sqlite:./database/kalatori_db.sqlite
+	cargo bin sqlx db create --database-url sqlite:./database/kalatori_db.sqlite
 
 sqlx-migrate: # Run database migrations using sqlx-cli
-	PATH="${PWD}/bin:${PATH}" sqlx migrate run --database-url sqlite:./database/kalatori_db.sqlite
+	cargo bin sqlx migrate run --database-url sqlite:./database/kalatori_db.sqlite
 
 sqlx-prepare: # Prepare sqlx for compile-time verification of SQL queries
-	PATH="${PWD}/bin:${PATH}" cargo sqlx prepare --database-url sqlite:./database/kalatori_db.sqlite
+	cargo bin cargo sqlx prepare --database-url sqlite:./database/kalatori_db.sqlite
 
 build-release: # Build the daemon with --release flag
 	cargo build --release
@@ -113,7 +87,7 @@ run-test-examples:
 ##############
 
 cargo-test: # Run cargo tests using nextest
-	PATH="${PWD}/bin:${PATH}" cargo nextest run
+	cargo bin cargo-nextest run
 
 cargo-check: # Run cargo check for all targets
 	cargo check --all-targets --all-features
@@ -129,7 +103,7 @@ cargo-deny: # Run cargo deny checks
 	cargo deny -L error check
 
 cargo-mutants-for-diff: # Run cargo mutants for git diff
-	git diff | PATH="${PWD}/bin:${PATH}" cargo mutants --test-tool=nextest --in-diff /dev/stdin
+	git diff | cargo bin cargo-mutants --test-tool=nextest --in-diff /dev/stdin
 
 #############
 ### Tools ###
@@ -139,19 +113,19 @@ cargo-fmt-apply: # Apply cargo fmt style changes
 	cargo +nightly fmt --all
 
 insta-review: # Interactively review pending snapshots
-	PATH="${PWD}/bin:${PATH}" cargo insta review
+	cargo bin cargo-insta review
 
 insta-accept: # Accept all pending snapshots
-	PATH="${PWD}/bin:${PATH}" cargo insta accept
+	cargo bin cargo-insta accept
 
 insta-test: # Run tests and review pending snapshots
-	PATH="${PWD}/bin:${PATH}" cargo insta test --review
+	cargo bin cargo-insta test --review
 
 generate-hmac-test-vectors: # Generate HMAC test vectors for the webhook simulator
 	cargo run --example generate_hmac_test_vectors -p kalatori-client
 
 generate-coverage-report: # Generate test coverage report as lcov.info
-	PATH="${PWD}/bin:${PATH}" cargo llvm-cov nextest -p kalatori --lcov --output-path lcov.info
+	cargo bin cargo-llvm-cov nextest -p kalatori --lcov --output-path lcov.info
 
 open-coverage-report: # Generate and open test coverage report
-	PATH="${PWD}/bin:${PATH}" cargo llvm-cov nextest -p kalatori --open
+	cargo bin cargo-llvm-cov nextest -p kalatori --open

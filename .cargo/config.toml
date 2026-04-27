@@ -1,0 +1,6 @@
+[alias]
+bin = ["run", "--package", "cargo-bin", "--"]
+insta = ["bin", "cargo-insta"]
+llvm-cov = ["bin", "cargo-llvm-cov"]
+mutants = ["bin", "cargo-mutants"]
+nextest = ["bin", "cargo-nextest"]

@@ -9,7 +9,7 @@ static/
 /.crates2.json
 
 # locally installed binaries
-/bin
+/.bin
 
 # asset hub node metadata required for subxt compilation
 /metadata.scale

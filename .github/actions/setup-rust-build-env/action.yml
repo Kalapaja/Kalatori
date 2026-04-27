@@ -5,23 +5,21 @@ runs:
   using: composite
   steps:
     # Cache project-local tool binaries (subxt-cli, nextest, llvm-cov, ...).
-    # Keyed on tools.mk so unrelated Makefile edits and front-end version bumps
-    # do not invalidate this cache.
     - name: Cache project-local tool binaries
       id: cache-bin
       uses: actions/cache@v5
       with:
-        path: bin/
-        key: cargo-tools-${{ runner.os }}-${{ hashFiles('tools.mk') }}
+        path: .bin/
+        key: bins-${{ hashFiles('Cargo.toml') }}
 
     - name: Install Rust tools (subxt-cli, nextest, llvm-cov)
       if: steps.cache-bin.outputs.cache-hit != 'true'
       shell: bash
-      run: make install-subxt-cli install-nextest install-llvm-cov
+      run: make setup-utils
 
     - name: Download chain metadata
       shell: bash
-      run: make download-node-metadata-ci
+      run: make download-node-metadata
 
     # Cache the unpacked front-end. Keyed on front-end.mk only, so tool bumps
     # do not bust this cache.
@@ -30,7 +28,7 @@ runs:
       uses: actions/cache@v5
       with:
         path: static/
-        key: front-end-${{ runner.os }}-${{ hashFiles('front-end.mk') }}
+        key: front-end-${{ hashFiles('front-end.mk') }}
 
     - name: Download front-end
       if: steps.cache-front-end.outputs.cache-hit != 'true'

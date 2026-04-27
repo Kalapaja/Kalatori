@@ -5,10 +5,10 @@
 chopsticks
 docs
 target
-bin
+.bin
 static
 database
-tools
+tools/webhook-simulator
 
 Dockerfile
 

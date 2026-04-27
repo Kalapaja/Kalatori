@@ -12,8 +12,7 @@ jobs:
         uses: actions/checkout@v6
 
       # Restore cargo registry / target cache before any compilation step so the
-      # first build (subxt-cli install in the composite) benefits from a warm
-      # registry.
+      # first build benefits from a warm registry.
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.8.2
 
