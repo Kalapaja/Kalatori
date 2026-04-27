@@ -2,6 +2,7 @@
 name = "cargo-bin"
 version = "0.1.0"
 edition = "2024"
+description = "cargo-run-bin util"
 authors.workspace = true
 license.workspace = true
 readme.workspace = true
