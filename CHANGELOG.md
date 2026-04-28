@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 **Please note:**
 This is a public beta release of the Kalatori daemon. While it adheres to the [API specs](https://kalapaja.github.io/kalatori-api), it is still under active development. We encourage you to test it and provide feedback.
 
+## [0.9.0] - 2026-04-28
+
+### 🚀 Features
+
+- Admin API surface: paginated, filterable list endpoints for invoices, payouts, transactions, and swaps; matching single-entity GET handlers; settings and integration-settings endpoints
+- Admin UI page served by the daemon
+- Refunds via direct transfers and same-chain swaps
+- 0x (Zero Ex) added as a swap executor alongside Across and Bungee
+- Plugin discovery: GitHub-based client that locates and downloads official Kalatori shop plugins (WooCommerce supported)
+- Created swaps past their `valid_till` are now automatically marked `Abandoned`
+- Configurable WebSocket subscription connection timeout
+- RPC endpoints can be tagged per-operation (requests vs. subscriptions); currently honored on Polygon
+- Webhook URL is now optional — events without a configured URL are marked delivered immediately
+- Substring filter on `order_id` for the admin invoice list
+
+### 🐛 Bug Fixes
+
+- Prevent payouts from getting stuck when transaction building fails
+- Balance checker falls back to the database when an invoice has already been evicted from the in-memory registry (resolves a race between on-chain detection and swap-executor finalization)
+- Native asset cross-chain swaps and a trailing-slash issue in URL handling
+- Several swaps-client parameter conversion bugs, now covered by HTTP-mocked tests
+- Admin session cookie now sets `SameSite=Lax`
+- Etherscan response deserializers and assorted typos
+- Solana `SwapTransactionInternal` handling
+
+### 🚜 Refactor
+
+- Unified swaps interface: shared trait, consolidated methods across executors
+- 0x swaps use an explicit allowance target instead of Permit2
+
+### 🔧 CI/CD
+
+- Pipeline time optimization: cargo-chef for Docker builds, cargo-run-bin to pin tool versions, profile tuning for dev builds
+- Cache layout reorganized; tool versions extracted to a separate file used as a cache key
+
+### 🧪 Testing
+
+- Additional coverage for swap clients, admin API handlers, and other critical paths
+- HTTP-mocked tests for swaps-client parameter conversion
+
+### 🎨 Frontend (Kassette v0.0.25)
+
+- Kassette bumped from v0.0.16 to v0.0.25; bundle unpack script simplified
+
 ## [0.8.2] - 2026-03-13
 
 ### 🚀 Features

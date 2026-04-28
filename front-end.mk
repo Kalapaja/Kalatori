@@ -4,4 +4,4 @@
 # for the `static/` directory, so bumping the front-end version busts only that
 # cache and leaves the tool cache untouched.
 
-front_end_version := 0.0.22
+front_end_version := 0.0.25
