@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "exa": {
+      "type": "http",
+      "url": "https://mcp.exa.ai/mcp"
+    },
+    "mcp-server-git": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-git"],
+      "env": {}
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--browser", "firefox"],
+      "env": {}
+    },
+    "ripgrep": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "mcp-ripgrep@latest"],
+      "env": {}
+    },
+    "sequential-thinking": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "env": {}
+    }
+  }
+}

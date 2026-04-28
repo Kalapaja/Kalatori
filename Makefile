@@ -1,22 +1,6 @@
 .PHONY: help
 
-# absolute path to this makefile
-mkfile_path := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-
-# Keep in sync with subxt version in Cargo.toml
-subxt_cli_version := 0.44.0
-
-# Keep in sync with sqlx version in Cargo.toml
-sqlx_cli_version := 0.8.6
-
-nextest_version := 0.9.129
-
-llvm_cov_version := 0.8.4
-
-mutants_version := 26.2.0
-
-# Front end release version compatible with current daemon version
-front_end_version := 0.0.4
+include front-end.mk
 
 help: # Show help for each of the Makefile recipes
 	@grep -E '^[a-zA-Z0-9 -]+:.*#'  Makefile | sort | while read -r l; do printf "\033[1;32m$$(echo $$l | cut -f 1 -d':')\033[00m:$$(echo $$l | cut -f 2- -d'#')\n"; done
@@ -25,28 +9,18 @@ help: # Show help for each of the Makefile recipes
 ### Setup Project ###
 #####################
 
-install-subxt-cli: # Install subxt-cli into the project directory
-	cargo install --root $(mkfile_path) --version $(subxt_cli_version) --locked subxt-cli
-
-install-sqlx-cli: # Install sqlx-cli into the project directory
-	cargo install --root $(mkfile_path) --version $(sqlx_cli_version) --locked sqlx-cli --no-default-features --features sqlite,completions
-
-install-nextest: # Install cargo-nextest into the project directory
-	cargo install --root $(mkfile_path) --version $(nextest_version) --locked cargo-nextest
-
-install-llvm-cov: # Install llvm-cov into the project directory
-	cargo install --root $(mkfile_path) --version $(llvm_cov_version) --locked cargo-llvm-cov
-
-install-mutants: # Install cargo-mutants into the project directory
-	cargo install --root $(mkfile_path) --version $(mutants_version) --locked cargo-mutants
+install-cargo-binstall: # Install cargo-binstall (used by other install targets to fetch prebuilt binaries)
+	@if ! command -v cargo-binstall >/dev/null 2>&1; then \
+		curl -L --proto '=https' --tlsv1.2 -sSf \
+			https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash; \
+	fi
 
 # TODO: read URL from json config and/or env var instead of hardcode
 download-node-metadata: # Download metadata of configured Asset Hub node. Required for subxt compilation. By default use ws://localhost:9000 url.
-	PATH="${PWD}/bin:${PATH}" subxt metadata -f bytes --url wss://asset-hub-polkadot-rpc.n.dwellir.com > metadata.scale
+	cargo bin subxt metadata -f bytes --url wss://asset-hub-polkadot-rpc.n.dwellir.com > metadata.scale
 
-# TODO: read alternative value from env
-download-node-metadata-ci: # Download metadata of Asset Hub node. Required for subxt compilation. By default use wss://polkadot-asset-hub-rpc.polkadot.io url.
-	PATH="${PWD}/bin:${PATH}" subxt metadata -f bytes --url wss://asset-hub-polkadot-rpc.n.dwellir.com > metadata.scale
+download-node-metadata-docker: # Download metadata using globally installed subxt-cli
+	subxt metadata -f bytes --url wss://asset-hub-polkadot-rpc.n.dwellir.com > metadata.scale
 
 copy-configs: # Copy .example configs to actual configs
 	cd configs; \
@@ -60,30 +34,28 @@ download-front-end: # Download front-end release and unpack it into static folde
 	cd static; \
 	curl -LfO https://github.com/Kalapaja/Kassette/releases/download/v$(front_end_version)/payment-page-v$(front_end_version).zip; \
 	unzip payment-page-v$(front_end_version).zip; \
-	mkdir -p assets; \
-	mv dist/index.html .; \
-	cp -r dist/* assets/; \
+	mv dist/* .; \
 	rm -r dist; \
 	rm payment-page-v$(front_end_version).zip
 
-setup: install-subxt-cli download-node-metadata copy-configs # Sets up the project for local run
-	echo "Make sure you have SQLite installed. Check README.md for the instructions"
+setup-utils: install-cargo-binstall # Sets up different utilities for running tests, coverage etc which are not required for the project run
+	cargo bin --install
 
-setup-utils: install-nextest install-llvm-cov install-mutants # Sets up different utilities for running tests, coverage etc which are not required for the project run
-	echo "Installed nextest, llvm-cov and cargo-mutants"
+setup: setup-utils download-node-metadata copy-configs # Sets up the project for local run
+	echo "Make sure you have SQLite installed. Check README.md for the instructions"
 
 #####################
 ### Build and run ###
 #####################
 
 sqlx-create-db: # Create an empty SQLite database file
-	PATH="${PWD}/bin:${PATH}" sqlx db create --database-url sqlite:./database/kalatori_db.sqlite
+	cargo bin sqlx db create --database-url sqlite:./database/kalatori_db.sqlite
 
 sqlx-migrate: # Run database migrations using sqlx-cli
-	PATH="${PWD}/bin:${PATH}" sqlx migrate run --database-url sqlite:./database/kalatori_db.sqlite
+	cargo bin sqlx migrate run --database-url sqlite:./database/kalatori_db.sqlite
 
 sqlx-prepare: # Prepare sqlx for compile-time verification of SQL queries
-	PATH="${PWD}/bin:${PATH}" cargo sqlx prepare --database-url sqlite:./database/kalatori_db.sqlite
+	cargo bin cargo sqlx prepare --database-url sqlite:./database/kalatori_db.sqlite
 
 build-release: # Build the daemon with --release flag
 	cargo build --release
@@ -98,10 +70,13 @@ stop-chopsticks: # Stop chopsticks for Asset Hub in docker compose
 
 # TODO: add some health check for chopsticks to avoid errors on connection while it's not initialized
 run: start-chopsticks # Ensure that chopsticks is started and run kalatori daemon locally
-	cargo run
+	cargo run --bin kalatori
+
+run-dev: start-chopsticks # Run kalatori daemon with dev_api feature (enables /dev endpoints and auto-auth)
+	cargo run --bin kalatori --features dev_api
 
 run-release: # Run kalatori daemon with --release flag without starting chopsticks
-	cargo run --release
+	cargo run --bin kalatori --release
 
 run-test-examples:
 	cargo run --example crud; \
@@ -112,7 +87,7 @@ run-test-examples:
 ##############
 
 cargo-test: # Run cargo tests using nextest
-	PATH="${PWD}/bin:${PATH}" cargo nextest run
+	cargo bin cargo-nextest run
 
 cargo-check: # Run cargo check for all targets
 	cargo check --all-targets --all-features
@@ -128,7 +103,7 @@ cargo-deny: # Run cargo deny checks
 	cargo deny -L error check
 
 cargo-mutants-for-diff: # Run cargo mutants for git diff
-	git diff | PATH="${PWD}/bin:${PATH}" cargo mutants --test-tool=nextest --in-diff /dev/stdin
+	git diff | cargo bin cargo-mutants --test-tool=nextest --in-diff /dev/stdin
 
 #############
 ### Tools ###
@@ -137,11 +112,20 @@ cargo-mutants-for-diff: # Run cargo mutants for git diff
 cargo-fmt-apply: # Apply cargo fmt style changes
 	cargo +nightly fmt --all
 
+insta-review: # Interactively review pending snapshots
+	cargo bin cargo-insta review
+
+insta-accept: # Accept all pending snapshots
+	cargo bin cargo-insta accept
+
+insta-test: # Run tests and review pending snapshots
+	cargo bin cargo-insta test --review
+
 generate-hmac-test-vectors: # Generate HMAC test vectors for the webhook simulator
 	cargo run --example generate_hmac_test_vectors -p kalatori-client
 
 generate-coverage-report: # Generate test coverage report as lcov.info
-	PATH="${PWD}/bin:${PATH}" cargo llvm-cov nextest -p kalatori --lcov --output-path lcov.info
+	cargo bin cargo-llvm-cov nextest -p kalatori --lcov --output-path lcov.info
 
 open-coverage-report: # Generate and open test coverage report
-	PATH="${PWD}/bin:${PATH}" cargo llvm-cov nextest -p kalatori --open
+	cargo bin cargo-llvm-cov nextest -p kalatori --open

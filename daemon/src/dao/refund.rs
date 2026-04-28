@@ -6,6 +6,8 @@ use crate::types::{
     Refund,
     RefundRow,
     RefundStatus,
+    RetryMeta,
+    TransferDestinationParams,
 };
 
 use super::DaoExecutor;
@@ -62,24 +64,25 @@ impl StatusTransitionError for RefundStatus {
 }
 
 pub trait DaoRefundMethods: DaoExecutor + 'static {
-    #[cfg_attr(not(test), expect(dead_code))]
     async fn create_refund(
         &self,
         refund: Refund,
     ) -> Result<Refund, DaoRefundError> {
         let query = sqlx::query_as::<_, RefundRow>(
-        "INSERT INTO refunds (id, invoice_id, asset_id, asset_name, chain, amount, source_address, destination_address, initiator_type, initiator_id, status, created_at, updated_at, retry_count, last_attempt_at, next_retry_at, failure_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO refunds (id, invoice_id, asset_id, asset_name, chain, amount, source_address, destination_address, destination_chain, destination_asset_id, initiator_type, initiator_id, status, created_at, updated_at, retry_count, last_attempt_at, next_retry_at, failure_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *"
         )
             .bind(refund.id)
             .bind(refund.invoice_id)
-            .bind(refund.transfer_info.asset_id)
-            .bind(&refund.transfer_info.asset_name)
-            .bind(refund.transfer_info.chain)
-            .bind(Text(refund.transfer_info.amount))
-            .bind(&refund.transfer_info.source_address)
-            .bind(&refund.transfer_info.destination_address)
+            .bind(&refund.asset_id)
+            .bind(&refund.asset_name)
+            .bind(refund.chain)
+            .bind(Text(refund.amount))
+            .bind(&refund.source_address)
+            .bind(refund.destination_params.as_ref().map(|p| &p.destination_address))
+            .bind(refund.destination_params.as_ref().map(|p| p.destination_chain))
+            .bind(refund.destination_params.as_ref().map(|p| &p.destination_asset_id))
             .bind(refund.initiator_type)
             .bind(refund.initiator_id)
             .bind(refund.status)
@@ -138,7 +141,6 @@ pub trait DaoRefundMethods: DaoExecutor + 'static {
             })
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     async fn get_refund_by_id(
         &self,
         refund_id: Uuid,
@@ -164,15 +166,27 @@ pub trait DaoRefundMethods: DaoExecutor + 'static {
             })
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
-    async fn get_pending_refunds(&self) -> Result<Vec<Refund>, DaoRefundError> {
+    async fn get_pending_refunds(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<Refund>, DaoRefundError> {
         let query = sqlx::query_as::<_, RefundRow>(
-            "SELECT *
-            FROM refunds
-            WHERE status = 'Waiting'
-            AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
-            ORDER BY created_at ASC",
-        );
+            "WITH sel AS (
+                SELECT id
+                FROM refunds
+                WHERE
+                    status = 'Waiting'
+                    OR (status = 'FailedRetriable' AND next_retry_at <= datetime('now'))
+                ORDER BY created_at ASC
+                LIMIT ?
+            )
+            UPDATE refunds
+            SET status = 'InProgress',
+                updated_at = datetime('now')
+            WHERE id IN (SELECT id FROM sel)
+            RETURNING *",
+        )
+        .bind(limit);
 
         self.fetch_all(query)
             .await
@@ -180,6 +194,7 @@ pub trait DaoRefundMethods: DaoExecutor + 'static {
                 tracing::debug!(
                     error.category = "dao.refund",
                     error.operation = "get_pending_refunds",
+                    limit,
                     error.source = ?e,
                     "Failed to fetch pending refunds"
                 );
@@ -187,7 +202,6 @@ pub trait DaoRefundMethods: DaoExecutor + 'static {
             })
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     async fn update_refund_status(
         &self,
         refund_id: Uuid,
@@ -228,29 +242,42 @@ pub trait DaoRefundMethods: DaoExecutor + 'static {
             })
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     async fn update_refund_retry(
         &self,
         refund_id: Uuid,
-        retry_count: i32,
-        last_attempt_at: chrono::DateTime<chrono::Utc>,
-        next_retry_at: Option<chrono::DateTime<chrono::Utc>>,
-        failure_message: Option<String>,
+        retry_meta: RetryMeta,
+        is_retriable: bool,
     ) -> Result<Refund, DaoRefundError> {
+        let status = if is_retriable {
+            RefundStatus::FailedRetriable
+        } else {
+            RefundStatus::Failed
+        };
+
         let query = sqlx::query_as::<_, RefundRow>(
             "UPDATE refunds
             SET retry_count = ?,
                 last_attempt_at = ?,
                 next_retry_at = ?,
                 failure_message = ?,
+                status = ?,
                 updated_at = datetime('now')
             WHERE id = ?
             RETURNING *",
         )
-        .bind(retry_count)
-        .bind(last_attempt_at.naive_utc())
-        .bind(next_retry_at.map(|dt| dt.naive_utc()))
-        .bind(&failure_message)
+        .bind(retry_meta.retry_count)
+        .bind(
+            retry_meta
+                .last_attempt_at
+                .map(|dt| dt.naive_utc()),
+        )
+        .bind(
+            retry_meta
+                .next_retry_at
+                .map(|dt| dt.naive_utc()),
+        )
+        .bind(&retry_meta.failure_message)
+        .bind(status)
         .bind(refund_id);
 
         self.fetch_one(query)
@@ -260,7 +287,7 @@ pub trait DaoRefundMethods: DaoExecutor + 'static {
                     error.category = "dao.refund",
                     error.operation = "update_refund_retry",
                     %refund_id,
-                    retry_count,
+                    retry_count = retry_meta.retry_count,
                     error.source = ?e,
                     "Failed to update refund retry"
                 );
@@ -276,6 +303,40 @@ pub trait DaoRefundMethods: DaoExecutor + 'static {
                     },
                     _ => DaoRefundError::DatabaseError,
                 }
+            })
+    }
+
+    async fn update_refund_destination_params(
+        &self,
+        refund_id: Uuid,
+        destination_params: TransferDestinationParams,
+    ) -> Result<Refund, DaoRefundError> {
+        let query = sqlx::query_as::<_, RefundRow>(
+            "UPDATE refunds
+            SET destination_address = ?,
+                destination_asset_id = ?,
+                destination_chain = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+            RETURNING *",
+        )
+        .bind(destination_params.destination_address)
+        .bind(destination_params.destination_asset_id)
+        .bind(destination_params.destination_chain)
+        .bind(refund_id);
+
+        self.fetch_one(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.refund",
+                    error.operation = "update_refund_retry",
+                    %refund_id,
+                    error.source = ?e,
+                    "Failed to update refund retry"
+                );
+
+                DaoRefundError::DatabaseError
             })
     }
 }
@@ -340,7 +401,7 @@ mod tests {
 
         // Create refund with Waiting status (should be returned)
         let refund1 = default_refund(invoice.id);
-        dao.create_refund(refund1)
+        dao.create_refund(refund1.clone())
             .await
             .unwrap();
 
@@ -358,12 +419,78 @@ mod tests {
             .await
             .unwrap();
 
-        // Get pending refunds
-        let pending = dao.get_pending_refunds().await.unwrap();
+        // Create refund with Waiting status and next_retry_at in the future — should
+        // still be returned because all Waiting refunds are eligible regardless
+        // of next_retry_at
+        let mut refund4 = default_refund(invoice.id);
+        refund4.retry_meta.next_retry_at = Some(Utc::now() + chrono::Duration::hours(1));
+        dao.create_refund(refund4.clone())
+            .await
+            .unwrap();
 
-        // Should only return refund1
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].status, RefundStatus::Waiting);
+        // Get pending refunds
+        let pending = dao
+            .get_pending_refunds(2)
+            .await
+            .unwrap();
+
+        // Should return refund1 and refund4 (both Waiting), not refund2 (InProgress) or
+        // refund3 (Completed)
+        assert_eq!(pending.len(), 2);
+        assert_eq!(
+            pending[0].status,
+            RefundStatus::InProgress
+        );
+        assert_eq!(
+            pending[1].status,
+            RefundStatus::InProgress
+        );
+        assert_eq!(pending[0].id, refund1.id);
+        assert_eq!(pending[1].id, refund4.id);
+
+        // Create FailedRetriable refund with next_retry_at in the past (should be
+        // returned)
+        let mut refund5 = default_refund(invoice.id);
+        refund5.status = RefundStatus::FailedRetriable;
+        refund5.created_at = Utc::now() - chrono::Duration::minutes(10);
+        refund5.retry_meta.next_retry_at = Some(Utc::now() - chrono::Duration::minutes(2));
+        dao.create_refund(refund5.clone())
+            .await
+            .unwrap();
+
+        // Create FailedRetriable refund with next_retry_at in the future (should NOT be
+        // returned)
+        let mut refund6 = default_refund(invoice.id);
+        refund6.status = RefundStatus::FailedRetriable;
+        refund6.retry_meta.next_retry_at = Some(Utc::now() + chrono::Duration::hours(1));
+        dao.create_refund(refund6)
+            .await
+            .unwrap();
+
+        // Create another Waiting refund
+        let refund7 = default_refund(invoice.id);
+        dao.create_refund(refund7.clone())
+            .await
+            .unwrap();
+
+        let pending_all = dao
+            .get_pending_refunds(2)
+            .await
+            .unwrap();
+        // refund5 (FailedRetriable, past retry, oldest) and refund7 (Waiting) picked
+        // up. refund6 (FailedRetriable, future retry) excluded. Limit caps at
+        // 2.
+        assert_eq!(pending_all.len(), 2);
+        assert_eq!(pending_all[0].id, refund5.id);
+        assert_eq!(pending_all[1].id, refund7.id);
+        assert_eq!(
+            pending_all[0].status,
+            RefundStatus::InProgress
+        );
+        assert_eq!(
+            pending_all[1].status,
+            RefundStatus::InProgress
+        );
     }
 
     #[tokio::test]
@@ -409,20 +536,24 @@ mod tests {
         let refund_id = refund.id;
         dao.create_refund(refund).await.unwrap();
 
-        // First retry
-        let now = Utc::now();
-        let next_retry = now + chrono::Duration::minutes(1);
-        let updated = dao
-            .update_refund_retry(
-                refund_id,
-                1,
-                now,
-                Some(next_retry),
-                Some("Insufficient balance".to_string()),
-            )
+        // Transition to InProgress first (required before FailedRetriable)
+        dao.update_refund_status(refund_id, RefundStatus::InProgress)
             .await
             .unwrap();
 
+        // First retriable failure
+        let mut retry_meta = RetryMeta::default();
+        retry_meta.increment_retry("Insufficient balance".to_string());
+
+        let updated = dao
+            .update_refund_retry(refund_id, retry_meta, true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            updated.status,
+            RefundStatus::FailedRetriable
+        );
         assert_eq!(updated.retry_meta.retry_count, 1);
         assert!(
             updated
@@ -439,6 +570,29 @@ mod tests {
         assert_eq!(
             updated.retry_meta.failure_message,
             Some("Insufficient balance".to_string())
+        );
+
+        // Transition back to InProgress via get_pending_refunds
+        // (FailedRetriable with past next_retry_at gets picked up)
+        // For simplicity, use update_refund_status directly
+        dao.update_refund_status(refund_id, RefundStatus::InProgress)
+            .await
+            .unwrap();
+
+        // Final non-retriable failure
+        let mut retry_meta2 = updated.retry_meta;
+        retry_meta2.increment_retry("Fatal error".to_string());
+
+        let failed = dao
+            .update_refund_retry(refund_id, retry_meta2, false)
+            .await
+            .unwrap();
+
+        assert_eq!(failed.status, RefundStatus::Failed);
+        assert_eq!(failed.retry_meta.retry_count, 2);
+        assert_eq!(
+            failed.retry_meta.failure_message,
+            Some("Fatal error".to_string())
         );
     }
 

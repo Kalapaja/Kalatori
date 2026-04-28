@@ -30,7 +30,6 @@ use crate::configs::DatabaseConfig;
 // Export domain-specific errors
 pub use changes::DaoChangesError;
 pub use invoice::DaoInvoiceError;
-#[expect(unused_imports)]
 pub use payout::DaoPayoutError;
 #[expect(unused_imports)]
 pub use refund::DaoRefundError;
@@ -98,7 +97,6 @@ impl DaoTransaction {
         lock.commit().await
     }
 
-    #[expect(dead_code)]
     pub async fn rollback(self) -> DaoResult<()> {
         let lock = self.transaction.into_inner();
         lock.rollback().await

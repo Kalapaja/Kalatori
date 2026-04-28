@@ -2,6 +2,7 @@
 members = [
     "daemon",
     "client",
+    "tools/cargo-bin",
 ]
 resolver = "3"
 
@@ -34,3 +35,13 @@ ignored_unit_patterns = "warn"
 # prone to poorly handle the file renaming that can result in their history erasure.
 mod_module_files = "warn"
 # TODO: we'll add docs and remove this later
+
+[workspace.metadata.bin]
+# Please keep in sync with subxt version in daemon/Cargo.toml and in subxt-cli version in Dockerfile
+subxt-cli = { version = "0.44.0", bins = ["subxt"], locked = true }
+# Please keep in sync with sqlx version in daemon/Cargo.toml
+sqlx-cli = { version = "0.8.6", locked = true, default-features = false, features = ["sqlite", "completions"] }
+cargo-nextest = { version = "0.9.133", locked = true }
+cargo-llvm-cov = { version = "0.8.4", locked = true }
+cargo-mutants = { version = "26.2.0", locked = true }
+cargo-insta = { version = "1.46.3", locked = true }

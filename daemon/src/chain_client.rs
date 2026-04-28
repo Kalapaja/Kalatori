@@ -45,6 +45,11 @@ pub use polygon::{
     PolygonChainConfig,
     PolygonClient,
 };
+#[cfg(test)]
+pub use polygon::{
+    default_polygon_signed_transaction,
+    default_polygon_unsigned_transaction,
+};
 
 pub type TransfersStream<T> =
     Pin<Box<dyn stream::Stream<Item = Result<Vec<ChainTransfer<T>>, SubscriptionError>> + Send>>;
@@ -69,8 +74,8 @@ pub trait ChainConfig: Clone + std::fmt::Debug + Sync + Send + 'static {
         + Send;
     type TransactionHash: FromStr + ToString + Sync + Send;
     type BlockHash: FromStr + ToString + Sync + Send;
-    type UnsignedTransaction: Send;
-    type SignedTransaction: SignedTransactionUtils + Sync + Send;
+    type UnsignedTransaction: Send + std::fmt::Debug + PartialEq;
+    type SignedTransaction: SignedTransactionUtils + Sync + Send + std::fmt::Debug + PartialEq;
     type AccountId: FromStr + ToString + std::fmt::Debug + Sync + Send;
 
     const CHAIN_TYPE: ChainType;
@@ -124,12 +129,12 @@ impl GeneralChainTransfer {
 pub fn default_general_chain_transfer() -> GeneralChainTransfer {
     GeneralChainTransfer {
         id: Uuid::new_v4(),
-        chain: ChainType::PolkadotAssetHub,
-        asset_id: 1984.to_string(),
-        asset_name: "USDT".to_string(),
+        chain: ChainType::Polygon,
+        asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359".to_string(),
+        asset_name: "USDC".to_string(),
         amount: Decimal::new(10, 0),
-        sender: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
-        recipient: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+        sender: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7".to_string(),
+        recipient: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9".to_string(),
         block_number: Some(1000),
         position_in_block: Some(2),
         transaction_hash: Some("0x1234567890abcdef".to_string()),
@@ -215,12 +220,14 @@ impl<T: ChainConfig> AssetInfoStore<T> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct UnsignedTransaction<T: ChainConfig> {
-    transaction: T::UnsignedTransaction,
+    pub transaction: T::UnsignedTransaction,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct SignedTransaction<T: ChainConfig> {
-    transaction: T::SignedTransaction,
+    pub transaction: T::SignedTransaction,
 }
 
 impl<T: ChainConfig> SignedTransactionUtils for SignedTransaction<T> {
@@ -267,8 +274,8 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
 
     async fn fetch_asset_balance(
         &self,
-        asset_id: &T::AssetId,
-        account: &T::AccountId,
+        asset_id: T::AssetId,
+        account: T::AccountId,
     ) -> Result<Decimal, QueryError>;
 
     async fn subscribe_transfers(
@@ -279,19 +286,20 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
     /// Build transaction to transfer exact amount to recipient
     async fn build_transfer(
         &self,
-        sender: &T::AccountId,
-        recipient: &T::AccountId,
-        asset_id: &T::AssetId,
+        sender: T::AccountId,
+        recipient: T::AccountId,
+        asset_id: T::AssetId,
         amount: Decimal,
     ) -> Result<UnsignedTransaction<T>, TransactionError<T>>;
 
+    #[expect(dead_code)]
     /// Build transaction to sweep entire balance (all funds minus fees) to
     /// recipient
     async fn build_transfer_all(
         &self,
-        sender: &T::AccountId,
-        recipient: &T::AccountId,
-        asset_id: &T::AssetId,
+        sender: T::AccountId,
+        recipient: T::AccountId,
+        asset_id: T::AssetId,
     ) -> Result<UnsignedTransaction<T>, TransactionError<T>>;
 
     async fn sign_transaction(
@@ -360,8 +368,8 @@ mod tests {
     async fn test_dummy() {
         let mut client = MockBlockChainClient::<AssetHubChainConfig>::default();
         client
-            .expect_build_transfer()
-            .returning(|_, _, _, _| panic!("Unexpected"))
+            .expect_build_transfer_all()
+            .returning(|_, _, _| panic!("Unexpected"))
             .times(0);
     }
 }

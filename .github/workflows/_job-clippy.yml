@@ -11,11 +11,13 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v6
 
-      - name: Setup Rust build environment
-        uses: ./.github/actions/setup-rust-build-env
-
+      # Restore cargo registry / target cache before any compilation step so the
+      # first build benefits from a warm registry.
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.8.2
+
+      - name: Setup Rust build environment
+        uses: ./.github/actions/setup-rust-build-env
 
       - name: Run clippy
         run: make cargo-clippy

@@ -5,12 +5,18 @@
 
 /// Log category constants for identifying the source subsystem
 pub mod category {
+    pub const AUTH: &str = "auth";
     pub const CHAIN_CLIENT: &str = "chain_client";
 }
 
 /// Log operation constants for identifying specific operations within
 /// subsystems
 pub mod operation {
+    // Auth operations
+    pub const LOGIN: &str = "login";
+    pub const CODE_EXCHANGE: &str = "code_exchange";
+    pub const TOKEN_REFRESH: &str = "token_refresh";
+
     // Chain client operations
     pub const CONNECT_CLIENT: &str = "connect_client";
     pub const FETCH_BALANCE: &str = "fetch_balance";

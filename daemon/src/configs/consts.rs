@@ -41,3 +41,5 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "kalatori=trace,info";
 
 // Default limit for free account
 pub const DEFAULT_ETHERSCAN_LIMIT_PER_SECOND: NonZeroU32 = NonZeroU32::new(3).unwrap();
+
+pub const DEFAULT_AUTH_CLOCK_TOLERANCE_SECS: u64 = 30;

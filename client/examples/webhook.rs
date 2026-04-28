@@ -16,6 +16,7 @@ use kalatori_client::types::{
     GenericEvent,
     Invoice,
     InvoiceCart,
+    InvoiceCartItem,
 };
 use kalatori_client::utils::HmacConfig;
 
@@ -55,11 +56,53 @@ async fn main() {
         serve(listener, app).await.unwrap();
     });
 
+    let mut cart = InvoiceCart::empty();
+
+    cart.items.push(InvoiceCartItem {
+        name: "Something".to_string(),
+        quantity: 2,
+        price: Decimal::new(2, 1),
+        product_url: None,
+        image_url: None,
+        tax: Some(Decimal::new(1, 1)),
+        discount: Some(Decimal::new(1, 1)),
+    });
+
+    cart.items.push(InvoiceCartItem {
+        name: "Yet another item".to_string(),
+        quantity: 1,
+        price: Decimal::new(1, 1),
+        product_url: None,
+        image_url: None,
+        tax: None,
+        discount: None,
+    });
+
+    cart.items.push(InvoiceCartItem {
+        name: "Something".to_string(),
+        quantity: 2,
+        price: Decimal::new(2, 1),
+        product_url: None,
+        image_url: None,
+        tax: Some(Decimal::new(1, 1)),
+        discount: Some(Decimal::new(1, 1)),
+    });
+
+    cart.items.push(InvoiceCartItem {
+        name: "Yet another item".to_string(),
+        quantity: 1,
+        price: Decimal::new(1, 1),
+        product_url: None,
+        image_url: None,
+        tax: None,
+        discount: None,
+    });
+
     // Create an invoice to trigger the webhook
     let payload = CreateInvoiceParams {
         order_id: Uuid::new_v4().to_string(),
-        amount: Decimal::new(5, 1), // 0.10
-        cart: InvoiceCart::empty(),
+        amount: Decimal::new(1, 1), // 0.10
+        cart,
         redirect_url: "http://example.com/thank-you".to_string(),
         include_transactions: false,
     };
