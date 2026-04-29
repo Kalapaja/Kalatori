@@ -4,6 +4,11 @@ use std::net::{
 };
 use std::num::NonZeroU32;
 
+use rust_decimal::{
+    Decimal,
+    dec,
+};
+
 use kalatori_client::types::ChainType;
 
 pub const DEFAULT_CONFIG_DIR_PATH: &str = "configs";
@@ -20,6 +25,10 @@ pub const DEFAULT_POLYGON_ENDPOINTS: &[&str] = &[
 
 /// Native USDC on Polygon PoS (Circle's official deployment)
 pub const DEFAULT_POLYGON_USDC_ADDRESS: &str = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
+
+pub const DEFAULT_UNDERPAYMENT_TOLERANCE: Decimal = dec!(0.1);
+
+pub const DEFAULT_OVERPAYMENT_TOLERANCE: Decimal = dec!(0.1);
 
 pub const DEFAULT_INVOICE_LIFETIME_MILLIS: u64 = 86_400_000; // 24 hours
 

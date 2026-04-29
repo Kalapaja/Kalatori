@@ -30,11 +30,13 @@ use super::consts::{
     DEFAULT_HOST,
     DEFAULT_INVOICE_LIFETIME_MILLIS,
     DEFAULT_LOG_DIRECTIVES,
+    DEFAULT_OVERPAYMENT_TOLERANCE,
     DEFAULT_POLKADOT_ASSET_HUB_ENDPOINTS,
     DEFAULT_POLYGON_ENDPOINTS,
     DEFAULT_POLYGON_USDC_ADDRESS,
     DEFAULT_PORT,
     DEFAULT_SIGNATURE_MAX_AGE_SECS,
+    DEFAULT_UNDERPAYMENT_TOLERANCE,
 };
 
 #[derive(Deserialize)]
@@ -254,6 +256,15 @@ impl PaymentsConfig {
             self.default_asset_id
                 .entry(chain)
                 .or_insert(default.to_string());
+
+            self.slippage_params
+                .entry(chain)
+                .or_default()
+                .entry(default.to_string())
+                .or_insert(SlippageParams {
+                    underpayment_tolerance: DEFAULT_UNDERPAYMENT_TOLERANCE,
+                    overpayment_tolerance: DEFAULT_OVERPAYMENT_TOLERANCE,
+                });
         }
     }
 

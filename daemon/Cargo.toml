@@ -18,7 +18,7 @@ kalatori-client = { path = "../client", features = ["axum-middleware", "sqlx-typ
 
 # Types and data serialization utils
 uuid = { version = "1", features = ["v4", "serde"] }
-rust_decimal = { version = "1", features = ["serde"] }
+rust_decimal = { version = "1", features = ["serde", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
