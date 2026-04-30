@@ -1,4 +1,6 @@
 mod api;
+mod auth;
+mod balance_checker;
 mod chain;
 mod chain_client;
 mod clients;
@@ -25,7 +27,6 @@ use secrecy::ExposeSecret;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
-use zeroize::Zeroize;
 
 use chain::{
     InvoiceRegistry,
@@ -42,6 +43,7 @@ use chain_client::{
 use configs::{
     ChainsConfig,
     PaymentsConfig,
+    auth_config_with_prefix,
     chains_config_with_prefix,
     database_config_with_prefix,
     etherscan_client_config_with_prefix,
@@ -67,14 +69,18 @@ use swaps::{
     SwapsExecutor,
     SwapsTracker,
 };
-use utils::logger;
 use utils::shutdown::{
     self,
     ShutdownNotification,
     ShutdownOutcome,
 };
 use utils::task_tracker::TaskTracker;
+use utils::{
+    RefundDestinationDetector,
+    logger,
+};
 
+use crate::balance_checker::BalanceChecker;
 use crate::swaps::SwapsClients;
 
 const DEFAULT_ENV_PREFIX: &str = "KALATORI";
@@ -210,7 +216,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         env!("CARGO_PKG_VERSION")
     );
 
-    let mut secrets_config = secrets_config_with_prefix(&configs_path, &env_prefix);
+    let secrets_config = secrets_config_with_prefix(&configs_path, &env_prefix);
     let mut chains_config = chains_config_with_prefix(&configs_path, &env_prefix);
     let mut payments_config = payments_config_with_prefix(&configs_path, &env_prefix);
     let web_server_config = web_server_config_with_prefix(&configs_path, &env_prefix);
@@ -218,6 +224,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let shop_config = shop_config_with_prefix(&configs_path, &env_prefix);
     let etherscan_client_config = etherscan_client_config_with_prefix(&configs_path, &env_prefix);
     let swaps_config = swaps_config_with_prefix(&configs_path, &env_prefix);
+    let auth_config = auth_config_with_prefix(&configs_path, &env_prefix);
 
     let hmac_config = HmacConfig::new(
         secrets_config
@@ -227,8 +234,6 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
             .to_vec(),
         shop_config.signature_max_age_secs,
     );
-
-    secrets_config.api_secret_key.zeroize();
 
     // Initialize DAO for SQLite database operations
     let dao = DAO::new(database_config.clone())
@@ -325,14 +330,20 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         payments_config.clone(),
     );
 
-    let expiration_detector = ExpirationDetector::new(
+    let balance_checker = BalanceChecker::new(
         dao.clone(),
         invoice_registry.clone(),
         asset_hub_client.clone(),
         polygon_client.clone(),
         etherscan_client,
-        payments_config.clone(),
         transactions_recorder.clone(),
+    );
+
+    let expiration_detector = ExpirationDetector::new(
+        dao.clone(),
+        invoice_registry.clone(),
+        payments_config.clone(),
+        balance_checker.clone(),
     );
 
     let expiration_detector_handle =
@@ -362,29 +373,38 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         shutdown_notification.token.clone(),
     );
 
+    let swaps_clients = SwapsClients::new(swaps_config).await;
+
+    let swaps_executor = SwapsExecutor::new(dao.clone(), swaps_clients.clone());
+
+    let refund_destination_detector = RefundDestinationDetector::new(dao.clone());
+
     // Single executor handles both chains
     let transfer_executor = TransfersExecutor::new(
+        refund_destination_detector,
         asset_hub_client,
         polygon_client,
         dao.clone(),
         keyring_client.clone(),
+        swaps_executor.clone(),
     );
 
     let transfer_executor_handle = transfer_executor.ignite(shutdown_notification.token.clone());
 
     let webhook_sender = webhook_sender::WebhookSender::new(
         dao.clone(),
-        shop_config.invoices_webhook_url,
+        shop_config.invoices_webhook_url.clone(),
         hmac_config.clone(),
     );
 
     let webhook_sender_handle = webhook_sender.ignite(shutdown_notification.token.clone());
 
-    let swaps_clients = SwapsClients::new(swaps_config);
+    let swaps_tracker = SwapsTracker::new(
+        dao.clone(),
+        swaps_clients,
+        balance_checker,
+    );
 
-    let swaps_executor = SwapsExecutor::new(dao.clone(), swaps_clients.clone());
-
-    let swaps_tracker = SwapsTracker::new(dao.clone(), swaps_clients);
     let swaps_tracker_handle = swaps_tracker.ignite(shutdown_notification.token.clone());
 
     let app_state = AppState::new(
@@ -394,12 +414,14 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         swaps_executor,
         asset_names_map,
         payments_config,
-        shop_config.meta,
+        shop_config,
+        secrets_config.api_secret_key,
     );
 
     let api_handle = api::api_server(
         web_server_config,
         hmac_config,
+        auth_config,
         app_state,
         shutdown_notification.token.clone(),
     )

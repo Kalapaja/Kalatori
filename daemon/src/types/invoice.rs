@@ -192,11 +192,11 @@ pub fn default_create_invoice_data() -> CreateInvoiceData {
     CreateInvoiceData {
         id,
         order_id: id.to_string(),
-        asset_id: 1984.to_string(),
-        asset_name: "USDT".to_string(),
-        chain: ChainType::PolkadotAssetHub,
+        asset_id: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359".to_string(),
+        asset_name: "USDC".to_string(),
+        chain: ChainType::Polygon,
         amount: Decimal::new(10000, 2),
-        payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
+        payment_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7".to_string(),
         cart: InvoiceCart::empty(),
         redirect_url: "http://localhost:8080/thankyou".to_string(),
         #[expect(clippy::arithmetic_side_effects)]

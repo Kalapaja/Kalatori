@@ -3,12 +3,17 @@ mod dev_api;
 mod swaps;
 
 use std::collections::HashMap;
+use std::io::Cursor;
 
 use chrono::{
     Duration,
     Utc,
 };
 use rust_decimal::Decimal;
+use secrecy::{
+    ExposeSecret,
+    SecretString,
+};
 use uuid::Uuid;
 
 use kalatori_client::types::{
@@ -17,6 +22,8 @@ use kalatori_client::types::{
     InvoiceStatus,
     UpdateInvoiceParams,
 };
+use zip::ZipWriter;
+use zip::write::SimpleFileOptions;
 
 use crate::chain::InvoiceRegistry;
 use crate::chain::utils::to_base58_string;
@@ -24,8 +31,13 @@ use crate::chain_client::{
     GenerateAddressData,
     KeyringClient,
 };
+use crate::clients::{
+    GithubClient,
+    GithubClientError,
+};
 use crate::configs::{
     PaymentsConfig,
+    ShopConfig,
     ShopMetaConfig,
 };
 use crate::dao::{
@@ -33,6 +45,7 @@ use crate::dao::{
     DaoChangesError,
     DaoInterface,
     DaoInvoiceError,
+    DaoPayoutError,
     DaoSwapError,
     DaoTransactionError,
     DaoTransactionInterface,
@@ -48,10 +61,24 @@ use crate::types::{
     InvoiceEventType,
     InvoiceWithReceivedAmount,
     KalatoriEventExt,
+    KalatoriIntegrationSettings,
+    KalatoriSettings,
+    ListInvoicesParams,
+    ListPayoutsParams,
+    ListSwapsParams,
+    ListTransactionsParams,
+    PaginatedResponse,
+    Payout,
     PayoutChanges,
+    PublicAssetDescription,
     PublicChangesResponse,
+    PublicSwap,
+    PublicTransaction,
     RefundChanges,
+    ShopPlatform,
+    Swap,
     Transaction,
+    TransferDestinationParams,
     UpdateInvoiceData,
 };
 
@@ -62,12 +89,15 @@ pub struct AppState<D: DaoInterface = DAO> {
     dao: D,
     registry: InvoiceRegistry,
     swaps_executor: SwapsExecutor<D>,
+    github_client: GithubClient,
     asset_names_map: HashMap<String, String>,
     payments_config: PaymentsConfig,
-    shop_meta: ShopMetaConfig,
+    shop_config: ShopConfig,
+    api_secret_key: SecretString,
 }
 
 impl<D: DaoInterface> AppState<D> {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         keyring: KeyringClient,
         dao: D,
@@ -75,16 +105,21 @@ impl<D: DaoInterface> AppState<D> {
         swaps_executor: SwapsExecutor<D>,
         asset_names_map: HashMap<String, String>,
         payments_config: PaymentsConfig,
-        shop_meta: ShopMetaConfig,
+        shop_config: ShopConfig,
+        api_secret_key: SecretString,
     ) -> Self {
+        let github_client = GithubClient::new();
+
         Self {
             keyring,
             dao,
             registry,
             swaps_executor,
+            github_client,
             asset_names_map,
             payments_config,
-            shop_meta,
+            shop_config,
+            api_secret_key,
         }
     }
 
@@ -357,6 +392,164 @@ impl<D: DaoInterface> AppState<D> {
         Ok(result)
     }
 
+    #[tracing::instrument(skip_all)]
+    pub async fn list_invoices(
+        &self,
+        params: &ListInvoicesParams,
+    ) -> Result<PaginatedResponse<PublicInvoice>, DaoInvoiceError> {
+        let (invoices, total) = tokio::join!(
+            self.dao.get_invoices_paginated(params),
+            self.dao.count_invoices(params),
+        );
+
+        let items = invoices?
+            .into_iter()
+            .map(|inv| self.invoice_to_public_invoice(inv))
+            .collect();
+
+        Ok(PaginatedResponse::new(
+            items,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
+    pub async fn get_payout(
+        &self,
+        payout_id: Uuid,
+    ) -> Result<Option<Payout>, DaoPayoutError> {
+        self.dao
+            .get_payout_by_id(payout_id)
+            .await
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_payouts(
+        &self,
+        params: &ListPayoutsParams,
+    ) -> Result<PaginatedResponse<Payout>, DaoPayoutError> {
+        let (payouts, total) = tokio::join!(
+            self.dao.get_payouts_paginated(params),
+            self.dao.count_payouts(params),
+        );
+
+        Ok(PaginatedResponse::new(
+            payouts?,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn initiate_payout(
+        &self,
+        invoice_id: Uuid,
+    ) -> Result<Payout, DaoInvoiceError> {
+        let invoice = self
+            .dao
+            .get_invoice_by_id(invoice_id)
+            .await?
+            .ok_or(DaoInvoiceError::NotFound {
+                invoice_id,
+            })?;
+
+        if invoice.status.is_active() {
+            return Err(DaoInvoiceError::UpdateNotAllowed {
+                invoice_id,
+                current_status: invoice.status,
+            })
+        }
+
+        let destination_address = self
+            .payments_config
+            .recipient
+            .get(&invoice.chain)
+            .unwrap()
+            .clone();
+
+        let destination_params = TransferDestinationParams {
+            destination_chain: invoice.chain.into(),
+            destination_asset_id: invoice.asset_id.clone(),
+            destination_address,
+        };
+
+        let payout = Payout::from_invoice(
+            invoice,
+            destination_params,
+            Decimal::new(21, 2),
+        );
+
+        self.dao
+            .create_payout(payout)
+            .await
+            .map_err(|_e| DaoInvoiceError::DatabaseError)
+    }
+
+    pub async fn get_transaction(
+        &self,
+        transaction_id: Uuid,
+    ) -> Result<Option<Transaction>, DaoTransactionError> {
+        self.dao
+            .get_transaction_by_id(transaction_id)
+            .await
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_transactions(
+        &self,
+        params: &ListTransactionsParams,
+    ) -> Result<PaginatedResponse<PublicTransaction>, DaoTransactionError> {
+        let (transactions, total) = tokio::join!(
+            self.dao
+                .get_transactions_paginated(params),
+            self.dao.count_transactions(params),
+        );
+
+        let items = transactions?
+            .into_iter()
+            .map(PublicTransaction::from)
+            .collect();
+
+        Ok(PaginatedResponse::new(
+            items,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
+    pub async fn get_swap(
+        &self,
+        swap_id: Uuid,
+    ) -> Result<Option<Swap>, DaoSwapError> {
+        self.dao.get_swap_by_id(swap_id).await
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub async fn list_swaps(
+        &self,
+        params: &ListSwapsParams,
+    ) -> Result<PaginatedResponse<PublicSwap>, DaoSwapError> {
+        let (swaps, total) = tokio::join!(
+            self.dao.get_swaps_paginated(params),
+            self.dao.count_swaps(params),
+        );
+
+        let items = swaps?
+            .into_iter()
+            .map(PublicSwap::from)
+            .collect();
+
+        Ok(PaginatedResponse::new(
+            items,
+            total?,
+            params.pagination.validated_page(),
+            params.pagination.validated_per_page(),
+        ))
+    }
+
     pub async fn get_invoice_transactions(
         &self,
         invoice_id: Uuid,
@@ -523,7 +716,145 @@ impl<D: DaoInterface> AppState<D> {
     }
 
     pub fn get_shop_meta(&self) -> ShopMetaConfig {
-        self.shop_meta.clone()
+        self.shop_config.meta.clone()
+    }
+
+    pub fn get_kalatori_settings(&self) -> KalatoriSettings {
+        let assets_description = self
+            .asset_names_map
+            .iter()
+            .map(|(asset_id, asset_name)| {
+                (
+                    asset_id.clone(),
+                    PublicAssetDescription {
+                        asset_id: asset_id.clone(),
+                        asset_name: asset_name.clone(),
+                    },
+                )
+            })
+            .collect();
+
+        KalatoriSettings {
+            shop_url: self.shop_config.meta.shop_url.clone(),
+            shop_name: self.shop_config.meta.shop_name.clone(),
+            logo_url: self.shop_config.meta.logo_url.clone(),
+            recipient_addresses: self.payments_config.recipient.clone(),
+            invoice_lifetime_millis: self
+                .payments_config
+                .invoice_lifetime_millis,
+            default_chain: self.payments_config.default_chain,
+            default_asset_id: self
+                .payments_config
+                .default_asset_id
+                .clone(),
+            payment_url_base: self
+                .payments_config
+                .payment_url_base
+                .clone(),
+            slippage_params: self
+                .payments_config
+                .slippage_params
+                .clone(),
+            assets_description,
+        }
+    }
+
+    pub fn get_kalatori_integration_settings(&self) -> KalatoriIntegrationSettings {
+        KalatoriIntegrationSettings {
+            invoices_webhook_url: self
+                .shop_config
+                .invoices_webhook_url
+                .clone(),
+            signature_max_age_secs: self.shop_config.signature_max_age_secs,
+            private_api_base_url: self
+                .shop_config
+                .private_api_base_url
+                .as_ref()
+                .unwrap_or(&self.payments_config.payment_url_base)
+                .clone(),
+            api_secret_key: self
+                .api_secret_key
+                .expose_secret()
+                .to_string(),
+            supported_platforms: ShopPlatform::all(),
+            shop_platform: self.shop_config.shop_platform.clone(),
+        }
+    }
+
+    #[tracing::instrument(skip(self))]
+    pub async fn get_shop_plugin(
+        &self,
+        platform: ShopPlatform,
+    ) -> Result<Vec<u8>, GithubClientError> {
+        let plugin = self
+            .github_client
+            .find_and_fetch_plugin(
+                platform.plugin_repo(),
+                platform.supported_versions(),
+                platform.plugin_asset_name(),
+            )
+            .await?;
+
+        let mut archive = ZipWriter::new_append(Cursor::new(plugin.to_vec())).map_err(|error| {
+            tracing::error!(
+                ?error,
+                "Error while trying to open plugin archive"
+            );
+
+            GithubClientError::UnknownApiError
+        })?;
+
+        let options = SimpleFileOptions::default();
+
+        archive
+            .start_file(platform.config_file_name(), options)
+            .map_err(|error| {
+                tracing::error!(
+                    ?error,
+                    "Error while trying to append file to plugin archive"
+                );
+
+                GithubClientError::UnknownApiError
+            })?;
+
+        let url = self
+            .shop_config
+            .private_api_base_url
+            .as_ref()
+            .unwrap_or(&self.payments_config.payment_url_base)
+            .clone();
+
+        let admin_url = format!("{url}/admin");
+
+        let config = platform.build_config_file(
+            self.api_secret_key
+                .expose_secret()
+                .to_string(),
+            url,
+            admin_url,
+        );
+
+        serde_json::to_writer(&mut archive, &config).map_err(|error| {
+            tracing::error!(
+                ?error,
+                "Error while trying to write config to plugin archive"
+            );
+
+            GithubClientError::UnknownApiError
+        })?;
+
+        let finished = archive.finish().map_err(|error| {
+            tracing::error!(
+                ?error,
+                "Error while trying to finish archive after config write"
+            );
+
+            GithubClientError::UnknownApiError
+        })?;
+
+        let result = finished.into_inner();
+
+        Ok(result)
     }
 
     pub async fn create_front_end_swap(
@@ -543,13 +874,12 @@ mod tests {
     use mockall::predicate::eq;
 
     use crate::chain_client::KeyringError;
-    use crate::configs::SwapsConfig;
     use crate::dao::{
         MockDaoInterface,
         MockDaoTransactionInterface,
     };
-    use crate::swaps::SwapsClients;
     use crate::types::{
+        DetectedShopPlatform,
         Invoice,
         InvoiceCart,
         default_invoice,
@@ -557,7 +887,7 @@ mod tests {
 
     use super::*;
 
-    fn setup_app_state() -> AppState<MockDaoInterface> {
+    async fn setup_app_state() -> AppState<MockDaoInterface> {
         let asset_names_map = HashMap::from([
             (1337.to_string(), "USDC".to_string()),
             (1984.to_string(), "USDt".to_string()),
@@ -578,21 +908,26 @@ mod tests {
             slippage_params: HashMap::new(),
         };
 
-        let shop_meta = ShopMetaConfig {
+        let meta = ShopMetaConfig {
             shop_name: "Mega shop".to_string(),
+            shop_url: "mega.shop".to_string(),
             logo_url: None,
             reown_project_id: "test".to_string(),
             ankr_api_token: None,
         };
 
+        let shop_config = ShopConfig {
+            invoices_webhook_url: Some("http://test.com/webhook".to_string()),
+            signature_max_age_secs: 300,
+            private_api_base_url: None,
+            meta,
+            shop_platform: DetectedShopPlatform::Unknown,
+        };
+
         let keyring = KeyringClient::default();
         let dao = MockDaoInterface::default();
         let registry = InvoiceRegistry::new();
-        let swaps_clients = SwapsClients::new(SwapsConfig::default());
-        let swaps_executor = SwapsExecutor::new(
-            MockDaoInterface::default(),
-            swaps_clients,
-        );
+        let swaps_executor = SwapsExecutor::default();
 
         AppState::new(
             keyring,
@@ -601,7 +936,8 @@ mod tests {
             swaps_executor,
             asset_names_map,
             config,
-            shop_meta,
+            shop_config,
+            SecretString::from("secret"),
         )
     }
 
@@ -648,7 +984,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_invoice() {
-        let mut app_state = setup_app_state();
+        let mut app_state = setup_app_state().await;
         let invoice_id = Uuid::new_v4();
 
         // Test case 1: Invoice found
@@ -711,7 +1047,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_invoice() {
-        let mut app_state = setup_app_state();
+        let mut app_state = setup_app_state().await;
 
         let uri = subxt_signer::SecretUri::from_str("//Bob").unwrap();
         let keypair = subxt_signer::sr25519::Keypair::from_uri(&uri).unwrap();

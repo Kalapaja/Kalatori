@@ -52,6 +52,10 @@ pub enum QueryError {
     /// Data decoding failed (SCALE or other format)
     #[error("Data decoding failed: {data_type}")]
     DecodeFailed { data_type: String },
+
+    #[expect(dead_code)]
+    #[error("Invalid query params")]
+    InvalidParams,
 }
 
 // ============================================================================
@@ -83,7 +87,7 @@ pub enum SubscriptionError {
 // ============================================================================
 
 /// Errors for transaction building, submission, and finalization
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TransactionError<T: ChainConfig> {
     // TODO: should be either splitted to different retriable/non-retriable errors or have a flag
     // Asset Hub client makes some requests to the chain that can fail transiently and should be

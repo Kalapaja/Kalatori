@@ -1,0 +1,11 @@
+# Pinned Rust toolchain. rustup picks this up on every cargo invocation in this
+# workspace, so contributors and CI build with the same compiler version and
+# components without extra setup.
+#
+# The fmt job intentionally installs nightly separately (rustfmt-nightly is
+# required by docs/conventions.md). This file pins the default stable toolchain
+# used by everything else.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]
+profile = "minimal"

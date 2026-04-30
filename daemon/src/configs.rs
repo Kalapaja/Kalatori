@@ -95,6 +95,36 @@ pub fn etherscan_client_config_with_prefix(
     config_from_file_or_env(&config_path, &env_prefix)
 }
 
+/// Load auth config. Returns `Some(OAuthConfig)` if `auth.json` exists or
+/// `KALATORI_AUTH_*` env vars are set, `None` otherwise (auth disabled).
+pub fn auth_config_with_prefix(
+    config_dir_path: &str,
+    prefix: &str,
+) -> Option<OAuthConfig> {
+    let config_path = format_config_path(config_dir_path, "auth.json");
+    let env_prefix = format_prefix(prefix, "AUTH");
+
+    let raw: Option<OAuthConfigRaw> = try_config_from_file_or_env_with_list_keys(
+        &config_path,
+        &env_prefix,
+        &["token_public_keys"],
+    );
+
+    let config = raw.map(OAuthConfig::from_raw);
+
+    if config.is_some() {
+        // Remove secret env vars after loading (same pattern as secrets_config)
+        unsafe {
+            std::env::remove_var(format!("{env_prefix}_CLIENT_SECRET"));
+            std::env::remove_var(format!(
+                "{env_prefix}_PREVIOUS_CLIENT_SECRET"
+            ));
+        }
+    }
+
+    config
+}
+
 pub fn swaps_config_with_prefix(
     config_dir_path: &str,
     prefix: &str,

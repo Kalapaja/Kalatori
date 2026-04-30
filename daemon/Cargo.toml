@@ -1,11 +1,11 @@
 [package]
 name = "kalatori"
-version = "0.8.2"
+version = "0.9.0"
 edition = "2024"
-description = "A non-castodial crypto payment-gateway daemon."
+description = "A non-custodial crypto payment-gateway daemon."
 homepage = "https://github.com/Kalapaja/Kalatori"
 documentation = "https://docs.rs/Kalatori"
-rust-version = "1.88"
+rust-version = "1.91"
 license.workspace = true
 authors.workspace = true
 readme.workspace = true
@@ -18,11 +18,11 @@ kalatori-client = { path = "../client", features = ["axum-middleware", "sqlx-typ
 
 # Types and data serialization utils
 uuid = { version = "1", features = ["v4", "serde"] }
-rust_decimal = { version = "1", features = ["serde"] }
+rust_decimal = { version = "1", features = ["serde", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
-serde_with = "3.17"
+serde_with = "3.18"
 secrecy = { version = "0.10", features = ["serde"] }
 base58 = "0.2.0"
 blake2b_simd = "1.0"
@@ -41,12 +41,13 @@ axum = { version = "0.8", default-features = false, features = [
     "http1",
     "query",
     "json",
+    "form",
     "matched-path",
     "original-uri",
     "macros",
 ] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "fs"] }
+tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "fs", "normalize-path"] }
 
 # Database
 # On update sqlx version, plase also update sqlx-cli to corresponding version in Makefile
@@ -66,7 +67,7 @@ subxt = "0.44"
 subxt-signer = "0.44"
 
 # Polygon chain
-alloy = { version = "1.5", features = [
+alloy = { version = "1.8", features = [
     "provider-ws",
     "rpc-types-eth",
     "contract",
@@ -92,8 +93,13 @@ tracing-loki = "0.2"
 
 # Utils
 config = "0.15"
+hkdf = "0.12"
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+pasetors = { version = "0.7", default-features = false, features = ["v4", "paserk", "std"] }
+url = "2"
 # Please keep reqwest version in sync with the one in kalatori-client
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "form"] }
 # Need to include it directly cause different servers/clients use different crypto providers
 # which is not allowed by rustls and we need to manually specify which one to use as default
 # See details here: https://docs.rs/rustls/latest/rustls/crypto/struct.CryptoProvider.html#using-the-per-process-default-cryptoprovider
@@ -103,19 +109,19 @@ zeroize = "1"
 shadow-rs = { version = "0.36", default-features = false }
 thiserror = "2"
 trait-variant = "0.1"
-hmac = "0.12"
 sha2 = "0.10"
 # Let's add some random and fun to financial operations :) (it's a joke, we don't really do anything like that)
 rand = "0.10"
 governor = "0.10"
+zip = "8.5"
 
 [dev-dependencies]
 mockall = "0.14"
 mockall_double = "0.3"
 httpmock = "0.8"
 indoc = "2"
-serial_test = "3.2"
 tracing-test = "0.2"
+insta = { version = "1", features = ["json", "yaml", "redactions"] }
 
 [build-dependencies]
 # Don't forget to update me in `[dependencies]`!
@@ -124,6 +130,12 @@ shadow-rs = { version = "0.36", default-features = false }
 [features]
 default = []
 dev_api = []
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 strip = true

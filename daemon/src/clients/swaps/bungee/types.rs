@@ -11,15 +11,20 @@ use serde_with::{
     serde_as,
 };
 
+use crate::clients::swaps::SwapsClientError;
 use crate::types::{
-    BungeeSwapDetails,
     CreateSwapData,
-    InternalQuoteDetails,
+    SwapDetails,
     SwapExecutorType,
     SwapQuote,
 };
 
 use super::BungeeQuoteDetails;
+
+use super::super::{
+    ExecutorSwapStatus,
+    RawSwapDetails,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -166,7 +171,7 @@ impl From<QuoteResponse> for SwapQuote {
             estimated_to_amount: Decimal::ZERO,
             // TODO: ensure unwrap is safe here?
             valid_till,
-            quote_details: InternalQuoteDetails::Bungee(details),
+            quote_details: RawSwapDetails::Bungee(details),
         }
     }
 }
@@ -180,19 +185,28 @@ pub struct SubmitOrderRequest {
     pub quote_id: String,
 }
 
-impl From<BungeeSwapDetails> for SubmitOrderRequest {
-    fn from(value: BungeeSwapDetails) -> Self {
-        Self {
-            request_type: value.raw_transaction.request_type,
-            request: value
-                .raw_transaction
+impl TryFrom<SwapDetails> for SubmitOrderRequest {
+    type Error = SwapsClientError;
+
+    fn try_from(value: SwapDetails) -> Result<Self, Self::Error> {
+        let RawSwapDetails::Bungee(raw_transaction) = value.raw_transaction else {
+            return Err(SwapsClientError::WrongRawTransaction)
+        };
+
+        let signature = value
+            .signature
+            .ok_or(SwapsClientError::SignatureIsNotSet)?;
+
+        Ok(Self {
+            request_type: raw_transaction.request_type,
+            request: raw_transaction
                 .sign_typed_data
                 .values
                 .witness,
             // TODO: check if it's safe, at least add tests for that
-            user_signature: value.signature.unwrap(),
+            user_signature: signature,
             quote_id: value.id,
-        }
+        })
     }
 }
 
@@ -212,7 +226,7 @@ impl From<&str> for GetSwapStatusRequest {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum BungeeSwapStatus {
     Pending,
     Assigned,
@@ -238,6 +252,20 @@ impl TryFrom<u8> for BungeeSwapStatus {
             6 => Ok(Self::Cancelled),
             7 => Ok(Self::Refunded),
             _ => Err(format!("Invalid status code: {value}")),
+        }
+    }
+}
+
+impl From<BungeeSwapStatus> for ExecutorSwapStatus {
+    fn from(value: BungeeSwapStatus) -> Self {
+        match value {
+            BungeeSwapStatus::Pending
+            | BungeeSwapStatus::Assigned
+            | BungeeSwapStatus::Extracted => Self::Pending,
+            BungeeSwapStatus::Settled | BungeeSwapStatus::Fulfilled => Self::Executed,
+            BungeeSwapStatus::Refunded
+            | BungeeSwapStatus::Expired
+            | BungeeSwapStatus::Cancelled => Self::Failed,
         }
     }
 }

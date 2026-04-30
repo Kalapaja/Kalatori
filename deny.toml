@@ -2,8 +2,6 @@
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 
-# TODO: This ignores unmaintained crates `instant` and `fxhash` which are dependencies of `sled`.
-# Please, remove this thing after `alloy` update it's `paste` dependency.
 ignore = [
     "RUSTSEC-2024-0436",
 ]
@@ -27,6 +25,7 @@ allow = [
     "CDLA-Permissive-2.0",
     "OpenSSL",
     "Unlicense",
+    "bzip2-1.0.6",
 ]
 
 [bans]
@@ -50,8 +49,7 @@ unknown-git = "deny"
 # if not specified. If it is specified but empty, no registries are allowed.
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
-# TODO: move this repo to Kalapaja organization
-allow-git = ["https://github.com/Vovke/substrate-parser"]
+allow-git = []
 
 [sources.allow-org]
 # github.com organizations to allow git sources for

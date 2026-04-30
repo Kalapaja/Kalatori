@@ -11,6 +11,11 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v6
 
+      # Restore cargo registry / target cache before any compilation step so the
+      # first build benefits from a warm registry.
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.8.2
+
       - name: Setup SQLite
         uses: ./.github/actions/setup-sqlite
 
@@ -26,8 +31,12 @@ jobs:
       - name: Run daemon and chopsticks in background
         run: make run &
 
-      - name: Wait for daemon to start
-        run: sleep 300
+      # Poll the public /info endpoint until the daemon answers, capped at 5
+      # minutes so a stuck daemon still fails the job in bounded time. Replaces
+      # an unconditional `sleep 300`.
+      - name: Wait for daemon to be ready
+        run: |
+          timeout 300 bash -c 'until curl -sf http://localhost:8080/public/info >/dev/null; do sleep 2; done'
 
       - name: Run integration tests
         run: make run-test-examples

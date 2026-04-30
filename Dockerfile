@@ -1,5 +1,5 @@
 # Use Debian Bookworm for both stages to ensure glibc compatibility
-FROM debian:bookworm-slim AS builder
+FROM debian:bookworm-slim AS base
 
 # Install Rust and build dependencies
 RUN apt-get update && apt-get install -y \
@@ -12,10 +12,6 @@ RUN apt-get update && apt-get install -y \
     git \
     unzip \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.91
-ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Remove old sqlite3 if present
 RUN apt-get update && apt-get remove -y libsqlite3-0 libsqlite3-dev || true && rm -rf /var/lib/apt/lists/*
@@ -54,43 +50,50 @@ ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV SQLITE3_LIB_DIR=/usr/local/lib
 ENV SQLITE3_INCLUDE_DIR=/usr/local/include
 
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+COPY rust-toolchain.toml ./
+
+RUN rustup show active-toolchain || rustup toolchain install
+
+# Install cargo-chef
+RUN cargo install --locked cargo-chef
+
+# Install subxt-cli separately to cache it, keep version in sync with Cargo.toml
+RUN cargo install subxt-cli --version 0.44.0 --locked
+
+FROM base AS planner
+
 WORKDIR /usr/src/kalatori
 
-# Install subxt-cli
-COPY Makefile Makefile
-RUN make install-subxt-cli
-
-# Create source and examples directories
-RUN mkdir -p daemon/src
-RUN mkdir -p client/src
-RUN mkdir -p client/examples
-
-# Copy required Cargo.toml files
-COPY Cargo.toml Cargo.toml
-COPY daemon/Cargo.toml daemon/Cargo.toml
-COPY client/Cargo.toml client/Cargo.toml
-COPY Cargo.lock Cargo.lock
-
-# Create dummy source and examples to cache dependencies
-RUN echo "fn main() {}" > daemon/src/main.rs
-RUN echo "fn lib() {}" > client/src/lib.rs
-RUN echo "fn main() {}" > client/examples/crud.rs
-RUN echo "fn main() {}" > client/examples/webhook.rs
-RUN echo "fn main() {}" > client/examples/generate_hmac_test_vectors.rs
-
-# Build dependencies only
-RUN cargo build --release --all-features
-
-# RUN cargo build --release -p kalatori-client --all-features
-
-# Copy actual source code
 COPY . .
 
-# Download metadata
-RUN make download-node-metadata-ci
+RUN cargo chef prepare --recipe-path recipe.json
+
+
+FROM base AS builder
+
+WORKDIR /usr/src/kalatori
+
+COPY rust-toolchain.toml ./
+
+# Copy chef recipe
+COPY --from=planner /usr/src/kalatori/recipe.json recipe.json
+
+# Install cached deps
+RUN cargo chef cook --release --recipe-path recipe.json
+
+COPY Makefile front-end.mk ./
 
 # Download front-end
 RUN make download-front-end
+
+# Download metadata
+RUN make download-node-metadata-docker
+
+COPY . .
 
 # Build the release binary
 RUN CARGO_PROFILE_RELEASE_STRIP=false cargo build --release -p kalatori

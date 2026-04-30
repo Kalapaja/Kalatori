@@ -1,0 +1,55 @@
+---
+source: daemon/src/dao/transaction.rs
+expression: result
+---
+- id: "[uuid]"
+  invoice_id: "[uuid]"
+  chain: Polygon
+  asset_id: USDC
+  asset_name: USDC
+  amount: "99.99"
+  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+  destination_address: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+  block_number: ~
+  position_in_block: ~
+  tx_hash: "[tx_hash]"
+  origin: {}
+  status: Completed
+  transaction_type: Outgoing
+  outgoing_meta: {}
+  created_at: "[timestamp]"
+  updated_at: "[timestamp]"
+- id: "[uuid]"
+  invoice_id: "[uuid]"
+  chain: PolkadotAssetHub
+  asset_id: USDC
+  asset_name: USDC
+  amount: "300.00"
+  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+  destination_address: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+  block_number: ~
+  position_in_block: ~
+  tx_hash: "[tx_hash]"
+  origin: {}
+  status: Failed
+  transaction_type: Outgoing
+  outgoing_meta: {}
+  created_at: "[timestamp]"
+  updated_at: "[timestamp]"
+- id: "[uuid]"
+  invoice_id: "[uuid]"
+  chain: PolkadotAssetHub
+  asset_id: "1984"
+  asset_name: USDT
+  amount: "75.00"
+  source_address: 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+  destination_address: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+  block_number: ~
+  position_in_block: ~
+  tx_hash: "[tx_hash]"
+  origin: {}
+  status: Completed
+  transaction_type: Outgoing
+  outgoing_meta: {}
+  created_at: "[timestamp]"
+  updated_at: "[timestamp]"

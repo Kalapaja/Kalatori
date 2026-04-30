@@ -7,6 +7,7 @@ mod consts;
 mod pimlico_client;
 
 use std::str::FromStr;
+use std::time::Duration;
 
 use alloy::eips::eip7702::Authorization;
 use alloy::primitives::{
@@ -83,6 +84,8 @@ use pimlico_client::{
     TokenQuote,
 };
 
+const WS_MESSAGES_TIMEOUT_DURATION: Duration = Duration::from_secs(10);
+
 // ============================================================================
 // ERC-20 Interface Definition
 // ============================================================================
@@ -120,7 +123,7 @@ pub type PolygonTransactionHash = TxHash;
 /// Polygon block hash
 pub type PolygonBlockHash = alloy::primitives::B256;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolygonUnsignedTransaction {
     pub sender: PolygonAccountId,
     pub recipient: PolygonAccountId,
@@ -137,13 +140,41 @@ pub struct PolygonUnsignedTransaction {
     pub paymaster_data: Option<String>,
 }
 
+#[cfg(test)]
+pub fn default_polygon_unsigned_transaction() -> PolygonUnsignedTransaction {
+    use alloy::primitives::address;
+
+    PolygonUnsignedTransaction {
+        sender: address!("0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"),
+        recipient: address!("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"),
+        entrypoint_nonce: U256::from(100),
+        call_data: vec![],
+        gas_price: GasPrice {
+            max_fee_per_gas: U256::from(100),
+            max_priority_fee_per_gas: U256::from(50),
+        },
+        gas_params: GasParams::dummy(),
+        permit_hash: B256::ZERO,
+        asset_id: address!("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"),
+        amount_wei: U256::from(1_000_000),
+        authorization: Authorization {
+            chain_id: U256::from(137),
+            address: Address::ZERO,
+            nonce: 50,
+        },
+        transfer_all: false,
+        op_hash: None,
+        paymaster_data: None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SignedPermit {
     pub signature: Signature,
 }
 
 /// Signed transaction for Polygon
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolygonSignedTransaction {
     /// User operation params with required signatures and permit, ready to send
     /// to the bundler
@@ -152,6 +183,38 @@ pub struct PolygonSignedTransaction {
     pub op_hash: B256,
     /// Unsigned transaction data required to build `ChainTransfer`
     pub unsigned_transaction: PolygonUnsignedTransaction,
+}
+
+#[cfg(test)]
+pub fn default_polygon_signed_transaction() -> PolygonSignedTransaction {
+    use alloy::primitives::address;
+    use pimlico_client::Eip7702Auth;
+
+    PolygonSignedTransaction {
+        op_params: UserOperationParams {
+            sender: address!("0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"),
+            nonce: U256::from(100),
+            call_data: "".to_string(),
+            paymaster: Address::ZERO,
+            paymaster_data: "".to_string(),
+            signature: "".to_string(),
+            gas_params: GasParams::dummy(),
+            gas_price: GasPrice {
+                max_fee_per_gas: U256::from(100),
+                max_priority_fee_per_gas: U256::from(50),
+            },
+            eip7702_auth: Eip7702Auth {
+                chain_id: U256::from(137),
+                address: Address::ZERO,
+                nonce: U256::from(100),
+                y_parity: U256::from(10),
+                r: U256::from(20),
+                s: U256::from(30),
+            },
+        },
+        op_hash: B256::ZERO,
+        unsigned_transaction: default_polygon_unsigned_transaction(),
+    }
 }
 
 impl SignedTransactionUtils for PolygonSignedTransaction {
@@ -169,7 +232,7 @@ impl SignedTransactionUtils for PolygonSignedTransaction {
 // ============================================================================
 
 /// Polygon chain configuration type marker
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolygonChainConfig {}
 
 impl ChainConfig for PolygonChainConfig {
@@ -259,6 +322,7 @@ pub struct PolygonClient {
     config: crate::configs::ChainConfig,
     asset_info_store: AssetInfoStore<PolygonChainConfig>,
     provider: PolygonProvider,
+    subscription_provider: PolygonProvider,
     pimlico_client: PimlicoClient,
 }
 
@@ -270,7 +334,7 @@ impl PolygonClient {
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
     ) -> Result<Self, ClientError> {
         let endpoint = config
-            .get_random_endpoint()
+            .get_random_requests_endpoint()
             .ok_or(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
             })?;
@@ -317,6 +381,29 @@ impl PolygonClient {
             })
             .map_err(|_| ClientError::MetadataFetchFailed)?;
 
+        let endpoint = config
+            .get_random_subscriptions_endpoint()
+            .ok_or(ClientError::InvalidConfiguration {
+                field: "endpoints".to_string(),
+            })?;
+
+        // Test connection and get chain ID
+        let ws_connect = WsConnect::new(&endpoint);
+        let subscription_provider = ProviderBuilder::new()
+            .connect_ws(ws_connect)
+            .await
+            .inspect_err(|e| {
+                tracing::debug!(
+                    error.category = CHAIN_CLIENT,
+                    error.operation = "connect_client",
+                    error.source = ?e,
+                    endpoint = %endpoint,
+                    chain = %Self::chain_type(),
+                    "Failed to connect to Polygon RPC endpoint"
+                );
+            })
+            .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+
         tracing::info!(
             chain_id = chain_id,
             endpoint = %endpoint,
@@ -327,6 +414,7 @@ impl PolygonClient {
             config: config.clone(),
             asset_info_store,
             provider,
+            subscription_provider,
             pimlico_client: PimlicoClient::new(),
         })
     }
@@ -656,14 +744,14 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
     #[instrument(skip(self))]
     async fn fetch_asset_balance(
         &self,
-        asset_id: &PolygonAssetId,
-        account: &PolygonAccountId,
+        asset_id: PolygonAssetId,
+        account: PolygonAccountId,
     ) -> Result<Decimal, QueryError> {
         tracing::trace!("Fetching ERC-20 balance...");
 
         let decimals = self
             .asset_info_store
-            .get_asset_info(asset_id)
+            .get_asset_info(&asset_id)
             .await
             .ok_or_else(|| {
                 tracing::warn!("Asset info not found in local store");
@@ -673,10 +761,10 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             })?
             .decimals;
 
-        let contract = IERC20::new(*asset_id, self.provider.clone());
+        let contract = IERC20::new(asset_id, self.provider.clone());
 
         let balance_result = contract
-            .balanceOf(*account)
+            .balanceOf(account)
             .call()
             .await
             .inspect_err(|e| {
@@ -693,8 +781,15 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         // alloy 1.4 returns the value directly
         let balance = balance_result;
+        let balance_decimal = u256_to_decimal(balance, decimals);
 
-        Ok(u256_to_decimal(balance, decimals))
+        tracing::trace!(
+            ?balance,
+            ?balance_decimal,
+            "Fetched ERC-20 balance"
+        );
+
+        Ok(balance_decimal)
     }
 
     #[instrument(skip(self))]
@@ -725,7 +820,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         // Subscribe to logs
         let subscription = client
-            .provider
+            .subscription_provider
             .subscribe_logs(&filter)
             .await
             .inspect_err(|e| {
@@ -746,36 +841,51 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         let stream = async_stream::try_stream! {
             let mut sub = subscription.into_stream();
 
-            while let Some(log) = sub.next().await {
-                // Decode Transfer event from log
-                match log.log_decode::<IERC20::Transfer>() {
-                    Ok(decoded) => {
-                        let event = decoded.inner.data;
-                        match client.log_to_transfer(&log, &event).await {
-                            Ok(transfer) => {
-                                tracing::trace!(
-                                    from = %transfer.sender,
-                                    to = %transfer.recipient,
-                                    amount = %transfer.amount,
-                                    asset = %transfer.asset_name,
-                                    "Detected ERC-20 transfer"
-                                );
-                                yield vec![transfer];
-                            }
+            loop {
+                tokio::select! {
+                    log = sub.next() => {
+                        let Some(log) = log else {
+                            tracing::warn!("Polygon subscription task received None, probably ws connection has been closed");
+                            break
+                        };
+
+                        // Decode Transfer event from log
+                        match log.log_decode::<IERC20::Transfer>() {
+                            Ok(decoded) => {
+                                let event = decoded.inner.data;
+                                match client.log_to_transfer(&log, &event).await {
+                                    Ok(transfer) => {
+                                        tracing::trace!(
+                                            from = %transfer.sender,
+                                            to = %transfer.recipient,
+                                            amount = %transfer.amount,
+                                            asset = %transfer.asset_name,
+                                            "Detected ERC-20 transfer"
+                                        );
+                                        yield vec![transfer];
+                                    },
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = ?e,
+                                            "Failed to process transfer event"
+                                        );
+                                        break
+                                    },
+                                }
+                            },
                             Err(e) => {
-                                tracing::warn!(
+                                tracing::debug!(
                                     error = ?e,
-                                    "Failed to process transfer event"
+                                    "Failed to decode Transfer event from log"
                                 );
-                            }
+                                break
+                            },
                         }
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            error = ?e,
-                            "Failed to decode Transfer event from log"
-                        );
-                    }
+                    },
+                    () = tokio::time::sleep(WS_MESSAGES_TIMEOUT_DURATION) => {
+                        tracing::error!("Polygon subscription didn't receive any updates for {} secs, force subscription recreate", WS_MESSAGES_TIMEOUT_DURATION.as_secs());
+                        break
+                    },
                 }
             }
 
@@ -796,14 +906,14 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
     #[instrument(skip(self), fields(asset_id = %asset_id, amount = %amount))]
     async fn build_transfer(
         &self,
-        sender: &PolygonAccountId,
-        recipient: &PolygonAccountId,
-        asset_id: &PolygonAssetId,
+        sender: PolygonAccountId,
+        recipient: PolygonAccountId,
+        asset_id: PolygonAssetId,
         amount: Decimal,
     ) -> Result<UnsignedTransaction<PolygonChainConfig>, TransactionError<PolygonChainConfig>> {
         let decimals = self
             .asset_info_store
-            .get_asset_info(asset_id)
+            .get_asset_info(&asset_id)
             .await
             .ok_or_else(|| TransactionError::BuildFailed {
                 reason: format!("Asset {asset_id} not found in asset info store"),
@@ -812,12 +922,12 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         let amount_wei = decimal_to_u256(amount, decimals);
 
-        let contract = IERC20::new(*asset_id, self.provider.clone());
+        let contract = IERC20::new(asset_id, self.provider.clone());
         let entrypoint_contract = IERC20::new(ENTRYPOINT, self.provider.clone());
 
         let sender_nonce = self
             .provider
-            .get_transaction_count(*sender)
+            .get_transaction_count(sender)
             .await
             .map_err(|e| {
                 tracing::debug!(
@@ -830,7 +940,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             })?;
 
         let permit_nonce = contract
-            .nonces(*sender)
+            .nonces(sender)
             .call()
             .await
             .map_err(|e| {
@@ -845,7 +955,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         let entrypoint_nonce = entrypoint_contract
             .getNonce(
-                *sender,
+                sender,
                 alloy::primitives::Uint::<192, 3>::ZERO,
             )
             .call()
@@ -879,8 +989,8 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         // use dummy gas params for now, for calculation of real params we need to have
         // a real signed permit which we can get only on signing step
         let gas_params = GasParams::dummy();
-        let permit_hash = self.build_permit_hash(sender, permit_nonce);
-        let call_data = self.build_call(*recipient, amount_wei, *asset_id);
+        let permit_hash = self.build_permit_hash(&sender, permit_nonce);
+        let call_data = self.build_call(recipient, amount_wei, asset_id);
 
         let authorization = Authorization {
             chain_id: U256::from(CHAIN_ID),
@@ -890,9 +1000,9 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         let transaction = PolygonUnsignedTransaction {
             transfer_all: false,
-            sender: *sender,
-            recipient: *recipient,
-            asset_id: *asset_id,
+            sender,
+            recipient,
+            asset_id,
             entrypoint_nonce,
             call_data,
             gas_price,
@@ -912,9 +1022,9 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
     #[instrument(skip(self), fields(asset_id = %asset_id))]
     async fn build_transfer_all(
         &self,
-        sender: &PolygonAccountId,
-        recipient: &PolygonAccountId,
-        asset_id: &PolygonAssetId,
+        sender: PolygonAccountId,
+        recipient: PolygonAccountId,
+        asset_id: PolygonAssetId,
     ) -> Result<UnsignedTransaction<PolygonChainConfig>, TransactionError<PolygonChainConfig>> {
         // Fetch current balance
         let balance = self
@@ -979,18 +1089,14 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         let encoded_paymaster_data = const_hex::encode_prefixed(paymaster_data.clone());
         inner.paymaster_data = Some(encoded_paymaster_data.clone());
 
-        let call_data_for_estimate = if inner.transfer_all {
-            // for transfer all if we'll put full amount we'll get an error that we don't
-            // have enough balance for transfer + fees, so we put some dummy amount for now,
-            // paymaster fee shouldn't be significantly different depending on amount
-            self.build_call(
-                inner.recipient,
-                U256::from(100),
-                inner.asset_id,
-            )
-        } else {
-            inner.call_data.clone()
-        };
+        // if the amount we put is full balance amount we'll get an error that we don't
+        // have enough balance for transfer + fees, so we put some dummy amount for now,
+        // paymaster fee shouldn't be significantly different depending on amount
+        let call_data_for_estimate = self.build_call(
+            inner.recipient,
+            U256::from(100),
+            inner.asset_id,
+        );
 
         let mut gas_params = self
             .pimlico_client
@@ -1024,58 +1130,55 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         inner.gas_params = gas_params;
 
-        if inner.transfer_all {
-            let quotes = self
-                .pimlico_client
-                .get_token_quotes(&[inner.asset_id])
-                .await
-                .map_err(|e| {
-                    tracing::debug!(
-                        error = ?e,
-                        "Failed to get USDC quote using pimlico client",
-                    );
+        let quotes = self
+            .pimlico_client
+            .get_token_quotes(&[inner.asset_id])
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error = ?e,
+                    "Failed to get USDC quote using pimlico client",
+                );
 
-                    TransactionError::BuildFailed {
-                        reason: "Failed to get quote using pimlico client".to_string(),
-                    }
-                })?;
+                TransactionError::BuildFailed {
+                    reason: "Failed to get quote using pimlico client".to_string(),
+                }
+            })?;
 
-            let usdc_quote =
-                quotes
-                    .quotes
-                    .first()
-                    .ok_or_else(|| TransactionError::BuildFailed {
-                        reason: "Failed to get quote from paymaster".to_string(),
-                    })?;
+        let usdc_quote = quotes
+            .quotes
+            .first()
+            .ok_or_else(|| TransactionError::BuildFailed {
+                reason: "Failed to get quote from paymaster".to_string(),
+            })?;
 
-            let max_cost_in_usdc_wei = self.calculate_max_cost_in_token(
-                &inner.gas_params,
-                &inner.gas_price,
-                usdc_quote,
-            );
+        let max_cost_in_usdc_wei = self.calculate_max_cost_in_token(
+            &inner.gas_params,
+            &inner.gas_price,
+            usdc_quote,
+        );
 
-            let amount_wei = inner
-                .amount_wei
-                .saturating_sub(max_cost_in_usdc_wei)
-                .saturating_sub(U256::from(100));
+        let amount_wei = inner
+            .amount_wei
+            .saturating_sub(max_cost_in_usdc_wei)
+            .saturating_sub(U256::from(100));
 
-            let call_data = self.build_call(
-                inner.recipient,
-                amount_wei,
-                inner.asset_id,
-            );
-            inner.call_data = call_data;
-            let op_hash = self.compute_user_op_hash(&inner, &paymaster_data);
+        let call_data = self.build_call(
+            inner.recipient,
+            amount_wei,
+            inner.asset_id,
+        );
+        inner.call_data = call_data;
+        let op_hash = self.compute_user_op_hash(&inner, &paymaster_data);
 
-            if amount_wei.is_zero() {
-                return Err(TransactionError::InsufficientBalance {
-                    transaction_id: op_hash.to_string(),
-                })
-            }
-
-            // have to recalculate op_hash
-            inner.op_hash = Some(op_hash);
+        if amount_wei.is_zero() {
+            return Err(TransactionError::InsufficientBalance {
+                transaction_id: op_hash.to_string(),
+            })
         }
+
+        // have to recalculate op_hash
+        inner.op_hash = Some(op_hash);
 
         let data = SignTransactionRequestData {
             transaction: inner,

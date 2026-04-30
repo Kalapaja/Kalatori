@@ -32,9 +32,11 @@ use super::{
     Refund,
     RefundStatus,
     RetryMeta,
+    SwapChainType,
     Transaction,
     TransactionOrigin,
     TransactionStatus,
+    TransferDestinationParams,
     TransferInfo,
 };
 
@@ -269,6 +271,8 @@ pub struct PayoutJson {
     pub amount: Decimal,
     pub source_address: String,
     pub destination_address: String,
+    pub destination_chain: SwapChainType,
+    pub destination_asset_id: String,
     pub initiator_type: InitiatorType,
     #[serde(deserialize_with = "deserialize_optional_hex_uuid")]
     pub initiator_id: Option<String>, // hex-encoded UUID, empty string, or null
@@ -295,7 +299,9 @@ pub struct RefundJson {
     pub chain: ChainType,
     pub amount: Decimal,
     pub source_address: String,
-    pub destination_address: String,
+    pub destination_address: Option<String>,
+    pub destination_chain: Option<SwapChainType>,
+    pub destination_asset_id: Option<String>,
     pub initiator_type: InitiatorType,
     #[serde(deserialize_with = "deserialize_optional_hex_uuid")]
     pub initiator_id: Option<String>, // hex-encoded UUID, empty string, or null
@@ -469,13 +475,15 @@ impl TryFrom<PayoutJson> for Payout {
             status: json.status,
             created_at: json.created_at,
             updated_at: json.updated_at,
-            transfer_info: TransferInfo {
-                chain: json.chain,
-                asset_id: json.asset_id,
-                asset_name: json.asset_name,
-                amount: json.amount,
-                source_address: json.source_address,
+            chain: json.chain,
+            asset_id: json.asset_id,
+            asset_name: json.asset_name,
+            amount: json.amount,
+            source_address: json.source_address,
+            destination_params: TransferDestinationParams {
                 destination_address: json.destination_address,
+                destination_chain: json.destination_chain,
+                destination_asset_id: json.destination_asset_id,
             },
             retry_meta: RetryMeta {
                 retry_count: json.retry_count,
@@ -491,6 +499,24 @@ impl TryFrom<RefundJson> for Refund {
     type Error = String;
 
     fn try_from(json: RefundJson) -> Result<Self, Self::Error> {
+        let destination_params = if let (
+            Some(destination_address),
+            Some(destination_chain),
+            Some(destination_asset_id),
+        ) = (
+            json.destination_address,
+            json.destination_chain,
+            json.destination_asset_id,
+        ) {
+            Some(TransferDestinationParams {
+                destination_address,
+                destination_chain,
+                destination_asset_id,
+            })
+        } else {
+            None
+        };
+
         Ok(Refund {
             id: parse_hex_uuid(&json.id)?,
             invoice_id: parse_hex_uuid(&json.invoice_id)?,
@@ -499,14 +525,12 @@ impl TryFrom<RefundJson> for Refund {
             status: json.status,
             created_at: json.created_at,
             updated_at: json.updated_at,
-            transfer_info: TransferInfo {
-                chain: json.chain,
-                asset_id: json.asset_id,
-                asset_name: json.asset_name,
-                amount: json.amount,
-                source_address: json.source_address,
-                destination_address: json.destination_address,
-            },
+            chain: json.chain,
+            asset_id: json.asset_id,
+            asset_name: json.asset_name,
+            amount: json.amount,
+            source_address: json.source_address,
+            destination_params,
             retry_meta: RetryMeta {
                 retry_count: json.retry_count,
                 last_attempt_at: json.last_attempt_at,

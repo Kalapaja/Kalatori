@@ -5,15 +5,20 @@ use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::balance_checker::BalanceChecker;
 use crate::clients::{
-    AcrossSwapStatus,
-    BungeeSwapStatus,
+    ExecutorSwapStatus,
+    SwapsClientError,
 };
-use crate::dao::DaoInterface;
+use crate::dao::{
+    DaoInterface,
+    DaoTransactionInterface,
+};
 use crate::types::{
-    InternalSwapDetails,
+    PayoutStatus,
+    RefundStatus,
     Swap,
-    SwapExecutorType,
+    TransactionOriginVariant,
 };
 
 use super::SwapsClients;
@@ -61,195 +66,204 @@ pub struct SwapsTracker<D: DaoInterface + 'static> {
     dao: D,
     store: TrackedSwaps,
     clients: SwapsClients,
+    balance_checker: BalanceChecker,
 }
 
+#[expect(clippy::enum_variant_names)]
 #[derive(Debug)]
 pub enum SwapsTrackerError {
     ApiError,
     DatabaseError,
+    BalanceCheckerError,
+}
+
+impl From<SwapsClientError> for SwapsTrackerError {
+    fn from(_value: SwapsClientError) -> Self {
+        SwapsTrackerError::ApiError
+    }
 }
 
 impl<D: DaoInterface + 'static> SwapsTracker<D> {
     pub fn new(
         dao: D,
         clients: SwapsClients,
+        balance_checker: BalanceChecker,
     ) -> Self {
         Self {
             dao,
             clients,
+            balance_checker,
             store: TrackedSwaps::new(),
         }
     }
 
-    #[tracing::instrument(skip_all, fields(swap_id = %swap.id, invoice_id = %swap.request.invoice_id))]
-    async fn check_across_swap(
+    #[tracing::instrument(skip_all)]
+    async fn handle_swap_executed(
         &mut self,
         swap: &Swap,
     ) -> Result<(), SwapsTrackerError> {
-        tracing::trace!("Check across swap");
+        // TODO: check error, if it's Invoice not found, skip monitoring (shouldn't
+        // happen though)
+        let invoice = self
+            .balance_checker
+            .check_invoice_balance(swap.request.invoice_id)
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    error = ?e,
+                    "Error while check balance after swap has been executed"
+                );
 
-        let InternalSwapDetails::Across(details) = &swap.swap_details else {
-            tracing::error!("Unexpected internal swap details. Expected Across");
-            return Ok(())
-        };
+                SwapsTrackerError::BalanceCheckerError
+            })?;
 
-        if let Some(tx_hash) = details.transaction_hash.as_ref() {
-            let result = self
-                .clients
-                .across_client
-                .get_swap_status(tx_hash.as_str().into())
-                .await
-                // TODO: check errors specifically?
-                .map_err(|_| SwapsTrackerError::ApiError)?;
+        tracing::debug!(
+            invoice_with_amount = ?invoice,
+            "Invoice has been checked after swap successful execution"
+        );
 
-            match result.status {
-                AcrossSwapStatus::Expired => {
-                    // shouldn't really happen as long as it already has been sent but just in case
-                    self.dao
-                        .update_swap_failed(
-                            swap.id,
-                            "Got bungee status code expired or cancelled".to_string(),
-                        )
-                        .await
-                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
-
-                    self.store.remove_swap(swap.id);
-
-                    tracing::info!(
-                        "Got across status code expired. Swap has been marked as failed and will no longer be tracked"
-                    );
-                },
-                AcrossSwapStatus::Pending => {
-                    tracing::trace!("Swap still has pending status, keep watching")
-                },
-                AcrossSwapStatus::Filled => {
-                    self.dao
-                        .update_swap_completed(swap.id)
-                        .await
-                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
-
-                    self.store.remove_swap(swap.id);
-                    tracing::info!("Swap has been filled and marked as completed in the database")
-                },
-                AcrossSwapStatus::Refunded => {
-                    self.dao
-                        .update_swap_failed(
-                            swap.id,
-                            "Swap has been failed and refunded".to_string(),
-                        )
-                        .await
-                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
-
-                    self.store.remove_swap(swap.id);
-                    // it's expected and "normal" behaviour, so just `info` record
-                    tracing::info!("Swap has failed while executing and has been refunded")
-                },
-            }
-        } else {
-            self.dao
-                .update_swap_failed(
-                    swap.id,
-                    "No transaction hash saved".to_string(),
-                )
-                .await
-                .map_err(|_| SwapsTrackerError::DatabaseError)?;
-
-            tracing::error!(
-                "Across swap has been marked as sent but transaction hash is empty.
-                It has been marked as failed and will no longer be tracked"
+        if invoice.total_received_amount.is_zero() {
+            tracing::warn!(
+                "Swap has executed status but received amount after check is still zero. Will recheck balance later"
             );
+            return Err(SwapsTrackerError::BalanceCheckerError)
         }
+
+        let dao_transaction = self
+            .dao
+            .begin_transaction()
+            .await
+            .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+        dao_transaction
+            .update_swap_completed(swap.id)
+            .await
+            .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+        match swap.request.origin.variant() {
+            TransactionOriginVariant::Payout(payout_id) => {
+                dao_transaction
+                    .update_payout_status(payout_id, PayoutStatus::Completed)
+                    .await
+                    .map_err(|_| SwapsTrackerError::DatabaseError)?;
+            },
+            TransactionOriginVariant::Refund(refund_id) => {
+                dao_transaction
+                    .update_refund_status(refund_id, RefundStatus::Completed)
+                    .await
+                    .map_err(|_| SwapsTrackerError::DatabaseError)?;
+            },
+            TransactionOriginVariant::InternalTransfer(_) => unreachable!(),
+            TransactionOriginVariant::None => {},
+        }
+
+        dao_transaction
+            .commit()
+            .await
+            .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+        self.store.remove_swap(swap.id);
+        tracing::info!("Swap has been filled and marked as completed in the database");
+
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn handle_swap_failed(
+        &mut self,
+        swap: &Swap,
+    ) -> Result<(), SwapsTrackerError> {
+        let dao_transaction = self
+            .dao
+            .begin_transaction()
+            .await
+            .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+        dao_transaction
+            .update_swap_failed(
+                swap.id,
+                "Swap has been failed and refunded".to_string(),
+            )
+            .await
+            .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+        match swap.request.origin.variant() {
+            TransactionOriginVariant::Payout(payout_id) => {
+                if let Some(payout) = dao_transaction
+                    .get_payout_by_id(payout_id)
+                    .await
+                    .map_err(|_| SwapsTrackerError::DatabaseError)?
+                {
+                    let mut retry_meta = payout.retry_meta;
+                    retry_meta.increment_retry("Swap has failed".to_string());
+
+                    dao_transaction
+                        .update_payout_retry(payout_id, retry_meta, true)
+                        .await
+                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
+                } else {
+                    // TODO: add logs but it shouldn't really happen
+                }
+            },
+            TransactionOriginVariant::Refund(refund_id) => {
+                if let Some(refund) = dao_transaction
+                    .get_refund_by_id(refund_id)
+                    .await
+                    .map_err(|_| SwapsTrackerError::DatabaseError)?
+                {
+                    let mut retry_meta = refund.retry_meta;
+                    retry_meta.increment_retry("Swap has failed".to_string());
+
+                    dao_transaction
+                        .update_refund_retry(refund_id, retry_meta, true)
+                        .await
+                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
+                } else {
+                    // TODO: add logs but it shouldn't really happen
+                }
+            },
+            TransactionOriginVariant::InternalTransfer(_) => unreachable!(),
+            TransactionOriginVariant::None => {},
+        }
+
+        dao_transaction
+            .commit()
+            .await
+            .map_err(|_| SwapsTrackerError::DatabaseError)?;
+
+        self.store.remove_swap(swap.id);
+        // it's expected and "normal" behaviour, so just `info` record
+        // TODO: update message?;
+        tracing::info!("Swap has failed while executing and has been refunded");
 
         Ok(())
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %swap.id, invoice_id = %swap.request.invoice_id))]
-    async fn check_bungee_swap(
+    async fn check_swap(
         &mut self,
         swap: &Swap,
     ) -> Result<(), SwapsTrackerError> {
-        tracing::trace!("Check bungee swap");
+        // TODO: match over errors, for some of them we should mark swap as failed
+        // immediately like transaction hash is not set
+        let status = self
+            .clients
+            .get_transaction_status(
+                swap.request.swap_executor,
+                &swap.swap_details,
+            )
+            .await?;
 
-        let InternalSwapDetails::Bungee(details) = &swap.swap_details else {
-            tracing::error!("Unexpected internal swap details. Expected Bungee");
-            return Ok(())
-        };
-
-        if let Some(tx_hash) = details.transaction_hash.as_ref() {
-            let result = self
-                .clients
-                .bungee_client
-                .get_swap_status(tx_hash.as_str().into())
-                .await
-                // TODO: check errors specifically?
-                .map_err(|_| SwapsTrackerError::ApiError)?;
-
-            let Some(trans) = result.first() else {
-                // TODO: perhaps mark as failed
-                tracing::warn!("Bungee API returned empty swap status");
-                return Err(SwapsTrackerError::ApiError)
-            };
-
-            match trans.bungee_status_code {
-                BungeeSwapStatus::Expired | BungeeSwapStatus::Cancelled => {
-                    // shouldn't really happen as long as it already has been sent but just in case
-                    self.dao
-                        .update_swap_failed(
-                            swap.id,
-                            "Got bungee status code expired or cancelled".to_string(),
-                        )
-                        .await
-                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
-
-                    self.store.remove_swap(swap.id);
-
-                    tracing::info!(
-                        status_code = ?trans.bungee_status_code,
-                        "Got bungee status code expired or cancelled. Swap has been marked as failed and will no longer be tracked"
-                    );
-                },
-                BungeeSwapStatus::Pending
-                | BungeeSwapStatus::Assigned
-                | BungeeSwapStatus::Extracted => {
-                    tracing::trace!("Swap still has pending status, keep watching")
-                },
-                // According to the docs, both settled and fulfilled statuses are final
-                BungeeSwapStatus::Settled | BungeeSwapStatus::Fulfilled => {
-                    self.dao
-                        .update_swap_completed(swap.id)
-                        .await
-                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
-
-                    self.store.remove_swap(swap.id);
-                    tracing::info!("Swap has been filled and marked as completed in the database")
-                },
-                BungeeSwapStatus::Refunded => {
-                    self.dao
-                        .update_swap_failed(
-                            swap.id,
-                            "Swap has been failed and refunded".to_string(),
-                        )
-                        .await
-                        .map_err(|_| SwapsTrackerError::DatabaseError)?;
-
-                    self.store.remove_swap(swap.id);
-                    // it's expected and "normal" behaviour, so just `info` record
-                    tracing::info!("Swap has failed while executing and has been refunded")
-                },
-            }
-        } else {
-            self.dao
-                .update_swap_failed(
-                    swap.id,
-                    "No transaction hash saved".to_string(),
-                )
-                .await
-                .map_err(|_| SwapsTrackerError::DatabaseError)?;
-
-            tracing::error!(
-                "Bungee swap has been marked as sent but transaction hash is empty.
-                It has been marked as failed and will no longer be tracked"
-            );
+        match status {
+            ExecutorSwapStatus::Pending => {
+                tracing::trace!("Swap still has pending status, keep watching")
+            },
+            ExecutorSwapStatus::Executed => {
+                self.handle_swap_executed(swap).await?;
+            },
+            ExecutorSwapStatus::Failed => {
+                self.handle_swap_failed(swap).await?;
+            },
         }
 
         Ok(())
@@ -259,14 +273,42 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         let swaps = self.store.get_all_swaps();
 
         for swap in swaps {
-            let result = match swap.request.swap_executor {
-                SwapExecutorType::Across => self.check_across_swap(&swap).await,
-                SwapExecutorType::Bungee => self.check_bungee_swap(&swap).await,
-            };
+            let result = self.check_swap(&swap).await;
 
             if let Err(e) = result {
                 tracing::debug!(swap_id = %swap.id, invoice_id = %swap.request.invoice_id, error = ?e, "Got an error while checking swap");
             }
+        }
+    }
+
+    async fn get_submitted_swaps(&mut self) {
+        match self.dao.get_submitted_swaps().await {
+            Ok(swaps) => {
+                if !swaps.is_empty() {
+                    let swaps_count = swaps.len();
+                    self.store.add_swaps(swaps);
+                    tracing::info!(%swaps_count, "Added submitted swaps for tracking");
+                }
+            },
+            Err(e) => tracing::warn!(
+                error = ?e,
+                "Error while fetching submitted swaps for monitoring"
+            ),
+        };
+    }
+
+    async fn get_outdated_swaps(&mut self) {
+        match self.dao.get_outdated_swaps().await {
+            Ok(swaps) => {
+                if !swaps.is_empty() {
+                    let swaps_count = swaps.len();
+                    tracing::info!(%swaps_count, "Marked swaps as abandoned");
+                }
+            },
+            Err(e) => tracing::warn!(
+                error = ?e,
+                "Error while markind swaps abandoned"
+            ),
         }
     }
 
@@ -284,15 +326,16 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS,
         ));
 
-        // First of all need to fetch pending swaps which has left after service realod.
-        // Need to either handle an error and retry loading or just panic and restart
-        // the daemon, we can't just leave those pending swaps in this state
-        // forever.
+        // TODO: First of all need to fetch pending swaps which has left after service
+        // reaload. Need to either handle an error and retry loading or just
+        // panic and restart the daemon, we can't just leave those pending swaps
+        // in this state forever.
         let pending_swaps = self
             .dao
             .get_pending_swaps()
             .await
             .unwrap();
+
         self.store.add_swaps(pending_swaps);
 
         loop {
@@ -302,19 +345,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                 },
                 _ = database_polling_interval.tick() => {
                     // TODO: also fetch swaps which has valid_till < now and are still active
-                    match self.dao.get_submitted_swaps().await {
-                        Ok(swaps) => {
-                            if !swaps.is_empty() {
-                                let swaps_count = swaps.len();
-                                self.store.add_swaps(swaps);
-                                tracing::info!(%swaps_count, "Added submitted swaps for tracking");
-                            }
-                        },
-                        Err(e) => tracing::warn!(
-                            error = ?e,
-                            "Error while fetching submitted swaps for monitoring"
-                        ),
-                    };
+                    self.get_submitted_swaps().await;
+                    self.get_outdated_swaps().await;
                 },
                 () = token.cancelled() => {
                     tracing::info!(

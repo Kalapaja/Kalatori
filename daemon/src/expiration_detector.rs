@@ -1,93 +1,58 @@
 use std::time::Duration;
 
-use kalatori_client::types::{
-    ChainType,
-    KalatoriEventExt,
-};
-use rust_decimal::Decimal;
+use kalatori_client::types::KalatoriEventExt;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
-use crate::chain::{
-    InvoiceRegistry,
-    TransactionsRecorder,
-    TransactionsRecorderError,
+use crate::balance_checker::{
+    BalanceChecker,
+    BalanceCheckerError,
 };
-use crate::chain_client::{
-    AssetHubChainConfig,
-    AssetHubClient,
-    BlockChainClient,
-    PolygonChainConfig,
-    PolygonClient,
-};
+use crate::chain::InvoiceRegistry;
 use crate::configs::PaymentsConfig;
 use crate::dao::{
     DAO,
     DaoInterface,
     DaoTransactionInterface,
 };
-use crate::etherscan_client::EtherscanClient;
 use crate::types::{
-    IncomingTransaction,
     Invoice,
     InvoiceEventType,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
+    Refund,
 };
 
 const EXPIRATION_CHECK_INTERVAL_MILLIS: u64 = 10_000;
 
 #[derive(Debug)]
 enum ExpirationDetectorError {
-    FetchBalanceFailed,
-    FetchTransfersFailed,
     DatabaseError,
 }
 
-pub struct ExpirationDetector<
-    D: DaoInterface + 'static = DAO,
-    AH: BlockChainClient<AssetHubChainConfig> + 'static = AssetHubClient,
-    PG: BlockChainClient<PolygonChainConfig> + 'static = PolygonClient,
-> {
+pub struct ExpirationDetector<D: DaoInterface + 'static = DAO> {
     dao: D,
     registry: InvoiceRegistry,
-    asset_hub_client: AH,
-    polygon_client: PG,
-    etherscan_client: EtherscanClient,
     config: PaymentsConfig,
-    transactions_recorder: TransactionsRecorder<D>,
+    balance_checker: BalanceChecker,
 }
 
-impl<
-    D: DaoInterface + 'static,
-    AH: BlockChainClient<AssetHubChainConfig> + 'static,
-    PG: BlockChainClient<PolygonChainConfig> + 'static,
-> ExpirationDetector<D, AH, PG>
-{
+impl<D: DaoInterface + 'static> ExpirationDetector<D> {
     pub fn new(
         dao: D,
         registry: InvoiceRegistry,
-        asset_hub_client: AH,
-        polygon_client: PG,
-        etherscan_client: EtherscanClient,
         config: PaymentsConfig,
-        transactions_recorder: TransactionsRecorder<D>,
+        balance_checker: BalanceChecker,
     ) -> Self {
         ExpirationDetector {
             dao,
             registry,
-            asset_hub_client,
-            polygon_client,
-            etherscan_client,
             config,
-            transactions_recorder,
+            balance_checker,
         }
     }
 
     async fn fetch_expired_invoices(&self) -> Vec<Invoice> {
-        // TODO: fetch partially paid expired invoices as well and return them together
-
         self.dao
             .get_expired_invoices()
             .await
@@ -97,207 +62,79 @@ impl<
             .unwrap_or_default()
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn get_account_balance(
-        &self,
-        chain: ChainType,
-        asset_id: &str,
-        address: &str,
-    ) -> Result<Decimal, ExpirationDetectorError> {
-        match chain {
-            // We don't expect parsing errors here, unwraps should be safe
-            ChainType::PolkadotAssetHub => {
-                self.asset_hub_client
-                    .fetch_asset_balance(
-                        &asset_id.parse().unwrap(),
-                        &address.parse().unwrap(),
-                    )
-                    .await
-            },
-            ChainType::Polygon => {
-                self.polygon_client
-                    .fetch_asset_balance(
-                        &asset_id.parse().unwrap(),
-                        &address.parse().unwrap(),
-                    )
-                    .await
-            },
-        }
-        .map_err(|e| {
-            tracing::warn!(
-                error.source = ?e,
-                "Failed to get account balance in order to compare with received amount"
-            );
-
-            ExpirationDetectorError::FetchBalanceFailed
-        })
-    }
-
-    #[tracing::instrument(skip(self))]
-    async fn get_incoming_transactions(
-        &self,
-        chain: ChainType,
-        asset_id: &str,
-        address: &str,
-        invoice_id: Uuid,
-    ) -> Result<Vec<IncomingTransaction>, ExpirationDetectorError> {
-        match chain {
-            ChainType::PolkadotAssetHub => {
-                // TODO: it's better to return some kind of error instead
-                Ok(vec![])
-            },
-            ChainType::Polygon => self
-                .etherscan_client
-                .get_account_incoming_transfers(chain, asset_id, address, invoice_id)
-                .await
-                .map_err(|e| {
-                    tracing::warn!(
-                        error = ?e,
-                        "Failed to get account incoming transfers using etherscan client"
-                    );
-
-                    ExpirationDetectorError::FetchTransfersFailed
-                }),
-        }
-    }
-
     #[tracing::instrument(
-        skip(self, invoice),
+        skip(self),
         fields(
             invoice_id = %invoice.invoice.id,
-            received_amount = %invoice.total_received_amount,
+            total_received_amount = %invoice.total_received_amount,
+            invoice_status = %invoice.invoice.status,
         )
     )]
-    async fn get_and_store_transactions(
-        &self,
-        mut invoice: InvoiceWithReceivedAmount,
-        balance: Decimal,
-    ) -> Result<(), ExpirationDetectorError> {
-        let received_amount = invoice.total_received_amount;
-        let invoice_id = invoice.invoice.id;
-        let chain = invoice.invoice.chain;
-        let asset_id = &invoice.invoice.asset_id;
-        let address = &invoice.invoice.payment_address;
-
-        tracing::warn!("Detected inconsistency in recorded received amount and account balance");
-
-        let incoming_transactions = self
-            .get_incoming_transactions(
-                chain,
-                asset_id,
-                address,
-                invoice_id
-            )
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    error = ?e,
-                    "Error while trying to get incoming transactions from indexers, invoice will not be marked as expired yet"
-                );
-
-                ExpirationDetectorError::FetchTransfersFailed
-            })?;
-
-        let total_amount: Decimal = incoming_transactions
-            .iter()
-            .map(|trans| trans.transfer_info.amount)
-            .sum();
-
-        if total_amount != balance {
-            // TODO: build event and send it as a webhook. It'll be a way to
-            // notify admin that something goes wrong and require manual intervention
-            tracing::error!(
-                transactions_amount_sum = ?total_amount,
-                "Account balance amount is not equal to sum of its incoming transactions"
-            );
-        }
-
-        if received_amount != total_amount {
-            tracing::warn!(
-                transactions_amount_sum = ?total_amount,
-                "Recorded received amount (sum of incoming transactions amounts stored in database) is not equal to sum of incoming transactions fetched from indexer. Probably some transactions have been missing, store them now"
-            );
-
-            for transaction in incoming_transactions {
-                // TODO: On transaction update, it can become partially paid or paid
-                // If it's partially paid, it still remains expired (we don't extend valid till
-                // period) so we probably need to handle that case and initiate
-                // refund. Perhaps it will happen on the next iteration
-                // automatically? Need to check it out when refunds will be implemented
-                match self
-                    .transactions_recorder
-                    .process_invoice_transaction(&mut invoice, transaction)
-                    .await
-                {
-                    Ok(()) => tracing::info!("Missing transaction has been recorded in database"),
-                    Err(TransactionsRecorderError::TransactionDuplication {
-                        ..
-                    }) => tracing::debug!("Transaction is already presented in the database"),
-                    Err(_) => tracing::warn!(
-                        "Database error occurred while trying to record potentially missing transaction"
-                    ),
-                };
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn check_invoice_balance(
+    async fn update_invoice_expired(
         &self,
         invoice: InvoiceWithReceivedAmount,
     ) -> Result<(), ExpirationDetectorError> {
-        let received_amount = invoice.total_received_amount;
         let invoice_id = invoice.invoice.id;
-        let chain = invoice.invoice.chain;
-        let asset_id = &invoice.invoice.asset_id;
-        let address = &invoice.invoice.payment_address;
+        let invoice_status = invoice.invoice.status;
 
-        let balance = self
-            .get_account_balance(chain, asset_id, address)
-            .await?;
+        let dao_transaction = self
+            .dao
+            .begin_transaction()
+            .await
+            .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
 
-        if received_amount != balance {
-            self.get_and_store_transactions(invoice, balance)
-                .await?;
-        } else {
-            let event = invoice
-                .into_public_invoice(&self.config.payment_url_base)
-                .build_event(InvoiceEventType::Expired)
-                .into();
+        let new_status = if invoice_status == InvoiceStatus::PartiallyPaid {
+            let refund = Refund::from_invoice(
+                invoice.invoice.clone(),
+                invoice.total_received_amount,
+            );
 
-            let dao_transaction = self
-                .dao
-                .begin_transaction()
+            let refund = dao_transaction
+                .create_refund(refund)
                 .await
                 .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
-
-            dao_transaction
-                .create_webhook_event(event)
-                .await
-                .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
-
-            // TODO: we currently handle only unpaid expired invoices, will need also handle
-            // partially paid expired
-            dao_transaction
-                .update_invoice_status(invoice_id, InvoiceStatus::UnpaidExpired)
-                .await
-                .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
-
-            dao_transaction
-                .commit()
-                .await
-                .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
-
-            self.registry
-                .remove_invoice(&invoice_id)
-                .await;
 
             tracing::info!(
-                %invoice_id,
-                "Invoice has been marked as expired"
+                refund_id = %refund.id,
+                "Invoice has been partially paid, refund for respective amount created"
             );
-        }
+
+            InvoiceStatus::PartiallyPaidExpired
+        } else if invoice_status == InvoiceStatus::Waiting {
+            tracing::trace!("Invoice hasn't been paid at all, no need to refund anything");
+            InvoiceStatus::UnpaidExpired
+        } else {
+            tracing::error!(
+                "Unexpected invoice status, interrupt expiration operation. It might require manual intervention"
+            );
+            return Err(ExpirationDetectorError::DatabaseError)
+        };
+
+        dao_transaction
+            .update_invoice_status(invoice_id, new_status)
+            .await
+            .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
+
+        let event = invoice
+            .into_public_invoice(&self.config.payment_url_base)
+            .build_event(InvoiceEventType::Expired)
+            .into();
+
+        dao_transaction
+            .create_webhook_event(event)
+            .await
+            .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
+
+        dao_transaction
+            .commit()
+            .await
+            .map_err(|_e| ExpirationDetectorError::DatabaseError)?;
+
+        self.registry
+            .remove_invoice(&invoice_id)
+            .await;
+
+        tracing::info!("Invoice has been marked as expired");
 
         Ok(())
     }
@@ -326,31 +163,44 @@ impl<
         }
 
         for invoice in expired_invoices {
-            let Some(invoice_with_amount) = self
-                .registry
-                .get_invoice(&invoice.id)
-                .await
-            else {
-                tracing::error!(
-                    invoice_id = %invoice.id,
-                    "An invoice which should be marked as expired is not found in registry"
-                );
-                // TODO: in that case we probably should try to fetch invoice with amounts from
-                // database
-
-                continue
-            };
+            let invoice_id = invoice.id;
 
             match self
-                .check_invoice_balance(invoice_with_amount)
+                .balance_checker
+                .check_invoice_balance(invoice_id)
                 .await
             {
-                Ok(()) => tracing::info!(
-                    invoice_id = %invoice.id,
-                    "Expired invoice has been processed successfully"
-                ),
+                Ok(invoice) => {
+                    // Check only final, it should be enough as long as we fetch only Waiting
+                    // invoices here
+                    if !invoice.invoice.status.is_final() {
+                        if let Err(e) = self
+                            .update_invoice_expired(invoice)
+                            .await
+                        {
+                            tracing::warn!(
+                                %invoice_id,
+                                error = ?e,
+                                "Failed to update invoice status to Expired in database, will retry later"
+                            );
+                        } else {
+                            tracing::info!(
+                                %invoice_id,
+                                "Expired invoice has been processed successfully"
+                            );
+                        }
+                    }
+                },
+                Err(BalanceCheckerError::InvoiceNotFound {
+                    invoice_id,
+                }) => {
+                    tracing::error!(
+                        %invoice_id,
+                        "Invoice with that id wasn't by balance checker"
+                    );
+                },
                 Err(e) => tracing::warn!(
-                    invoice_id = %invoice.id,
+                    %invoice.id,
                     invoice_status = %invoice.status,
                     error = ?e,
                     "Error while trying process expired invoice. It remains with previous status"
