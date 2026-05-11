@@ -13,6 +13,7 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use strum::IntoEnumIterator;
 
 use crate::chain::utils::to_base58_string;
 use crate::types::{

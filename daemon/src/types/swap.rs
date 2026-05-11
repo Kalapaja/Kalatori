@@ -13,6 +13,10 @@ use serde_with::{
     serde_as,
 };
 use sqlx::Type;
+use strum::{
+    Display,
+    EnumString,
+};
 use uuid::Uuid;
 
 use crate::clients::{
@@ -62,40 +66,12 @@ pub struct CreateSwapParams {
     pub expected_to_amount_units: Option<u128>, // if None, will calculate invoice's unpaid amount
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
 pub enum SwapExecutorType {
     Across,
     Bungee,
     ZeroEx,
     ZeroExGasless,
-}
-
-impl std::fmt::Display for SwapExecutorType {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
-        match self {
-            Self::Across => write!(f, "Across"),
-            Self::Bungee => write!(f, "Bungee"),
-            Self::ZeroEx => write!(f, "ZeroEx"),
-            Self::ZeroExGasless => write!(f, "ZeroExGasless"),
-        }
-    }
-}
-
-impl std::str::FromStr for SwapExecutorType {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Across" => Ok(Self::Across),
-            "Bungee" => Ok(Self::Bungee),
-            "ZeroEx" => Ok(Self::ZeroEx),
-            "ZeroExGasless" => Ok(Self::ZeroExGasless),
-            _ => Err("Unknown swap executor type: {s}".to_string()),
-        }
-    }
 }
 
 impl SwapExecutorType {
@@ -121,7 +97,7 @@ impl SwapExecutorType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
 pub enum SwapChainType {
     Abstract,
     Arbitrum,
@@ -209,86 +185,6 @@ impl TryFrom<u64> for SwapChainType {
     }
 }
 
-impl std::fmt::Display for SwapChainType {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
-        use SwapChainType::*;
-
-        match self {
-            Abstract => write!(f, "Abstract"),
-            Arbitrum => write!(f, "Arbitrum"),
-            Avalanche => write!(f, "Avalanche"),
-            Base => write!(f, "Base"),
-            Berachain => write!(f, "Berachain"),
-            Blast => write!(f, "Blast"),
-            BnbSmartChain => write!(f, "BnbSmartChain"),
-            Ethereum => write!(f, "Ethereum"),
-            HyperEvm => write!(f, "HyperEvm"),
-            Ink => write!(f, "Ink"),
-            Lens => write!(f, "Lens"),
-            Linea => write!(f, "Linea"),
-            Lisk => write!(f, "Lisk"),
-            MegaEth => write!(f, "MegaEth"),
-            Mantle => write!(f, "Mantle"),
-            Mode => write!(f, "Mode"),
-            Monad => write!(f, "Monad"),
-            Optimism => write!(f, "Optimism"),
-            Plasma => write!(f, "Plasma"),
-            Polygon => write!(f, "Polygon"),
-            Scroll => write!(f, "Scroll"),
-            Sonic => write!(f, "Sonic"),
-            Soneium => write!(f, "Soneium"),
-            Solana => write!(f, "Solana"),
-            Unichain => write!(f, "Unichain"),
-            Tempo => write!(f, "Tempo"),
-            WorldChain => write!(f, "WorldChain"),
-            ZkSync => write!(f, "ZkSync"),
-            Zora => write!(f, "Zora"),
-        }
-    }
-}
-
-impl std::str::FromStr for SwapChainType {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Abstract" => Ok(Self::Abstract),
-            "Arbitrum" => Ok(Self::Arbitrum),
-            "Avalanche" => Ok(Self::Avalanche),
-            "Base" => Ok(Self::Base),
-            "Berachain" => Ok(Self::Berachain),
-            "Blast" => Ok(Self::Blast),
-            "BnbSmartChain" => Ok(Self::BnbSmartChain),
-            "Ethereum" => Ok(Self::Ethereum),
-            "HyperEvm" => Ok(Self::HyperEvm),
-            "Ink" => Ok(Self::Ink),
-            "Lens" => Ok(Self::Lens),
-            "Linea" => Ok(Self::Linea),
-            "Lisk" => Ok(Self::Lisk),
-            "MegaEth" => Ok(Self::MegaEth),
-            "Mantle" => Ok(Self::Mantle),
-            "Mode" => Ok(Self::Mode),
-            "Monad" => Ok(Self::Monad),
-            "Optimism" => Ok(Self::Optimism),
-            "Plasma" => Ok(Self::Plasma),
-            "Polygon" => Ok(Self::Polygon),
-            "Scroll" => Ok(Self::Scroll),
-            "Sonic" => Ok(Self::Sonic),
-            "Soneium" => Ok(Self::Soneium),
-            "Solana" => Ok(Self::Solana),
-            "Tempo" => Ok(Self::Tempo),
-            "Unichain" => Ok(Self::Unichain),
-            "WorldChain" => Ok(Self::WorldChain),
-            "ZkSync" => Ok(Self::ZkSync),
-            "Zora" => Ok(Self::Zora),
-            _ => Err(format!("Unknown swap chain: {s}")),
-        }
-    }
-}
-
 impl SwapChainType {
     pub fn chain_id(&self) -> u64 {
         use SwapChainType::*;
@@ -327,7 +223,7 @@ impl SwapChainType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
 pub enum SwapStatus {
     /// An order has been created but not submitted
     Created,
@@ -341,38 +237,6 @@ pub enum SwapStatus {
     Failed,
     /// Swap has been requested but not approved/sent
     Abandoned,
-}
-
-impl std::fmt::Display for SwapStatus {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
-        match self {
-            Self::Created => write!(f, "Created"),
-            Self::Submitted => write!(f, "Submitted"),
-            Self::Pending => write!(f, "Pending"),
-            Self::Completed => write!(f, "Completed"),
-            Self::Failed => write!(f, "Failed"),
-            Self::Abandoned => write!(f, "Abandoned"),
-        }
-    }
-}
-
-impl std::str::FromStr for SwapStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Created" => Ok(Self::Created),
-            "Submitted" => Ok(Self::Submitted),
-            "Pending" => Ok(Self::Pending),
-            "Completed" => Ok(Self::Completed),
-            "Failed" => Ok(Self::Failed),
-            "Abandoned" => Ok(Self::Abandoned),
-            _ => Err(format!("Unknown swap status: {s}")),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

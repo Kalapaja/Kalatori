@@ -1,5 +1,3 @@
-use std::fmt;
-
 use chrono::{
     DateTime,
     Utc,
@@ -9,6 +7,10 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use strum::{
+    Display,
+    EnumString,
+};
 use uuid::Uuid;
 
 use super::{
@@ -16,7 +18,7 @@ use super::{
     Transaction,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 #[cfg_attr(feature = "sqlx-types", derive(sqlx::Type))]
 pub enum InvoiceStatus {
     // Active statuses
@@ -61,43 +63,6 @@ impl InvoiceStatus {
             self,
             Self::CustomerCanceled | Self::AdminCanceled
         )
-    }
-}
-
-impl fmt::Display for InvoiceStatus {
-    fn fmt(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        match self {
-            Self::Waiting => write!(f, "Waiting"),
-            Self::PartiallyPaid => write!(f, "PartiallyPaid"),
-            Self::Paid => write!(f, "Paid"),
-            Self::OverPaid => write!(f, "OverPaid"),
-            Self::UnpaidExpired => write!(f, "UnpaidExpired"),
-            Self::PartiallyPaidExpired => write!(f, "PartiallyPaidExpired"),
-            Self::CustomerCanceled => write!(f, "CustomerCanceled"),
-            Self::AdminCanceled => write!(f, "AdminCanceled"),
-        }
-    }
-}
-
-impl std::str::FromStr for InvoiceStatus {
-    // TODO: use a custom error type
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Waiting" => Ok(Self::Waiting),
-            "PartiallyPaid" => Ok(Self::PartiallyPaid),
-            "Paid" => Ok(Self::Paid),
-            "OverPaid" => Ok(Self::OverPaid),
-            "UnpaidExpired" => Ok(Self::UnpaidExpired),
-            "PartiallyPaidExpired" => Ok(Self::PartiallyPaidExpired),
-            "CustomerCanceled" => Ok(Self::CustomerCanceled),
-            "AdminCanceled" => Ok(Self::AdminCanceled),
-            _ => Err(format!("Unknown invoice status: {s}")),
-        }
     }
 }
 

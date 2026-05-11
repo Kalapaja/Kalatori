@@ -1,5 +1,3 @@
-use std::fmt;
-
 use chrono::{
     DateTime,
     Utc,
@@ -14,6 +12,10 @@ use sqlx::{
     FromRow,
     Type,
 };
+use strum::{
+    Display,
+    EnumString,
+};
 use uuid::Uuid;
 
 use super::common::{
@@ -24,43 +26,13 @@ use super::common::{
 use super::invoice::Invoice;
 use super::swap::SwapChainType;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
 pub enum RefundStatus {
     Waiting,
     InProgress,
     Completed,
     FailedRetriable,
     Failed,
-}
-
-impl fmt::Display for RefundStatus {
-    fn fmt(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        match self {
-            Self::Waiting => write!(f, "Waiting"),
-            Self::InProgress => write!(f, "InProgress"),
-            Self::Completed => write!(f, "Completed"),
-            Self::FailedRetriable => write!(f, "FailedRetriable"),
-            Self::Failed => write!(f, "Failed"),
-        }
-    }
-}
-
-impl std::str::FromStr for RefundStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Waiting" => Ok(Self::Waiting),
-            "InProgress" => Ok(Self::InProgress),
-            "Completed" => Ok(Self::Completed),
-            "FailedRetriable" => Ok(Self::FailedRetriable),
-            "Failed" => Ok(Self::Failed),
-            _ => Err(format!("Unknown refund status: {s}")),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
