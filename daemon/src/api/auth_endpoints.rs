@@ -7,6 +7,8 @@
 //!   server's authorize endpoint.
 //! - `GET /auth/session` — returns the current session info (email, role, exp)
 //!   for API clients, or 401 if unauthenticated.
+//! - `POST /auth/logout` — clears the session cookie. PASETO tokens have no
+//!   server-side revocation, so this is purely a client-side invalidation.
 
 use std::sync::Arc;
 
@@ -34,6 +36,7 @@ use crate::auth::session::{
     AuthState,
     COOKIE_MAX_AGE_SECS,
     COOKIE_NAME,
+    clear_cookie_header,
     extract_session_cookie,
 };
 use crate::utils::logging::{
@@ -183,6 +186,60 @@ pub async fn session_handler(
         },
         Err(_) => session_error_json(),
     }
+}
+
+// ============================================================================
+// POST /auth/logout
+// ============================================================================
+
+/// Clear the session cookie. PASETO tokens are not revoked server-side, so the
+/// cookie is the only handle the browser has on the session — removing it
+/// invalidates the session for this client.
+///
+/// Best-effort verifies the cookie to log who logged out. An invalid or
+/// missing cookie still clears the cookie and returns 200 (idempotent).
+pub async fn logout_handler(
+    State(auth): State<Arc<AuthState>>,
+    headers: HeaderMap,
+) -> Response {
+    let claims = extract_session_cookie(&headers).and_then(|token| {
+        crate::auth::token::verify_token(
+            &token,
+            auth.oauth_client.public_keys(),
+            auth.oauth_client.auth_server_url(),
+            auth.oauth_client.client_id(),
+        )
+        .ok()
+    });
+
+    if let Some(c) = claims.as_ref() {
+        tracing::info!(
+            error.category = category::AUTH,
+            error.operation = operation::LOGOUT,
+            user.sub = %c.sub,
+            user.email = %c.email,
+            user.role = ?c.role,
+            "Logout — clearing session cookie"
+        );
+    } else {
+        tracing::info!(
+            error.category = category::AUTH,
+            error.operation = operation::LOGOUT,
+            "Logout — no valid session (missing or invalid cookie); clearing anyway"
+        );
+    }
+
+    let mut response = (
+        StatusCode::OK,
+        axum::Json(ApiResultStructured::<()>::Ok {
+            result: (),
+        }),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, clear_cookie_header());
+    response
 }
 
 /// JSON 401 response for unauthenticated session queries.

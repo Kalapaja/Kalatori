@@ -249,7 +249,7 @@ fn set_session_cookie(
 }
 
 /// Build a `Set-Cookie` header that clears the session cookie.
-fn clear_cookie_header() -> HeaderValue {
+pub(crate) fn clear_cookie_header() -> HeaderValue {
     let value = format!("{COOKIE_NAME}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
     HeaderValue::from_str(&value).expect("clear cookie header should be valid ASCII")
 }

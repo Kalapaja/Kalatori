@@ -14,6 +14,7 @@ pub mod category {
 pub mod operation {
     // Auth operations
     pub const LOGIN: &str = "login";
+    pub const LOGOUT: &str = "logout";
     pub const CODE_EXCHANGE: &str = "code_exchange";
     pub const TOKEN_REFRESH: &str = "token_refresh";
 
