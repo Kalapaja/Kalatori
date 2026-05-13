@@ -1,11 +1,18 @@
-name: Validate release
+name: Validate release tag
+
+# Runs on tag push from release.yml. Asserts that the codebase state at the
+# tagged commit is consistent with what the tag claims to release:
+#   1. daemon/Cargo.toml version is valid semver
+#   2. Cargo.toml version equals the pushed tag (catches "tagged without bump")
+#   3. Pushed tag is greater than the previous tag (monotonic releases)
+#   4. CHANGELOG.md has an entry for this version
 
 on:
   workflow_call:
 
 jobs:
   validate:
-    name: Validate release PR
+    name: Validate release tag
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -16,57 +23,54 @@ jobs:
       - name: Fetch all tags
         run: git fetch --tags origin
 
-      - name: Validate source branch
-        env:
-          HEAD_REF: ${{ github.head_ref }}
+      - name: Extract tag version
+        id: tag
         run: |
-          if [[ "$HEAD_REF" != "develop" && "$HEAD_REF" != "dev" && ! "$HEAD_REF" =~ ^hotfix- ]]; then
-            echo "::error::Only 'develop', 'dev', or 'hotfix-*' branches can target main. Got: '$HEAD_REF'"
-            exit 1
-          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag version: $VERSION"
 
-      - name: Extract and validate version
-        id: version
+      - name: Extract Cargo.toml version
+        id: cargo
         run: |
           VERSION=$(grep '^version' daemon/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Cargo.toml version: $VERSION"
 
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
             echo "::error::Version '$VERSION' is not valid semver"
             exit 1
           fi
 
-          echo "Extracted version: $VERSION"
-
-      - name: Check tag does not already exist
+      - name: Tag must match Cargo.toml version
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
-            echo "::error::Tag v${VERSION} already exists. Bump the version in daemon/Cargo.toml."
+          TAG_VERSION="${{ steps.tag.outputs.version }}"
+          CARGO_VERSION="${{ steps.cargo.outputs.version }}"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match daemon/Cargo.toml version $CARGO_VERSION. Bump Cargo.toml before tagging."
             exit 1
           fi
 
-      - name: Check version increments over latest tag
+      - name: Tag must be newer than previous tag
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1 || true)
-          if [ -n "$LATEST_TAG" ]; then
-            LATEST_VERSION="${LATEST_TAG#v}"
-            echo "Latest tag: $LATEST_TAG (version: $LATEST_VERSION)"
-            echo "New version: $VERSION"
+          TAG_VERSION="${{ steps.tag.outputs.version }}"
+          PREV=$(git tag --list 'v*' --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)
+          if [ -n "$PREV" ]; then
+            echo "Previous tag: $PREV"
+            echo "New tag: ${GITHUB_REF_NAME}"
 
-            HIGHER=$(printf '%s\n%s' "$LATEST_VERSION" "$VERSION" | sort -V | tail -1)
-            if [ "$HIGHER" = "$LATEST_VERSION" ]; then
-              echo "::error::Version $VERSION does not increment over latest tag $LATEST_TAG"
+            HIGHER=$(printf '%s\n%s' "${PREV#v}" "$TAG_VERSION" | sort -V | tail -1)
+            if [ "v$HIGHER" = "$PREV" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not increment over previous tag $PREV"
               exit 1
             fi
           else
-            echo "No existing tags found, skipping increment check"
+            echo "No previous tags found, skipping increment check"
           fi
 
       - name: Validate changelog entry
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ steps.cargo.outputs.version }}"
           if ! grep -qE "^## \[${VERSION}\]" CHANGELOG.md; then
             echo "::error::CHANGELOG.md is missing a '## [${VERSION}]' heading"
             exit 1

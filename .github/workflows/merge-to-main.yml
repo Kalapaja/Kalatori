@@ -13,3 +13,15 @@ jobs:
 
   integration-test:
     uses: ./.github/workflows/_job-integration-test.yml
+
+  docker-build:
+    needs: [cargo-test, integration-test]
+    uses: ./.github/workflows/_job-docker-build.yml
+    with:
+      image_tags: >-
+        ghcr.io/${{ github.repository_owner }}/kalatori-dev:${{ github.sha }},
+        ghcr.io/${{ github.repository_owner }}/kalatori-dev:latest,
+      push: true
+    permissions:
+      contents: read
+      packages: write
