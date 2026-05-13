@@ -236,9 +236,10 @@ pub async fn logout_handler(
         }),
     )
         .into_response();
-    response
-        .headers_mut()
-        .append(header::SET_COOKIE, clear_cookie_header());
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        clear_cookie_header(),
+    );
     response
 }
 
