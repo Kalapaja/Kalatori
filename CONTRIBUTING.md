@@ -80,7 +80,7 @@ The flow is a normal PR followed by a tag:
     ```
 
    Pushing the tag triggers the `Release` workflow:
-   - `release-validate` checks that `daemon/Cargo.toml` equals `v2.1.2`, the tag is greater than the previous tag, and `CHANGELOG.md` has a `## [2.1.2]` heading.
+   - `release-validate` checks that `daemon/Cargo.toml` version (`2.1.2`) matches the pushed tag (`v2.1.2`), that `v2.1.2` is the highest existing tag, and that `CHANGELOG.md` has a `## [2.1.2]` heading.
    - On success, the workflow runs the test suite, builds and pushes `ghcr.io/<owner>/kalatori:2.1.2` + `:latest`, and publishes a GitHub release with the changelog body.
 
    If `release-validate` fails, delete the tag (`git push origin :v2.1.2 && git tag -d v2.1.2`), fix the inconsistency on `main` via another PR, and retag.

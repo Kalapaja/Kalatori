@@ -3,8 +3,8 @@ name: Validate release tag
 # Runs on tag push from release.yml. Asserts that the codebase state at the
 # tagged commit is consistent with what the tag claims to release:
 #   1. daemon/Cargo.toml version is valid semver
-#   2. Cargo.toml version equals the pushed tag (catches "tagged without bump")
-#   3. Pushed tag is greater than the previous tag (monotonic releases)
+#   2. daemon/Cargo.toml version equals the pushed tag (catches "tagged without bump")
+#   3. Pushed tag is the highest existing tag (monotonic releases)
 #   4. CHANGELOG.md has an entry for this version
 
 on:
@@ -42,30 +42,27 @@ jobs:
             exit 1
           fi
 
-      - name: Tag must match Cargo.toml version
+      - name: Tag must match daemon/Cargo.toml version
         run: |
           TAG_VERSION="${{ steps.tag.outputs.version }}"
           CARGO_VERSION="${{ steps.cargo.outputs.version }}"
           if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match daemon/Cargo.toml version $CARGO_VERSION. Bump Cargo.toml before tagging."
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match daemon/Cargo.toml version $CARGO_VERSION. Bump daemon/Cargo.toml before tagging."
             exit 1
           fi
 
-      - name: Tag must be newer than previous tag
+      - name: Tag must be the highest existing tag
         run: |
-          TAG_VERSION="${{ steps.tag.outputs.version }}"
-          PREV=$(git tag --list 'v*' --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)
-          if [ -n "$PREV" ]; then
-            echo "Previous tag: $PREV"
-            echo "New tag: ${GITHUB_REF_NAME}"
-
-            HIGHER=$(printf '%s\n%s' "${PREV#v}" "$TAG_VERSION" | sort -V | tail -1)
-            if [ "v$HIGHER" = "$PREV" ]; then
-              echo "::error::Tag ${GITHUB_REF_NAME} does not increment over previous tag $PREV"
-              exit 1
-            fi
-          else
-            echo "No previous tags found, skipping increment check"
+          NEWEST=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          if [ -z "$NEWEST" ]; then
+            echo "No tags found — this shouldn't happen on a tag push"
+            exit 1
+          fi
+          echo "Newest tag: $NEWEST"
+          echo "Pushed tag: ${GITHUB_REF_NAME}"
+          if [ "$NEWEST" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} is not the highest tag (newest is $NEWEST). Bump daemon/Cargo.toml to a version greater than ${NEWEST#v}."
+            exit 1
           fi
 
       - name: Validate changelog entry
