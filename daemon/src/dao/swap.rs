@@ -684,7 +684,6 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
 
         push_swap_filters(&mut builder, params);
 
-
         builder.push(" ORDER BY s.created_at ");
         builder.push(params.sort_order.as_sql());
 

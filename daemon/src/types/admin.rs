@@ -57,7 +57,8 @@ pub struct ListInvoicesParams {
     #[serde(flatten)]
     pub pagination: PaginationParams,
 
-    /// Universal search by order ID, invoice ID, invoice amount and cart item name.
+    /// Universal search by order ID, invoice ID, invoice amount and cart item
+    /// name.
     pub search: Option<String>,
 
     /// Comma-separated list of statuses to filter by (e.g. `Waiting,Paid`).

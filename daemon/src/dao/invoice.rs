@@ -10,8 +10,8 @@ use crate::dao::error_parsing::parse_update_not_allowed_error;
 use crate::types::{
     CreateInvoiceData,
     Invoice,
-    InvoiceSortBy,
     InvoiceRow,
+    InvoiceSortBy,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
     ListInvoicesParams,
@@ -583,7 +583,7 @@ fn push_invoice_filters(
         builder.push(
             " OR EXISTS (\
                 SELECT 1 FROM json_each(i.cart, '$.items') AS item \
-                WHERE lower(item.value ->> '$.name') LIKE "
+                WHERE lower(item.value ->> '$.name') LIKE ",
         );
         builder.push_bind(pattern);
         builder.push(")");
@@ -2032,7 +2032,9 @@ mod tests {
             id,
             order_id: order_id.to_string(),
             amount,
-            cart: InvoiceCart { items: cart_items },
+            cart: InvoiceCart {
+                items: cart_items,
+            },
             ..default_create_invoice_data()
         }
     }
@@ -2128,12 +2130,21 @@ mod tests {
             search: Some("RED".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 1);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].invoice.order_id, "ORDER-RED-001");
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-RED-001"
+        );
     }
 
     /// Needle hits `hex(id)` only — "bbbb" doesn't appear in any order_id,
@@ -2147,12 +2158,21 @@ mod tests {
             search: Some("bbbb".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 1);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].invoice.order_id, "ORDER-BLUE-002");
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-BLUE-002"
+        );
     }
 
     /// Needle hits `amount` only — "777" doesn't appear in any UUID hex (hex
@@ -2166,12 +2186,21 @@ mod tests {
             search: Some("777".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 1);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].invoice.order_id, "ORDER-GREEN-003");
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-GREEN-003"
+        );
     }
 
     /// Needle hits a cart item `name` only — and crucially does NOT match
@@ -2186,12 +2215,21 @@ mod tests {
             search: Some("magnif".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 1);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].invoice.order_id, "ORDER-CYAN-004");
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-CYAN-004"
+        );
     }
 
     /// Both directions of case mismatch: lowercase needle vs. uppercase data
@@ -2206,17 +2244,29 @@ mod tests {
             search: Some("red".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].invoice.order_id, "ORDER-RED-001");
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-RED-001"
+        );
 
         let params = ListInvoicesParams {
             search: Some("MAGNIF".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].invoice.order_id, "ORDER-CYAN-004");
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-CYAN-004"
+        );
     }
 
     /// Needle hits nothing → empty result, count 0.
@@ -2229,8 +2279,14 @@ mod tests {
             search: Some("zzz-nothing".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 0);
         assert!(result.is_empty());
@@ -2249,11 +2305,20 @@ mod tests {
             status: Some(vec![InvoiceStatus::AdminCanceled]),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 1);
-        assert_eq!(result[0].invoice.order_id, "ORDER-CYAN-004");
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-CYAN-004"
+        );
 
         // search hit ∩ non-matching status → empty
         let params = ListInvoicesParams {
@@ -2261,8 +2326,14 @@ mod tests {
             status: Some(vec![InvoiceStatus::Waiting]),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 0);
         assert!(result.is_empty());
@@ -2280,11 +2351,20 @@ mod tests {
             search: Some("PINK".to_string()),
             ..Default::default()
         };
-        let result = dao.get_invoices_paginated(&params).await.unwrap();
-        let count = dao.count_invoices(&params).await.unwrap();
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
 
         assert_eq!(count, 1);
-        assert_eq!(result[0].invoice.order_id, "ORDER-PINK-005");
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-PINK-005"
+        );
         assert!(result[0].invoice.cart.is_empty());
     }
 }
