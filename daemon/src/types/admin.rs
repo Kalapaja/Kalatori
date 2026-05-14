@@ -31,6 +31,25 @@ use super::{
     TransactionType,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvoiceSortBy {
+    #[default]
+    CreatedAt,
+    Amount,
+}
+
+impl InvoiceSortBy {
+    pub fn as_sql(&self) -> &'static str {
+        match self {
+            // amount is stored as TEXT (sqlx Text<Decimal>); CAST so SQLite
+            // sorts numerically rather than lexicographically.
+            Self::Amount => "CAST(i.amount AS REAL)",
+            Self::CreatedAt => "i.created_at",
+        }
+    }
+}
+
 /// Query parameters for `GET /admin/invoices`.
 #[serde_as]
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -60,8 +79,13 @@ pub struct ListInvoicesParams {
     /// Filter invoices created on or before this timestamp.
     pub created_to: Option<DateTime<Utc>>,
 
-    /// Sort direction for `created_at` (default: `desc`).
-    pub sort_order: Option<SortOrder>,
+    /// Sort field (default: `created_at`)
+    #[serde(default)]
+    pub sort_by: InvoiceSortBy,
+
+    /// Sort direction for the column selected by `sort_by` (default: `desc`).
+    #[serde(default)]
+    pub sort_order: SortOrder,
 }
 
 /// Query parameters for `GET /admin/payouts`.
@@ -92,7 +116,8 @@ pub struct ListPayoutsParams {
     pub created_to: Option<DateTime<Utc>>,
 
     /// Sort direction for `created_at` (default: `desc`).
-    pub sort_order: Option<SortOrder>,
+    #[serde(default)]
+    pub sort_order: SortOrder,
 }
 
 /// Query parameters for `GET /admin/swaps`.
@@ -120,7 +145,8 @@ pub struct ListSwapsParams {
     pub created_to: Option<DateTime<Utc>>,
 
     /// Sort direction for `created_at` (default: `desc`).
-    pub sort_order: Option<SortOrder>,
+    #[serde(default)]
+    pub sort_order: SortOrder,
 }
 
 /// Query parameters for `GET /admin/transactions`.
@@ -154,7 +180,8 @@ pub struct ListTransactionsParams {
     pub created_to: Option<DateTime<Utc>>,
 
     /// Sort direction for `created_at` (default: `desc`).
-    pub sort_order: Option<SortOrder>,
+    #[serde(default)]
+    pub sort_order: SortOrder,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -684,10 +684,9 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
 
         push_swap_filters(&mut builder, params);
 
-        let sort_order = params.sort_order.unwrap_or_default();
 
         builder.push(" ORDER BY s.created_at ");
-        builder.push(sort_order.as_sql());
+        builder.push(params.sort_order.as_sql());
 
         let per_page = params.pagination.validated_per_page();
         let offset = params.pagination.offset();
@@ -1428,7 +1427,7 @@ mod tests {
         seed_swaps(&dao).await;
 
         let params = ListSwapsParams {
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao

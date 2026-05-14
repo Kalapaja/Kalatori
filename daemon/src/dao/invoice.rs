@@ -10,6 +10,7 @@ use crate::dao::error_parsing::parse_update_not_allowed_error;
 use crate::types::{
     CreateInvoiceData,
     Invoice,
+    InvoiceSortBy,
     InvoiceRow,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
@@ -489,10 +490,15 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
 
         push_invoice_filters(&mut builder, params);
 
-        let sort_order = params.sort_order.unwrap_or_default();
+        builder.push(" GROUP BY i.id ORDER BY ");
+        builder.push(params.sort_by.as_sql());
+        builder.push(" ");
+        builder.push(params.sort_order.as_sql());
 
-        builder.push(" GROUP BY i.id ORDER BY i.created_at ");
-        builder.push(sort_order.as_sql());
+        if params.sort_by != InvoiceSortBy::CreatedAt {
+            builder.push(", i.created_at ");
+            builder.push(params.sort_order.as_sql());
+        }
 
         let per_page = params.pagination.validated_per_page();
         let offset = params.pagination.offset();
@@ -1484,7 +1490,7 @@ mod tests {
         seed_invoices(&dao).await;
 
         let params = ListInvoicesParams {
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
@@ -1511,7 +1517,7 @@ mod tests {
         seed_invoices(&dao).await;
 
         let params = ListInvoicesParams {
-            sort_order: Some(SortOrder::Desc),
+            sort_order: SortOrder::Desc,
             ..Default::default()
         };
         let result = dao
@@ -1532,6 +1538,78 @@ mod tests {
         assert_eq!(result.len(), 8);
     }
 
+    /// Sort by amount ASC. The full sequence assertion doubles as a
+    /// regression test for the `CAST(... AS REAL)` in `InvoiceSortBy::as_sql`:
+    /// without it SQLite would sort lexicographically, placing "100.00" before
+    /// "42.00" and breaking the expected order.
+    #[tokio::test]
+    async fn test_paginated_sort_by_amount_asc() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            sort_by: InvoiceSortBy::Amount,
+            sort_order: SortOrder::Asc,
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+
+        let amounts: Vec<Decimal> = result
+            .iter()
+            .map(|r| r.invoice.amount)
+            .collect();
+        assert_eq!(
+            amounts,
+            vec![
+                Decimal::new(4200, 2),  // inv6: 42.00
+                Decimal::new(7500, 2),  // inv3: 75.00
+                Decimal::new(9999, 2),  // inv8: 99.99
+                Decimal::new(10000, 2), // inv1: 100.00
+                Decimal::new(18000, 2), // inv7: 180.00
+                Decimal::new(25050, 2), // inv2: 250.50
+                Decimal::new(30000, 2), // inv5: 300.00
+                Decimal::new(50000, 2), // inv4: 500.00
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_paginated_sort_by_amount_desc() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            sort_by: InvoiceSortBy::Amount,
+            sort_order: SortOrder::Desc,
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+
+        let amounts: Vec<Decimal> = result
+            .iter()
+            .map(|r| r.invoice.amount)
+            .collect();
+        assert_eq!(
+            amounts,
+            vec![
+                Decimal::new(50000, 2), // inv4: 500.00
+                Decimal::new(30000, 2), // inv5: 300.00
+                Decimal::new(25050, 2), // inv2: 250.50
+                Decimal::new(18000, 2), // inv7: 180.00
+                Decimal::new(10000, 2), // inv1: 100.00
+                Decimal::new(9999, 2),  // inv8: 99.99
+                Decimal::new(7500, 2),  // inv3: 75.00
+                Decimal::new(4200, 2),  // inv6: 42.00
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn test_paginated_limit_offset() {
         let dao = create_test_dao().await;
@@ -1543,7 +1621,7 @@ mod tests {
                 page: Some(2),
                 per_page: Some(3),
             },
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
@@ -1621,7 +1699,7 @@ mod tests {
 
         // Fetch all in ASC order, check received amounts
         let params = ListInvoicesParams {
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
@@ -1674,7 +1752,7 @@ mod tests {
 
         // Get all invoices ASC to find the timestamp boundary
         let all_params = ListInvoicesParams {
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let all = dao
@@ -1689,7 +1767,7 @@ mod tests {
 
         let params = ListInvoicesParams {
             created_to: Some(boundary),
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
@@ -1717,7 +1795,7 @@ mod tests {
 
         let params = ListInvoicesParams {
             created_from: Some(after_boundary),
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao

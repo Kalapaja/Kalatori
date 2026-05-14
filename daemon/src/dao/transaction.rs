@@ -430,10 +430,8 @@ pub trait DaoTransactionMethods: DaoExecutor + 'static {
 
         push_transaction_filters(&mut builder, params);
 
-        let sort_order = params.sort_order.unwrap_or_default();
-
         builder.push(" ORDER BY t.created_at ");
-        builder.push(sort_order.as_sql());
+        builder.push(params.sort_order.as_sql());
 
         let per_page = params.pagination.validated_per_page();
         let offset = params.pagination.offset();
@@ -1705,7 +1703,7 @@ mod tests {
         seed_transactions(&dao).await;
 
         let params = ListTransactionsParams {
-            sort_order: Some(crate::types::SortOrder::Asc),
+            sort_order: crate::types::SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
