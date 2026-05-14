@@ -20,6 +20,7 @@ use super::ChainType;
 pub use kalatori_client::types::{
     Invoice as PublicInvoice,
     InvoiceCart,
+    InvoiceCartItem,
     InvoiceStatus,
 };
 

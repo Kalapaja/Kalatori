@@ -38,6 +38,9 @@ pub struct ListInvoicesParams {
     #[serde(flatten)]
     pub pagination: PaginationParams,
 
+    /// Universal search by order ID, invoice ID, invoice amount and cart item name.
+    pub search: Option<String>,
+
     /// Comma-separated list of statuses to filter by (e.g. `Waiting,Paid`).
     #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, InvoiceStatus>>")]
     pub status: Option<Vec<InvoiceStatus>>,
