@@ -40,33 +40,48 @@ make run
 make run-test-examples
 ```
 
+## Branching and Pull Requests
+
+`main` is the only long-lived branch. All changes — features, fixes, version bumps — land via pull request:
+
+1. Branch off `main` (e.g. `feat/<short-name>`, `fix/<short-name>`, `chore/release-<version>`).
+2. Open a PR targeting `main`. The `PR to main` workflow runs semantic-PR-title validation, `cargo fmt`, `cargo clippy`, `cargo deny`, unit tests (with coverage), and integration tests. All must pass before merging.
+3. After merge, the `Merge to main` workflow re-runs tests on the merge commit and publishes a `ghcr.io/<owner>/kalatori-dev:<sha>` + `:latest` image.
+
+There is no `develop` or release branch — release happens directly from `main` via a tag (see below).
+
 ## Version Bumping and Release Process
 
-When you make changes that require a new version of the project, follow these steps to bump the version:
+Releases are triggered by pushing a `v<version>` tag. The release workflow asserts that the tagged commit is internally consistent (Cargo.toml version matches the tag, CHANGELOG entry exists, version increments over the previous tag) — if those don't line up, the release fails fast.
 
-1. **Update the Version Number**:
-    - Update version in `Cargo.toml`
+The flow is a normal PR followed by a tag:
 
-2. **Update the Changelog**:
-    - Run `git cliff <range> --tag <new-version>` to generate the changelog for the new version.
-   ```bash
-   # For example in my case the origin of main repository marked as main,
-   # som main/main is the main branch of the main repository.
-   # 2.1.2 is version example.  
-    git cliff main/main..HEAD --tag 2.1.2 -p CHANGELOG.md 
-   ```
-    - Review the changelog to ensure that the description is meaningful
+1. **Open a release PR off `main`**:
+    - Update version in `daemon/Cargo.toml`.
+    - Regenerate `Cargo.lock` (`cargo check` is enough).
+    - Generate the changelog entry. Example (replace `2.1.2` with the new version, and `origin/main` with whatever remote you track):
+      ```bash
+      git cliff origin/main..HEAD --tag 2.1.2 -p CHANGELOG.md
+      ```
+    - Review the generated `## [2.1.2]` section in `CHANGELOG.md` and edit for clarity.
+    - Commit and push:
+      ```bash
+      git add daemon/Cargo.toml Cargo.lock CHANGELOG.md
+      git commit -m "chore: bump version to 2.1.2"
+      git push origin chore/release-2.1.2
+      ```
+    - Open a PR and merge once CI is green.
 
-3. **Add version related changes to commit**:
-   ```bash
-   git add CHANGELOG.md Cargo.toml Cargo.lock
-   git commit -m "chore: bump version to 2.1.2"
-   git push origin <branch-name>
-    ```
-
-4. **Tag the version at main branch**:
+2. **Tag the merged commit on `main`**:
     ```bash
+    git checkout main && git pull
     git tag -a v2.1.2 -m "Release version 2.1.2"
     git push origin v2.1.2
     ```
+
+   Pushing the tag triggers the `Release` workflow:
+   - `release-validate` checks that `daemon/Cargo.toml` version (`2.1.2`) matches the pushed tag (`v2.1.2`), that `v2.1.2` is the highest existing tag, and that `CHANGELOG.md` has a `## [2.1.2]` heading.
+   - On success, the workflow runs the test suite, builds and pushes `ghcr.io/<owner>/kalatori:2.1.2` + `:latest`, and publishes a GitHub release with the changelog body.
+
+   If `release-validate` fails, delete the tag (`git push origin :v2.1.2 && git tag -d v2.1.2`), fix the inconsistency on `main` via another PR, and retag.
 

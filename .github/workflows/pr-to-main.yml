@@ -26,6 +26,3 @@ jobs:
 
   integration-test:
     uses: ./.github/workflows/_job-integration-test.yml
-
-  release-validate:
-    uses: ./.github/workflows/_job-release-validate.yml
