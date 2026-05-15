@@ -319,10 +319,8 @@ pub trait DaoPayoutMethods: DaoExecutor + 'static {
 
         push_payout_filters(&mut builder, params);
 
-        let sort_order = params.sort_order.unwrap_or_default();
-
         builder.push(" ORDER BY p.created_at ");
-        builder.push(sort_order.as_sql());
+        builder.push(params.sort_order.as_sql());
 
         let per_page = params.pagination.validated_per_page();
         let offset = params.pagination.offset();
@@ -1249,7 +1247,7 @@ mod tests {
         seed_payouts(&dao).await;
 
         let params = ListPayoutsParams {
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             pagination: PaginationParams {
                 per_page: Some(3),
                 ..Default::default()
