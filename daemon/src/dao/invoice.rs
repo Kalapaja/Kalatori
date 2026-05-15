@@ -559,6 +559,16 @@ struct CountRow {
     count: i64,
 }
 
+/// Escape SQLite `LIKE` metacharacters (`\`, `%`, `_`) so the value is matched
+/// literally. Pair with `ESCAPE '\'` on the `LIKE` clause. `\` must be escaped
+/// first, otherwise the backslashes introduced for `%`/`_` get doubled.
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 /// Push WHERE clause conditions to the query builder based on filter params.
 /// Shared between `get_invoices_paginated` and `count_invoices`.
 fn push_invoice_filters(
@@ -567,18 +577,28 @@ fn push_invoice_filters(
 ) {
     // Search over order_id, invoice id, amount and cart item's name
     if let Some(search) = &params.search {
-        let pattern = format!("%{}%", search.to_lowercase());
+        let lowered = search.to_lowercase();
+        let pattern = format!("%{}%", escape_like(&lowered));
+        // hex(id) renders the UUID as undashed hex; strip dashes so a
+        // canonical dashed UUID pasted by the user still matches this branch.
+        let hex_pattern = format!(
+            "%{}%",
+            escape_like(&lowered.replace('-', ""))
+        );
 
         builder.push(" AND (");
 
         builder.push("lower(i.order_id) LIKE ");
         builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\'");
 
         builder.push(" OR lower(hex(i.id)) LIKE ");
-        builder.push_bind(pattern.clone());
+        builder.push_bind(hex_pattern);
+        builder.push(" ESCAPE '\\'");
 
         builder.push(" OR i.amount LIKE ");
         builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\'");
 
         builder.push(
             " OR EXISTS (\
@@ -586,6 +606,7 @@ fn push_invoice_filters(
                 WHERE lower(item.value ->> '$.name') LIKE ",
         );
         builder.push_bind(pattern);
+        builder.push(" ESCAPE '\\'");
         builder.push(")");
 
         builder.push(")");
@@ -614,7 +635,8 @@ fn push_invoice_filters(
 
     if let Some(order_id) = &params.order_id {
         builder.push(" AND i.order_id LIKE ");
-        builder.push_bind(format!("%{order_id}%"));
+        builder.push_bind(format!("%{}%", escape_like(order_id)));
+        builder.push(" ESCAPE '\\'");
     }
 
     if let Some(created_from) = &params.created_from {
@@ -2366,5 +2388,126 @@ mod tests {
             "ORDER-PINK-005"
         );
         assert!(result[0].invoice.cart.is_empty());
+    }
+
+    /// A canonical dashed UUID must match the `hex(id)` branch even though
+    /// `hex(id)` itself is undashed — the needle gets its dashes stripped
+    /// before being compared against the hex form.
+    #[tokio::test]
+    async fn test_search_matches_id_hex_by_dashed_uuid() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        // Full canonical dashed UUID of invoice A.
+        let params = ListInvoicesParams {
+            search: Some("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-RED-001"
+        );
+
+        // A partial dashed fragment works too.
+        let params = ListInvoicesParams {
+            search: Some("aaaa-aaaa".to_string()),
+            ..Default::default()
+        };
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    /// `LIKE` metacharacters in the search string must be matched literally,
+    /// not treated as wildcards. Without escaping, `50%` would wildcard-match
+    /// every order_id containing `50`, and `e_a` would match any `e<char>a`.
+    #[tokio::test]
+    async fn test_search_escapes_like_wildcards() {
+        let dao = create_test_dao().await;
+
+        // Literal '%' present vs. only "50" present.
+        dao.create_invoice(make_search_invoice(
+            Uuid::new_v4(),
+            "PROMO-50%-OFF",
+            Decimal::new(10000, 2),
+            vec![],
+        ))
+        .await
+        .unwrap();
+        dao.create_invoice(make_search_invoice(
+            Uuid::new_v4(),
+            "PROMO-5000-OFF",
+            Decimal::new(20000, 2),
+            vec![],
+        ))
+        .await
+        .unwrap();
+        // Literal "e_a" present vs. "exa" (matches the `_` wildcard only).
+        dao.create_invoice(make_search_invoice(
+            Uuid::new_v4(),
+            "BUNDLE_A",
+            Decimal::new(30000, 2),
+            vec![],
+        ))
+        .await
+        .unwrap();
+        dao.create_invoice(make_search_invoice(
+            Uuid::new_v4(),
+            "BUNDLEXA",
+            Decimal::new(40000, 2),
+            vec![],
+        ))
+        .await
+        .unwrap();
+
+        // '%' is matched literally → only "PROMO-50%-OFF".
+        let params = ListInvoicesParams {
+            search: Some("50%".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        assert_eq!(
+            dao.count_invoices(&params)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            result[0].invoice.order_id,
+            "PROMO-50%-OFF"
+        );
+
+        // '_' is matched literally → only "BUNDLE_A", not "BUNDLEXA".
+        let params = ListInvoicesParams {
+            search: Some("e_a".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        assert_eq!(
+            dao.count_invoices(&params)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(result[0].invoice.order_id, "BUNDLE_A");
     }
 }
