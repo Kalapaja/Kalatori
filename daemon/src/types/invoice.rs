@@ -17,9 +17,11 @@ use uuid::Uuid;
 use super::ChainType;
 
 // Re-export types from kalatori_client for consistency
+#[cfg_attr(not(test), expect(unused_imports))]
 pub use kalatori_client::types::{
     Invoice as PublicInvoice,
     InvoiceCart,
+    InvoiceCartItem,
     InvoiceStatus,
 };
 

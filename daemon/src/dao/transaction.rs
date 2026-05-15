@@ -430,10 +430,8 @@ pub trait DaoTransactionMethods: DaoExecutor + 'static {
 
         push_transaction_filters(&mut builder, params);
 
-        let sort_order = params.sort_order.unwrap_or_default();
-
         builder.push(" ORDER BY t.created_at ");
-        builder.push(sort_order.as_sql());
+        builder.push(params.sort_order.as_sql());
 
         let per_page = params.pagination.validated_per_page();
         let offset = params.pagination.offset();
@@ -582,6 +580,19 @@ fn push_transaction_filters(
     if let Some(invoice_id) = &params.invoice_id {
         builder.push(" AND t.invoice_id = ");
         builder.push_bind(*invoice_id);
+    }
+
+    // Payout id and refund id filters should compare against string
+    // because we store those values in JSON and virtual columns which
+    // are TEXT, not BLOB.
+    if let Some(payout_id) = &params.payout_id {
+        builder.push(" AND t.payout_id = ");
+        builder.push_bind(payout_id.to_string());
+    }
+
+    if let Some(refund_id) = &params.refund_id {
+        builder.push(" AND t.refund_id = ");
+        builder.push_bind(refund_id.to_string());
     }
 
     if let Some(created_from) = &params.created_from {
@@ -1699,13 +1710,187 @@ mod tests {
         });
     }
 
+    /// Seed one invoice and three transactions exercising the `origin` JSON:
+    /// one carrying a `payout_id`, one carrying a `refund_id`, and one with the
+    /// default empty origin. Returns `(invoice_id, payout_id, refund_id)`.
+    async fn seed_origin_transactions(dao: &crate::dao::DAO) -> (Uuid, Uuid, Uuid) {
+        let inv = make_invoice(ChainType::PolkadotAssetHub, "1984");
+        let invoice_id = inv.id;
+        dao.create_invoice(inv).await.unwrap();
+
+        let payout_id = Uuid::new_v4();
+        let refund_id = Uuid::new_v4();
+
+        let mut payout_tx = make_transaction(
+            invoice_id,
+            ChainType::PolkadotAssetHub,
+            "1984",
+            Decimal::new(10000, 2),
+            TransactionType::Outgoing,
+        );
+        payout_tx.origin = TransactionOrigin::payout(payout_id);
+        dao.create_transaction(payout_tx)
+            .await
+            .unwrap();
+
+        let mut refund_tx = make_transaction(
+            invoice_id,
+            ChainType::PolkadotAssetHub,
+            "1984",
+            Decimal::new(5000, 2),
+            TransactionType::Outgoing,
+        );
+        refund_tx.origin = TransactionOrigin::refund(refund_id);
+        dao.create_transaction(refund_tx)
+            .await
+            .unwrap();
+
+        // Incoming transaction left with the default empty origin ('{}').
+        let plain_tx = make_transaction(
+            invoice_id,
+            ChainType::PolkadotAssetHub,
+            "1984",
+            Decimal::new(2500, 2),
+            TransactionType::Incoming,
+        );
+        dao.create_transaction(plain_tx)
+            .await
+            .unwrap();
+
+        (invoice_id, payout_id, refund_id)
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_by_payout_id() {
+        let dao = create_test_dao().await;
+        let (_invoice_id, payout_id, _refund_id) = seed_origin_transactions(&dao).await;
+
+        let params = ListTransactionsParams {
+            payout_id: Some(payout_id),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].origin.payout_id,
+            Some(payout_id)
+        );
+        // The refund-origin and empty-origin transactions are excluded.
+        assert_eq!(result[0].origin.refund_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_by_refund_id() {
+        let dao = create_test_dao().await;
+        let (_invoice_id, _payout_id, refund_id) = seed_origin_transactions(&dao).await;
+
+        let params = ListTransactionsParams {
+            refund_id: Some(refund_id),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].origin.refund_id,
+            Some(refund_id)
+        );
+        assert_eq!(result[0].origin.payout_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_by_payout_id_no_match() {
+        let dao = create_test_dao().await;
+        seed_origin_transactions(&dao).await;
+
+        let params = ListTransactionsParams {
+            payout_id: Some(Uuid::new_v4()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_transactions(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 0);
+        assert!(result.is_empty());
+    }
+
+    /// The JSON-derived `payout_id` filter is AND'd with the real-column
+    /// `invoice_id` filter — a row must satisfy both.
+    #[tokio::test]
+    async fn test_paginated_transactions_filter_payout_id_and_invoice_id() {
+        let dao = create_test_dao().await;
+        let (invoice_id, payout_id, _refund_id) = seed_origin_transactions(&dao).await;
+
+        // payout_id matches AND invoice_id matches → the payout transaction
+        let params = ListTransactionsParams {
+            payout_id: Some(payout_id),
+            invoice_id: Some(invoice_id),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        assert_eq!(
+            dao.count_transactions(&params)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            result[0].origin.payout_id,
+            Some(payout_id)
+        );
+
+        // payout_id matches but invoice_id does not → AND excludes the row
+        let params = ListTransactionsParams {
+            payout_id: Some(payout_id),
+            invoice_id: Some(Uuid::new_v4()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_transactions_paginated(&params)
+            .await
+            .unwrap();
+        assert_eq!(
+            dao.count_transactions(&params)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(result.is_empty());
+    }
+
     #[tokio::test]
     async fn test_paginated_transactions_sort_asc() {
         let dao = create_test_dao().await;
         seed_transactions(&dao).await;
 
         let params = ListTransactionsParams {
-            sort_order: Some(crate::types::SortOrder::Asc),
+            sort_order: crate::types::SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
