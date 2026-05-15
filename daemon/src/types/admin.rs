@@ -174,6 +174,12 @@ pub struct ListTransactionsParams {
     /// Filter by parent invoice ID.
     pub invoice_id: Option<Uuid>,
 
+    /// Filter by parent payout ID.
+    pub payout_id: Option<Uuid>,
+
+    /// Filter by parent refund ID.
+    pub refund_id: Option<Uuid>,
+
     /// Filter transactions created on or after this timestamp.
     pub created_from: Option<DateTime<Utc>>,
 
