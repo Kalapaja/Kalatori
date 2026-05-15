@@ -10,13 +10,19 @@ permissions:
   packages: write
 
 jobs:
+  release-validate:
+    uses: ./.github/workflows/_job-release-validate.yml
+
   prepare:
+    needs: [release-validate]
     uses: ./.github/workflows/_job-release-prepare.yml
 
   cargo-test:
+    needs: [release-validate]
     uses: ./.github/workflows/_job-cargo-test.yml
 
   integration-test:
+    needs: [release-validate]
     uses: ./.github/workflows/_job-integration-test.yml
 
   docker-build:
