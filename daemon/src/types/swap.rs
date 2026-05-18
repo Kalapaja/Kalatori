@@ -3,6 +3,10 @@ use chrono::{
     DateTime,
     Utc,
 };
+use kalatori_client::strum::{
+    Display,
+    EnumString,
+};
 use rust_decimal::Decimal;
 use serde::{
     Deserialize,
@@ -13,10 +17,6 @@ use serde_with::{
     serde_as,
 };
 use sqlx::Type;
-use kalatori_client::strum::{
-    Display,
-    EnumString,
-};
 use uuid::Uuid;
 
 use crate::clients::{

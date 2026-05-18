@@ -4,6 +4,10 @@ use chrono::{
     DateTime,
     Utc,
 };
+use kalatori_client::strum::{
+    Display,
+    EnumString,
+};
 use serde::{
     Deserialize,
     Serialize,
@@ -11,10 +15,6 @@ use serde::{
 use sqlx::{
     FromRow,
     Type,
-};
-use kalatori_client::strum::{
-    Display,
-    EnumString,
 };
 use uuid::Uuid;
 

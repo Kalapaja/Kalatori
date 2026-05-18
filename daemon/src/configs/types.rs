@@ -6,6 +6,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::str::FromStr;
 
+use kalatori_client::strum::IntoEnumIterator;
 use rand::prelude::*;
 use rust_decimal::Decimal;
 use secrecy::SecretString;
@@ -13,7 +14,6 @@ use serde::{
     Deserialize,
     Serialize,
 };
-use kalatori_client::strum::IntoEnumIterator;
 
 use crate::chain::utils::to_base58_string;
 use crate::types::{
