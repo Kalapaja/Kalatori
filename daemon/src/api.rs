@@ -154,6 +154,10 @@ pub async fn api_server(
                 "/session",
                 get(auth_endpoints::session_handler),
             )
+            .route(
+                "/logout",
+                post(auth_endpoints::logout_handler),
+            )
             .with_state(Arc::clone(&auth_state));
 
         // /admin routes — protected by session + CSRF middleware
