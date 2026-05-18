@@ -12,7 +12,7 @@ use sqlx::{
     FromRow,
     Type,
 };
-use strum::{
+use kalatori_client::strum::{
     Display,
     EnumString,
 };
@@ -27,6 +27,7 @@ use super::invoice::Invoice;
 use super::swap::SwapChainType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
+#[strum(crate = "kalatori_client::strum")]
 pub enum RefundStatus {
     Waiting,
     InProgress,

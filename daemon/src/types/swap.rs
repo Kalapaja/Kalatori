@@ -13,7 +13,7 @@ use serde_with::{
     serde_as,
 };
 use sqlx::Type;
-use strum::{
+use kalatori_client::strum::{
     Display,
     EnumString,
 };
@@ -67,6 +67,7 @@ pub struct CreateSwapParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
+#[strum(crate = "kalatori_client::strum")]
 pub enum SwapExecutorType {
     Across,
     Bungee,
@@ -98,6 +99,7 @@ impl SwapExecutorType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
+#[strum(crate = "kalatori_client::strum")]
 pub enum SwapChainType {
     Abstract,
     Arbitrum,
@@ -224,6 +226,7 @@ impl SwapChainType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
+#[strum(crate = "kalatori_client::strum")]
 pub enum SwapStatus {
     /// An order has been created but not submitted
     Created,

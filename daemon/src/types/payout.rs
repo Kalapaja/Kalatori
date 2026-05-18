@@ -12,7 +12,7 @@ use sqlx::{
     FromRow,
     Type,
 };
-use strum::{
+use kalatori_client::strum::{
     Display,
     EnumString,
 };
@@ -32,6 +32,7 @@ use super::swap::SwapChainType;
 
 /// Payout status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
+#[strum(crate = "kalatori_client::strum")]
 pub enum PayoutStatus {
     Waiting,
     InProgress,

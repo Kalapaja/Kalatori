@@ -14,7 +14,7 @@ use sqlx::{
     FromRow,
     Type,
 };
-use strum::{
+use kalatori_client::strum::{
     Display,
     EnumString,
 };
@@ -23,6 +23,7 @@ pub use kalatori_client::types::ChainType;
 
 /// Initiator type for payouts and refunds
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
+#[strum(crate = "kalatori_client::strum")]
 pub enum InitiatorType {
     System,
     Admin,

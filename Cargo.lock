@@ -4531,7 +4531,6 @@ dependencies = [
  "sha2 0.10.9",
  "shadow-rs",
  "sqlx",
- "strum",
  "subxt",
  "subxt-signer",
  "thiserror 2.0.18",
