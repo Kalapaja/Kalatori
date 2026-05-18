@@ -11,6 +11,7 @@ use crate::types::{
     CreateInvoiceData,
     Invoice,
     InvoiceRow,
+    InvoiceSortBy,
     InvoiceStatus,
     InvoiceWithReceivedAmount,
     ListInvoicesParams,
@@ -489,10 +490,15 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
 
         push_invoice_filters(&mut builder, params);
 
-        let sort_order = params.sort_order.unwrap_or_default();
+        builder.push(" GROUP BY i.id ORDER BY ");
+        builder.push(params.sort_by.as_sql());
+        builder.push(" ");
+        builder.push(params.sort_order.as_sql());
 
-        builder.push(" GROUP BY i.id ORDER BY i.created_at ");
-        builder.push(sort_order.as_sql());
+        if params.sort_by != InvoiceSortBy::CreatedAt {
+            builder.push(", i.created_at ");
+            builder.push(params.sort_order.as_sql());
+        }
 
         let per_page = params.pagination.validated_per_page();
         let offset = params.pagination.offset();
@@ -553,12 +559,59 @@ struct CountRow {
     count: i64,
 }
 
+/// Escape SQLite `LIKE` metacharacters (`\`, `%`, `_`) so the value is matched
+/// literally. Pair with `ESCAPE '\'` on the `LIKE` clause. `\` must be escaped
+/// first, otherwise the backslashes introduced for `%`/`_` get doubled.
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 /// Push WHERE clause conditions to the query builder based on filter params.
 /// Shared between `get_invoices_paginated` and `count_invoices`.
 fn push_invoice_filters(
     builder: &mut QueryBuilder<'_, sqlx::Sqlite>,
     params: &ListInvoicesParams,
 ) {
+    // Search over order_id, invoice id, amount and cart item's name
+    if let Some(search) = &params.search {
+        let lowered = search.to_lowercase();
+        let pattern = format!("%{}%", escape_like(&lowered));
+        // hex(id) renders the UUID as undashed hex; strip dashes so a
+        // canonical dashed UUID pasted by the user still matches this branch.
+        let hex_pattern = format!(
+            "%{}%",
+            escape_like(&lowered.replace('-', ""))
+        );
+
+        builder.push(" AND (");
+
+        builder.push("lower(i.order_id) LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\'");
+
+        builder.push(" OR lower(hex(i.id)) LIKE ");
+        builder.push_bind(hex_pattern);
+        builder.push(" ESCAPE '\\'");
+
+        builder.push(" OR i.amount LIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" ESCAPE '\\'");
+
+        builder.push(
+            " OR EXISTS (\
+                SELECT 1 FROM json_each(i.cart, '$.items') AS item \
+                WHERE lower(item.value ->> '$.name') LIKE ",
+        );
+        builder.push_bind(pattern);
+        builder.push(" ESCAPE '\\'");
+        builder.push(")");
+
+        builder.push(")");
+    }
+
     if let Some(statuses) = &params.status
         && !statuses.is_empty()
     {
@@ -582,7 +635,8 @@ fn push_invoice_filters(
 
     if let Some(order_id) = &params.order_id {
         builder.push(" AND i.order_id LIKE ");
-        builder.push_bind(format!("%{order_id}%"));
+        builder.push_bind(format!("%{}%", escape_like(order_id)));
+        builder.push(" ESCAPE '\\'");
     }
 
     if let Some(created_from) = &params.created_from {
@@ -606,6 +660,7 @@ mod tests {
         ChainType,
         CreateInvoiceData,
         InvoiceCart,
+        InvoiceCartItem,
         ListInvoicesParams,
         PaginationParams,
         SortOrder,
@@ -1457,7 +1512,7 @@ mod tests {
         seed_invoices(&dao).await;
 
         let params = ListInvoicesParams {
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
@@ -1484,7 +1539,7 @@ mod tests {
         seed_invoices(&dao).await;
 
         let params = ListInvoicesParams {
-            sort_order: Some(SortOrder::Desc),
+            sort_order: SortOrder::Desc,
             ..Default::default()
         };
         let result = dao
@@ -1505,6 +1560,78 @@ mod tests {
         assert_eq!(result.len(), 8);
     }
 
+    /// Sort by amount ASC. The full sequence assertion doubles as a
+    /// regression test for the `CAST(... AS REAL)` in `InvoiceSortBy::as_sql`:
+    /// without it SQLite would sort lexicographically, placing "100.00" before
+    /// "42.00" and breaking the expected order.
+    #[tokio::test]
+    async fn test_paginated_sort_by_amount_asc() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            sort_by: InvoiceSortBy::Amount,
+            sort_order: SortOrder::Asc,
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+
+        let amounts: Vec<Decimal> = result
+            .iter()
+            .map(|r| r.invoice.amount)
+            .collect();
+        assert_eq!(
+            amounts,
+            vec![
+                Decimal::new(4200, 2),  // inv6: 42.00
+                Decimal::new(7500, 2),  // inv3: 75.00
+                Decimal::new(9999, 2),  // inv8: 99.99
+                Decimal::new(10000, 2), // inv1: 100.00
+                Decimal::new(18000, 2), // inv7: 180.00
+                Decimal::new(25050, 2), // inv2: 250.50
+                Decimal::new(30000, 2), // inv5: 300.00
+                Decimal::new(50000, 2), // inv4: 500.00
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_paginated_sort_by_amount_desc() {
+        let dao = create_test_dao().await;
+        seed_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            sort_by: InvoiceSortBy::Amount,
+            sort_order: SortOrder::Desc,
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+
+        let amounts: Vec<Decimal> = result
+            .iter()
+            .map(|r| r.invoice.amount)
+            .collect();
+        assert_eq!(
+            amounts,
+            vec![
+                Decimal::new(50000, 2), // inv4: 500.00
+                Decimal::new(30000, 2), // inv5: 300.00
+                Decimal::new(25050, 2), // inv2: 250.50
+                Decimal::new(18000, 2), // inv7: 180.00
+                Decimal::new(10000, 2), // inv1: 100.00
+                Decimal::new(9999, 2),  // inv8: 99.99
+                Decimal::new(7500, 2),  // inv3: 75.00
+                Decimal::new(4200, 2),  // inv6: 42.00
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn test_paginated_limit_offset() {
         let dao = create_test_dao().await;
@@ -1516,7 +1643,7 @@ mod tests {
                 page: Some(2),
                 per_page: Some(3),
             },
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
@@ -1594,7 +1721,7 @@ mod tests {
 
         // Fetch all in ASC order, check received amounts
         let params = ListInvoicesParams {
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
@@ -1647,7 +1774,7 @@ mod tests {
 
         // Get all invoices ASC to find the timestamp boundary
         let all_params = ListInvoicesParams {
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let all = dao
@@ -1662,7 +1789,7 @@ mod tests {
 
         let params = ListInvoicesParams {
             created_to: Some(boundary),
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
@@ -1690,7 +1817,7 @@ mod tests {
 
         let params = ListInvoicesParams {
             created_from: Some(after_boundary),
-            sort_order: Some(SortOrder::Asc),
+            sort_order: SortOrder::Asc,
             ..Default::default()
         };
         let result = dao
@@ -1884,5 +2011,503 @@ mod tests {
 
         assert_eq!(count, 0);
         assert!(result.is_empty());
+    }
+
+    // ========================================================================
+    // Universal search filter (`params.search`)
+    // ========================================================================
+
+    fn cart_item(name: &str) -> InvoiceCartItem {
+        InvoiceCartItem {
+            name: name.to_string(),
+            quantity: 1,
+            price: Decimal::new(100, 2),
+            product_url: None,
+            image_url: None,
+            tax: None,
+            discount: None,
+        }
+    }
+
+    fn cart_item_with_url(
+        name: &str,
+        product_url: &str,
+    ) -> InvoiceCartItem {
+        InvoiceCartItem {
+            name: name.to_string(),
+            quantity: 1,
+            price: Decimal::new(100, 2),
+            product_url: Some(product_url.to_string()),
+            image_url: None,
+            tax: None,
+            discount: None,
+        }
+    }
+
+    fn make_search_invoice(
+        id: Uuid,
+        order_id: &str,
+        amount: Decimal,
+        cart_items: Vec<InvoiceCartItem>,
+    ) -> CreateInvoiceData {
+        CreateInvoiceData {
+            id,
+            order_id: order_id.to_string(),
+            amount,
+            cart: InvoiceCart {
+                items: cart_items,
+            },
+            ..default_create_invoice_data()
+        }
+    }
+
+    /// Seed 6 invoices with carefully chosen unique markers so each branch of
+    /// the unified search filter can be hit in isolation.
+    ///
+    /// | # | UUID (fixed)        | order_id          | amount | cart                                                       | status         |
+    /// |---|---------------------|-------------------|--------|------------------------------------------------------------|----------------|
+    /// | A | aaaa…               | ORDER-RED-001     | 100.00 | [widget, gadget]                                           | Waiting        |
+    /// | B | bbbb…               | ORDER-BLUE-002    |  42.50 | [sprocket]                                                 | Waiting        |
+    /// | C | cccc…               | ORDER-GREEN-003   | 777.77 | [bolt]                                                     | Waiting        |
+    /// | D | dddd…               | ORDER-CYAN-004    |  25.00 | [MAGNIFICENT thingy]                                       | AdminCanceled  |
+    /// | E | eeee…               | ORDER-PINK-005    |  33.00 | []                                                         | Waiting        |
+    /// | F | ffff…               | ORDER-LIME-006    |  12.34 | [plain (product_url=https://shop.example/magnif-deluxe)]   | Waiting        |
+    async fn seed_search_invoices(dao: &crate::dao::DAO) {
+        let a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let c = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
+        let d = Uuid::parse_str("dddddddd-dddd-dddd-dddd-dddddddddddd").unwrap();
+        let e = Uuid::parse_str("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee").unwrap();
+        let f = Uuid::parse_str("ffffffff-ffff-ffff-ffff-ffffffffffff").unwrap();
+
+        dao.create_invoice(make_search_invoice(
+            a,
+            "ORDER-RED-001",
+            Decimal::new(10000, 2),
+            vec![cart_item("widget"), cart_item("gadget")],
+        ))
+        .await
+        .unwrap();
+
+        dao.create_invoice(make_search_invoice(
+            b,
+            "ORDER-BLUE-002",
+            Decimal::new(4250, 2),
+            vec![cart_item("sprocket")],
+        ))
+        .await
+        .unwrap();
+
+        dao.create_invoice(make_search_invoice(
+            c,
+            "ORDER-GREEN-003",
+            Decimal::new(77777, 2),
+            vec![cart_item("bolt")],
+        ))
+        .await
+        .unwrap();
+
+        dao.create_invoice(make_search_invoice(
+            d,
+            "ORDER-CYAN-004",
+            Decimal::new(2500, 2),
+            vec![cart_item("MAGNIFICENT thingy")],
+        ))
+        .await
+        .unwrap();
+        dao.update_invoice_status(d, InvoiceStatus::AdminCanceled)
+            .await
+            .unwrap();
+
+        dao.create_invoice(make_search_invoice(
+            e,
+            "ORDER-PINK-005",
+            Decimal::new(3300, 2),
+            vec![],
+        ))
+        .await
+        .unwrap();
+
+        dao.create_invoice(make_search_invoice(
+            f,
+            "ORDER-LIME-006",
+            Decimal::new(1234, 2),
+            vec![cart_item_with_url(
+                "plain",
+                "https://shop.example/magnif-deluxe",
+            )],
+        ))
+        .await
+        .unwrap();
+    }
+
+    /// Needle hits `order_id` only — nowhere else (UUID hex is all 'a's, no
+    /// other order_id/amount/cart contains "RED").
+    #[tokio::test]
+    async fn test_search_matches_order_id_only() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            search: Some("RED".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-RED-001"
+        );
+    }
+
+    /// Needle hits `hex(id)` only — "bbbb" doesn't appear in any order_id,
+    /// amount, or cart name in the fixture.
+    #[tokio::test]
+    async fn test_search_matches_id_hex_only() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            search: Some("bbbb".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-BLUE-002"
+        );
+    }
+
+    /// Needle hits `amount` only — "777" doesn't appear in any UUID hex (hex
+    /// only has 0-9a-f), order_id, or cart name.
+    #[tokio::test]
+    async fn test_search_matches_amount_only() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            search: Some("777".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-GREEN-003"
+        );
+    }
+
+    /// Needle hits a cart item `name` only — and crucially does NOT match
+    /// invoice F whose `product_url` (not `name`) contains "magnif". Locks
+    /// down JSON scoping to `$.name`.
+    #[tokio::test]
+    async fn test_search_matches_cart_name_only() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            search: Some("magnif".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-CYAN-004"
+        );
+    }
+
+    /// Both directions of case mismatch: lowercase needle vs. uppercase data
+    /// (`red` → ORDER-RED-001), and uppercase needle vs. mixed-case data
+    /// (`MAGNIF` → "MAGNIFICENT thingy").
+    #[tokio::test]
+    async fn test_search_case_insensitive() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            search: Some("red".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-RED-001"
+        );
+
+        let params = ListInvoicesParams {
+            search: Some("MAGNIF".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-CYAN-004"
+        );
+    }
+
+    /// Needle hits nothing → empty result, count 0.
+    #[tokio::test]
+    async fn test_search_no_match() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            search: Some("zzz-nothing".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 0);
+        assert!(result.is_empty());
+    }
+
+    /// `search` and `status` are AND'd; the `search` OR-group stays correctly
+    /// parenthesized. `magnif` matches only D, which is AdminCanceled.
+    #[tokio::test]
+    async fn test_search_combined_with_status() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        // search hit ∩ matching status → D
+        let params = ListInvoicesParams {
+            search: Some("magnif".to_string()),
+            status: Some(vec![InvoiceStatus::AdminCanceled]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-CYAN-004"
+        );
+
+        // search hit ∩ non-matching status → empty
+        let params = ListInvoicesParams {
+            search: Some("magnif".to_string()),
+            status: Some(vec![InvoiceStatus::Waiting]),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 0);
+        assert!(result.is_empty());
+    }
+
+    /// Invoice E has an empty cart — `json_each(cart, '$.items')` returns zero
+    /// rows, which must not error or false-negative when the match comes from
+    /// another branch (`PINK` hits order_id).
+    #[tokio::test]
+    async fn test_search_empty_cart_handled() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        let params = ListInvoicesParams {
+            search: Some("PINK".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-PINK-005"
+        );
+        assert!(result[0].invoice.cart.is_empty());
+    }
+
+    /// A canonical dashed UUID must match the `hex(id)` branch even though
+    /// `hex(id)` itself is undashed — the needle gets its dashes stripped
+    /// before being compared against the hex form.
+    #[tokio::test]
+    async fn test_search_matches_id_hex_by_dashed_uuid() {
+        let dao = create_test_dao().await;
+        seed_search_invoices(&dao).await;
+
+        // Full canonical dashed UUID of invoice A.
+        let params = ListInvoicesParams {
+            search: Some("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].invoice.order_id,
+            "ORDER-RED-001"
+        );
+
+        // A partial dashed fragment works too.
+        let params = ListInvoicesParams {
+            search: Some("aaaa-aaaa".to_string()),
+            ..Default::default()
+        };
+        let count = dao
+            .count_invoices(&params)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    /// `LIKE` metacharacters in the search string must be matched literally,
+    /// not treated as wildcards. Without escaping, `50%` would wildcard-match
+    /// every order_id containing `50`, and `e_a` would match any `e<char>a`.
+    #[tokio::test]
+    async fn test_search_escapes_like_wildcards() {
+        let dao = create_test_dao().await;
+
+        // Literal '%' present vs. only "50" present.
+        dao.create_invoice(make_search_invoice(
+            Uuid::new_v4(),
+            "PROMO-50%-OFF",
+            Decimal::new(10000, 2),
+            vec![],
+        ))
+        .await
+        .unwrap();
+        dao.create_invoice(make_search_invoice(
+            Uuid::new_v4(),
+            "PROMO-5000-OFF",
+            Decimal::new(20000, 2),
+            vec![],
+        ))
+        .await
+        .unwrap();
+        // Literal "e_a" present vs. "exa" (matches the `_` wildcard only).
+        dao.create_invoice(make_search_invoice(
+            Uuid::new_v4(),
+            "BUNDLE_A",
+            Decimal::new(30000, 2),
+            vec![],
+        ))
+        .await
+        .unwrap();
+        dao.create_invoice(make_search_invoice(
+            Uuid::new_v4(),
+            "BUNDLEXA",
+            Decimal::new(40000, 2),
+            vec![],
+        ))
+        .await
+        .unwrap();
+
+        // '%' is matched literally → only "PROMO-50%-OFF".
+        let params = ListInvoicesParams {
+            search: Some("50%".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        assert_eq!(
+            dao.count_invoices(&params)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            result[0].invoice.order_id,
+            "PROMO-50%-OFF"
+        );
+
+        // '_' is matched literally → only "BUNDLE_A", not "BUNDLEXA".
+        let params = ListInvoicesParams {
+            search: Some("e_a".to_string()),
+            ..Default::default()
+        };
+        let result = dao
+            .get_invoices_paginated(&params)
+            .await
+            .unwrap();
+        assert_eq!(
+            dao.count_invoices(&params)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(result[0].invoice.order_id, "BUNDLE_A");
     }
 }
