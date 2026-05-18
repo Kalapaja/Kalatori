@@ -64,7 +64,7 @@ sqlx = { version = "0.8", default-features = false, features = [
 # Asset Hub chain
 # On update subxt version, plase also update subxt-cli to corresponding version in Makefile
 subxt = "0.44"
-subxt-signer = "0.44"
+subxt-signer = "0.50"
 
 # Polygon chain
 alloy = { version = "1.8", features = [
