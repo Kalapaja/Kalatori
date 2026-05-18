@@ -1,10 +1,12 @@
 //! Payout types for `SQLite` schema
 
-use std::fmt;
-
 use chrono::{
     DateTime,
     Utc,
+};
+use kalatori_client::strum::{
+    Display,
+    EnumString,
 };
 use serde::{
     Deserialize,
@@ -29,43 +31,14 @@ use super::refund::TransferDestinationParams;
 use super::swap::SwapChainType;
 
 /// Payout status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Display, EnumString)]
+#[strum(crate = "kalatori_client::strum")]
 pub enum PayoutStatus {
     Waiting,
     InProgress,
     Completed,
     FailedRetriable,
     Failed,
-}
-
-impl fmt::Display for PayoutStatus {
-    fn fmt(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        match self {
-            Self::Waiting => write!(f, "Waiting"),
-            Self::InProgress => write!(f, "InProgress"),
-            Self::Completed => write!(f, "Completed"),
-            Self::FailedRetriable => write!(f, "FailedRetriable"),
-            Self::Failed => write!(f, "Failed"),
-        }
-    }
-}
-
-impl std::str::FromStr for PayoutStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Waiting" => Ok(Self::Waiting),
-            "InProgress" => Ok(Self::InProgress),
-            "Completed" => Ok(Self::Completed),
-            "FailedRetriable" => Ok(Self::FailedRetriable),
-            "Failed" => Ok(Self::Failed),
-            _ => Err(format!("Unknown payout status: {s}")),
-        }
-    }
 }
 
 /// Payout from `SQLite`

@@ -22,6 +22,10 @@ rust_decimal = "1"
 chrono = { version = "0.4", features = ["serde"] }
 serde_json = "1"
 secrecy = "0.10"
+# Version kept in sync with the one used by alloy (alloy-chains) to avoid
+# pulling two copies of strum into the dependency tree. Re-exported in lib.rs
+# so daemon shares the same strum types/derives as this crate.
+strum = { version = "0.27.2", features = ["derive"] }
 
 # Client
 serde = { version = "1", features = ["derive"] }

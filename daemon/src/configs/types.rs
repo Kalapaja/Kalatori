@@ -6,6 +6,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::str::FromStr;
 
+use kalatori_client::strum::IntoEnumIterator;
 use rand::prelude::*;
 use rust_decimal::Decimal;
 use secrecy::SecretString;
