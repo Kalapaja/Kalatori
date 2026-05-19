@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 **Please note:**
 This is a public beta release of the Kalatori daemon. While it adheres to the [API specs](https://kalapaja.github.io/kalatori-api), it is still under active development. We encourage you to test it and provide feedback.
 
+## [0.9.1] - 2026-05-19
+
+### 🚀 Features
+
+- Admin invoice list: filter by invoice ID, order ID, amount, or cart item name
+- Admin invoice list: order results by creation time or amount
+- Transaction list: filter by payout ID and refund ID
+- Logout route that clears session cookies
+
+### 🐛 Bug Fixes
+
+- UUID substring matching in admin invoice filters; special characters in SQL `LIKE` patterns are now escaped
+
+### 🚜 Refactor
+
+- Enum `FromStr`/`Display` implementations replaced with the `strum` crate, now re-exported from `kalatori-client`
+
+### 🔧 CI/CD
+
+- Pipelines reworked: `main` is the only long-lived branch, releases are cut from `v*` tags
+- GitHub Actions versions bumped and pinned to commit SHAs
+
 ## [0.9.0] - 2026-04-28
 
 ### 🚀 Features
