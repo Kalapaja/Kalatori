@@ -30,13 +30,14 @@ jobs:
     name: Restart stage billing via ArgoCD
     needs: docker-build
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Restart deployment
         env:
           ARGOCD_SERVER: https://argocd.internal.kalatori.org
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_DEPLOYMENT_TOKEN }}
         run: |
-          curl -sSf --connect-timeout 10 --max-time 30 -X POST \
+          curl -sS --fail-with-body --connect-timeout 10 --max-time 30 -X POST \
             "$ARGOCD_SERVER/api/v1/applications/stage-billing/resource/actions/v2" \
             -H "Authorization: Bearer $ARGOCD_AUTH_TOKEN" \
             -H "Content-Type: application/json" \
