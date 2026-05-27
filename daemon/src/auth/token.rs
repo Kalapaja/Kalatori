@@ -275,6 +275,9 @@ pub fn sign_token(
         .add_additional("email", claims.email.clone())
         .expect("setting email should not fail");
     paseto_claims
+        .add_additional("picture", claims.picture.clone())
+        .expect("setting picture should not fail");
+    paseto_claims
         .add_additional("role", role_str)
         .expect("setting role should not fail");
 
@@ -368,7 +371,7 @@ mod tests {
             iss: "https://auth.example.com".to_string(),
             sub: "user-42".to_string(),
             email: "test@example.com".to_string(),
-            picture: None,
+            picture: Some("https://example.com/picture".to_string()),
             aud: "daemon-01".to_string(),
             role: Role::Operator,
             iat: now,
@@ -390,6 +393,7 @@ mod tests {
         assert_eq!(verified.iss, claims.iss);
         assert_eq!(verified.sub, claims.sub);
         assert_eq!(verified.email, claims.email);
+        assert_eq!(verified.picture, claims.picture);
         assert_eq!(verified.aud, claims.aud);
         assert_eq!(verified.role, claims.role);
         assert_eq!(verified.raw_token, token);
