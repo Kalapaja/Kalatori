@@ -127,6 +127,7 @@ async fn mint_token_handler(
         iss: dev_auth.issuer.clone(),
         sub: req.sub.clone(),
         email: req.email.clone(),
+        picture: None,
         aud: dev_auth.audience.clone(),
         role: req.role,
         iat: now,

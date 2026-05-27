@@ -255,6 +255,7 @@ async fn get_swap_handler(
 #[derive(Serialize)]
 struct WhoamiResponse {
     email: String,
+    picture: Option<String>,
     role: Role,
     sub: String,
     exp: String,
@@ -263,6 +264,7 @@ struct WhoamiResponse {
 async fn whoami_handler(Extension(user): Extension<AuthenticatedUser>) -> Response {
     let response = WhoamiResponse {
         email: user.claims.email,
+        picture: user.claims.picture,
         role: user.claims.role,
         sub: user.claims.sub,
         exp: user.claims.exp.to_rfc3339(),

@@ -28,6 +28,9 @@ pub struct TokenClaims {
     pub sub: String,
     /// User's email address.
     pub email: String,
+    /// User's avatar image URL.
+    // TODO: verify URL?
+    pub picture: Option<String>,
     /// The `client_id` this token was issued for.
     pub aud: String,
     /// User's role for this daemon.
@@ -131,6 +134,7 @@ fn extract_claims(
     let iss = get_string_claim(claims, "iss")?;
     let sub = get_string_claim(claims, "sub")?;
     let email = get_string_claim(claims, "email")?;
+    let picture = get_string_claim(claims, "picture").ok();
     let aud = get_string_claim(claims, "aud")?;
     let role_str = get_string_claim(claims, "role")?;
     let iat_str = get_string_claim(claims, "iat")?;
@@ -158,6 +162,7 @@ fn extract_claims(
         iss,
         sub,
         email,
+        picture,
         aud,
         role,
         iat,
@@ -270,6 +275,9 @@ pub fn sign_token(
         .add_additional("email", claims.email.clone())
         .expect("setting email should not fail");
     paseto_claims
+        .add_additional("picture", claims.picture.clone())
+        .expect("setting picture should not fail");
+    paseto_claims
         .add_additional("role", role_str)
         .expect("setting role should not fail");
 
@@ -308,6 +316,7 @@ mod tests {
             iss: String::new(),
             sub: String::new(),
             email: String::new(),
+            picture: None,
             aud: String::new(),
             role: Role::Owner,
             iat: Utc::now() - chrono::Duration::minutes(16),
@@ -328,6 +337,7 @@ mod tests {
             iss: String::new(),
             sub: String::new(),
             email: String::new(),
+            picture: None,
             aud: String::new(),
             role: Role::Owner,
             iat: now - chrono::Duration::minutes(8),
@@ -341,6 +351,7 @@ mod tests {
             iss: String::new(),
             sub: String::new(),
             email: String::new(),
+            picture: None,
             aud: String::new(),
             role: Role::Owner,
             iat: now - chrono::Duration::minutes(2),
@@ -360,6 +371,7 @@ mod tests {
             iss: "https://auth.example.com".to_string(),
             sub: "user-42".to_string(),
             email: "test@example.com".to_string(),
+            picture: Some("https://example.com/picture".to_string()),
             aud: "daemon-01".to_string(),
             role: Role::Operator,
             iat: now,
@@ -381,6 +393,7 @@ mod tests {
         assert_eq!(verified.iss, claims.iss);
         assert_eq!(verified.sub, claims.sub);
         assert_eq!(verified.email, claims.email);
+        assert_eq!(verified.picture, claims.picture);
         assert_eq!(verified.aud, claims.aud);
         assert_eq!(verified.role, claims.role);
         assert_eq!(verified.raw_token, token);
@@ -394,6 +407,7 @@ mod tests {
             iss: String::new(),
             sub: String::new(),
             email: String::new(),
+            picture: None,
             aud: String::new(),
             role: Role::Owner,
             iat: now - chrono::Duration::minutes(18),
@@ -407,6 +421,7 @@ mod tests {
             iss: String::new(),
             sub: String::new(),
             email: String::new(),
+            picture: None,
             aud: String::new(),
             role: Role::Owner,
             iat: now - chrono::Duration::minutes(21),
