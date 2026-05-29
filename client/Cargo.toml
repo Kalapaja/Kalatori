@@ -12,7 +12,7 @@ repository.workspace = true
 
 [dependencies]
 # Signature
-hmac = "0.12"
+hmac = "0.13"
 sha2 = "0.10"
 const-hex = "1"
 
