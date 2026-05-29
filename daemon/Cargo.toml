@@ -93,7 +93,7 @@ tracing-loki = "0.2"
 
 # Utils
 config = "0.15"
-hkdf = "0.12"
+hkdf = "0.13"
 chacha20poly1305 = "0.10"
 base64 = "0.22"
 pasetors = { version = "0.7", default-features = false, features = ["v4", "paserk", "std"] }
