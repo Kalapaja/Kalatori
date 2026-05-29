@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 **Please note:**
 This is a public beta release of the Kalatori daemon. While it adheres to the [API specs](https://kalapaja.github.io/kalatori-api), it is still under active development. We encourage you to test it and provide feedback.
 
+## [0.9.2] - 2026-05-29
+
+### 🚀 Features
+
+- Admin token: optional `picture` claim carrying the authenticated user's avatar URL
+
 ## [0.9.1] - 2026-05-19
 
 ### 🚀 Features
