@@ -53,6 +53,7 @@ pub fn default_webhook_event(invoice_id: Uuid) -> GenericEvent<super::PublicInvo
         cart: kalatori_client::types::InvoiceCart {
             items: vec![],
         },
+        metadata: None,
         valid_till: Utc::now() + chrono::Duration::hours(24),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -61,4 +62,31 @@ pub fn default_webhook_event(invoice_id: Uuid) -> GenericEvent<super::PublicInvo
     };
 
     invoice.build_event(InvoiceEventType::Created)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webhook_payload_includes_metadata() {
+        let mut event = default_webhook_event(Uuid::new_v4());
+
+        // Absent metadata is omitted from the payload entirely
+        let webhook_event = WebhookEvent::from(default_webhook_event(Uuid::new_v4()));
+        assert!(
+            webhook_event.payload["payload"]
+                .get("metadata")
+                .is_none()
+        );
+
+        let metadata = serde_json::json!({"external_ref": "bridge-42"});
+        event.payload.metadata = Some(metadata.clone());
+
+        let webhook_event = WebhookEvent::from(event);
+        assert_eq!(
+            webhook_event.payload["payload"]["metadata"],
+            metadata
+        );
+    }
 }

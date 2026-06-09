@@ -25,6 +25,9 @@ pub use kalatori_client::types::{
     InvoiceStatus,
 };
 
+/// Maximum serialized size of merchant-provided invoice metadata
+pub const MAX_INVOICE_METADATA_BYTES: usize = 8 * 1024;
+
 // TODO: the main difference between Invoice and PublicInvoice (from
 // kalatori_client crate) is that Invoice doesn't have `payment_url` field. Need
 // to think how we can unify these types and make Invoice a subset of
@@ -41,6 +44,8 @@ pub struct Invoice {
     pub payment_address: String,
     pub status: InvoiceStatus,
     pub cart: InvoiceCart,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     pub redirect_url: String,
     pub valid_till: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
@@ -86,6 +91,7 @@ impl InvoiceWithReceivedAmount {
             ),
             redirect_url: self.invoice.redirect_url,
             cart: self.invoice.cart,
+            metadata: self.invoice.metadata,
             valid_till: self.invoice.valid_till,
             created_at: self.invoice.created_at,
             updated_at: self.invoice.updated_at,
@@ -111,6 +117,7 @@ pub struct InvoiceRow {
     pub payment_address: String,
     pub status: InvoiceStatus,
     pub cart: Json<InvoiceCart>,
+    pub metadata: Option<Json<serde_json::Value>>,
     pub redirect_url: String,
     pub valid_till: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
@@ -129,6 +136,7 @@ impl From<InvoiceRow> for Invoice {
             payment_address: row.payment_address,
             status: row.status,
             cart: row.cart.0,
+            metadata: row.metadata.map(|json| json.0),
             redirect_url: row.redirect_url,
             valid_till: row.valid_till,
             created_at: row.created_at,
@@ -147,6 +155,7 @@ pub struct CreateInvoiceData {
     pub amount: Decimal,
     pub payment_address: String,
     pub cart: InvoiceCart,
+    pub metadata: Option<serde_json::Value>,
     pub redirect_url: String,
     pub valid_till: DateTime<Utc>,
 }
@@ -165,6 +174,7 @@ impl From<CreateInvoiceData> for Invoice {
             payment_address: data.payment_address,
             status: InvoiceStatus::Waiting,
             cart: data.cart,
+            metadata: data.metadata,
             redirect_url: data.redirect_url,
             valid_till: data.valid_till,
             created_at: now,
@@ -178,6 +188,7 @@ pub struct UpdateInvoiceData {
     pub invoice_id: Uuid, // Invoice ID to update
     pub amount: Decimal,
     pub cart: InvoiceCart,
+    pub metadata: Option<serde_json::Value>,
     pub valid_till: DateTime<Utc>,
 }
 
@@ -200,6 +211,7 @@ pub fn default_create_invoice_data() -> CreateInvoiceData {
         amount: Decimal::new(10000, 2),
         payment_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7".to_string(),
         cart: InvoiceCart::empty(),
+        metadata: None,
         redirect_url: "http://localhost:8080/thankyou".to_string(),
         #[expect(clippy::arithmetic_side_effects)]
         valid_till: now + chrono::Duration::hours(24),
@@ -214,6 +226,7 @@ pub fn default_update_invoice_data(invoice_id: Uuid) -> UpdateInvoiceData {
         invoice_id,
         amount: Decimal::new(15000, 2),
         cart: InvoiceCart::empty(),
+        metadata: None,
         #[expect(clippy::arithmetic_side_effects)]
         valid_till: now + chrono::Duration::hours(24),
     }

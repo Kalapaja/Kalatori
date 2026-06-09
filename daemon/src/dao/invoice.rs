@@ -15,6 +15,7 @@ use crate::types::{
     InvoiceStatus,
     InvoiceWithReceivedAmount,
     ListInvoicesParams,
+    MAX_INVOICE_METADATA_BYTES,
     UpdateInvoiceData,
 };
 
@@ -61,6 +62,10 @@ pub enum DaoInvoiceError {
     #[error("Order ID '{order_id}' already exists")]
     DuplicateOrderId { order_id: String },
 
+    /// Metadata exceeds the maximum allowed serialized size
+    #[error("Invoice metadata exceeds {MAX_INVOICE_METADATA_BYTES} bytes")]
+    MetadataTooLarge,
+
     /// Database operation failed
     #[error("Database error during invoice operation")]
     DatabaseError,
@@ -82,6 +87,7 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => "DUPLICATE_ENTITY",
+            DaoInvoiceError::MetadataTooLarge => "VALIDATION_ERROR",
             DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
@@ -100,6 +106,7 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => "INVOICE_DUPLICATE_ORDER_ID",
+            DaoInvoiceError::MetadataTooLarge => "INVOICE_METADATA_TOO_LARGE",
             DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
@@ -118,6 +125,7 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => "An invoice with the specified order ID already exists.",
+            DaoInvoiceError::MetadataTooLarge => "Invoice metadata is too large.",
             DaoInvoiceError::DatabaseError => "A database error occurred.",
         }
     }
@@ -136,6 +144,7 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => reqwest::StatusCode::CONFLICT,
+            DaoInvoiceError::MetadataTooLarge => reqwest::StatusCode::BAD_REQUEST,
             DaoInvoiceError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -199,8 +208,8 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
         let invoice: Invoice = invoice.into();
 
         let query = sqlx::query_as::<_, InvoiceRow>(
-        "INSERT INTO invoices (id, order_id, asset_id, asset_name, chain, amount, payment_address, status, cart, redirect_url, valid_till, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO invoices (id, order_id, asset_id, asset_name, chain, amount, payment_address, status, cart, metadata, redirect_url, valid_till, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *"
         )
             .bind(invoice.id)
@@ -212,6 +221,7 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
             .bind(&invoice.payment_address)
             .bind(invoice.status)
             .bind(Json(invoice.cart))
+            .bind(invoice.metadata.map(Json))
             .bind(invoice.redirect_url)
             .bind(invoice.valid_till.naive_utc())
             .bind(invoice.created_at.naive_utc())
@@ -410,6 +420,7 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
             "UPDATE invoices
             SET amount = ?,
                 cart = ?,
+                metadata = ?,
                 valid_till = ?,
                 updated_at = datetime('now')
             WHERE id = ?
@@ -417,6 +428,7 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
         )
         .bind(Text(data.amount))
         .bind(Json(data.cart))
+        .bind(data.metadata.map(Json))
         .bind(data.valid_till.naive_utc())
         .bind(data.invoice_id);
 
@@ -926,6 +938,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_invoice_metadata_roundtrip() {
+        let dao = create_test_dao().await;
+
+        // Invoice without metadata stays without metadata
+        let created = dao
+            .create_invoice(default_create_invoice_data())
+            .await
+            .unwrap();
+        assert_eq!(created.metadata, None);
+
+        // Metadata is stored and read back verbatim
+        let metadata = serde_json::json!({
+            "external_ref": "bridge-42",
+            "callback_url": "https://example.com/notify",
+            "nested": {"a": [1, 2, 3]},
+        });
+        let invoice = CreateInvoiceData {
+            metadata: Some(metadata.clone()),
+            ..default_create_invoice_data()
+        };
+        let invoice_id = invoice.id;
+
+        let created = dao
+            .create_invoice(invoice)
+            .await
+            .unwrap();
+        assert_eq!(created.metadata, Some(metadata.clone()));
+
+        let fetched = dao
+            .get_invoice_by_id(invoice_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.metadata, Some(metadata));
+
+        // Update replaces metadata; omitted metadata clears it (cart semantics)
+        let new_metadata = serde_json::json!({"external_ref": "bridge-43"});
+        let mut update_data = default_update_invoice_data(invoice_id);
+        update_data.metadata = Some(new_metadata.clone());
+
+        let updated = dao
+            .update_invoice_data(update_data)
+            .await
+            .unwrap();
+        assert_eq!(updated.metadata, Some(new_metadata));
+
+        let cleared = dao
+            .update_invoice_data(default_update_invoice_data(invoice_id))
+            .await
+            .unwrap();
+        assert_eq!(cleared.metadata, None);
+    }
+
+    #[tokio::test]
     async fn test_create_invoice_duplicate_order_id_fails() {
         let dao = create_test_dao().await;
 
@@ -1206,6 +1272,7 @@ mod tests {
             amount,
             payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
             cart: InvoiceCart::empty(),
+            metadata: None,
             redirect_url: "http://localhost:8080/thankyou".to_string(),
             #[expect(clippy::arithmetic_side_effects)]
             valid_till: chrono::Utc::now() + chrono::Duration::hours(24),

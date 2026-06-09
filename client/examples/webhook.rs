@@ -103,6 +103,7 @@ async fn main() {
         order_id: Uuid::new_v4().to_string(),
         amount: Decimal::new(1, 1), // 0.10
         cart,
+        metadata: None,
         redirect_url: "http://example.com/thank-you".to_string(),
         include_transactions: false,
     };

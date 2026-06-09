@@ -69,6 +69,10 @@ pub struct CreateInvoiceParams {
     #[serde(default = "InvoiceCart::empty")]
     #[serde(skip_serializing_if = "InvoiceCart::is_empty")]
     pub cart: InvoiceCart,
+    /// Opaque metadata stored with the invoice and echoed back verbatim in
+    /// API responses and webhook payloads
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     pub redirect_url: String,
     #[serde(default = "default_include_transactions")]
     pub include_transactions: bool,
@@ -88,6 +92,10 @@ pub struct UpdateInvoiceParams {
     #[serde(default = "InvoiceCart::empty")]
     #[serde(skip_serializing_if = "InvoiceCart::is_empty")]
     pub cart: InvoiceCart,
+    /// Replaces the stored metadata, mirroring `cart` semantics: omitting the
+    /// field clears previously stored metadata
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     #[serde(default = "default_include_transactions")]
     pub include_transactions: bool,
 }
