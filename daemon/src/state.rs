@@ -84,13 +84,19 @@ use crate::types::{
 
 pub use swaps::SwapRequestError;
 
-fn check_metadata_size(metadata: Option<&serde_json::Value>) -> Result<(), DaoInvoiceError> {
-    match metadata {
-        Some(value) if value.to_string().len() > crate::types::MAX_INVOICE_METADATA_BYTES => {
-            Err(DaoInvoiceError::MetadataTooLarge)
-        },
-        _ => Ok(()),
+fn validate_metadata(metadata: Option<&serde_json::Value>) -> Result<(), DaoInvoiceError> {
+    let Some(value) = metadata else {
+        return Ok(());
+    };
+    // Metadata is a key/value bag: reject scalars/arrays so consumers can rely
+    // on object shape (e.g. `metadata ->> 'key'`). Matches the API spec.
+    if !value.is_object() {
+        return Err(DaoInvoiceError::MetadataNotObject);
     }
+    if value.to_string().len() > crate::types::MAX_INVOICE_METADATA_BYTES {
+        return Err(DaoInvoiceError::MetadataTooLarge);
+    }
+    Ok(())
 }
 
 pub struct AppState<D: DaoInterface = DAO> {
@@ -156,7 +162,7 @@ impl<D: DaoInterface> AppState<D> {
         &self,
         params: CreateInvoiceParams,
     ) -> Result<InvoiceWithReceivedAmount, DaoInvoiceError> {
-        check_metadata_size(params.metadata.as_ref())?;
+        validate_metadata(params.metadata.as_ref())?;
 
         let id = Uuid::new_v4();
         // Later we can extend CreateInvoiceParams to include optional chain and
@@ -287,7 +293,7 @@ impl<D: DaoInterface> AppState<D> {
         &self,
         params: UpdateInvoiceParams,
     ) -> Result<InvoiceWithReceivedAmount, DaoInvoiceError> {
-        check_metadata_size(params.metadata.as_ref())?;
+        validate_metadata(params.metadata.as_ref())?;
 
         let data = UpdateInvoiceData {
             invoice_id: params.invoice_id,
@@ -1307,6 +1313,66 @@ mod tests {
         assert!(matches!(
             result,
             Err(DaoInvoiceError::MetadataTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_create_invoice_metadata_not_object() {
+        // Non-object metadata (array/scalar) is rejected before any DAO calls.
+        let app_state = setup_app_state().await;
+
+        let params = CreateInvoiceParams {
+            order_id: "order-array-metadata".to_string(),
+            amount: Decimal::new(1000, 2),
+            cart: InvoiceCart::empty(),
+            metadata: Some(serde_json::json!([
+                "not", "an", "object"
+            ])),
+            redirect_url: "https://redirect.url".to_string(),
+            include_transactions: false,
+        };
+
+        let result = app_state.create_invoice(params).await;
+
+        assert!(matches!(
+            result,
+            Err(DaoInvoiceError::MetadataNotObject)
+        ));
+    }
+
+    #[test]
+    fn test_validate_metadata_boundaries() {
+        // None is always valid.
+        assert!(validate_metadata(None).is_ok());
+
+        // An object exactly at the cap is accepted; one byte over is rejected.
+        // Build an object whose compact serialization length we control.
+        let filler = "x".repeat(crate::types::MAX_INVOICE_METADATA_BYTES);
+        let at_or_over = serde_json::json!({ "k": filler });
+        let serialized_len = at_or_over.to_string().len();
+        assert!(serialized_len > crate::types::MAX_INVOICE_METADATA_BYTES);
+        assert!(matches!(
+            validate_metadata(Some(&at_or_over)),
+            Err(DaoInvoiceError::MetadataTooLarge)
+        ));
+
+        // Trim the filler so the whole object serializes to exactly the cap.
+        let overshoot = serialized_len - crate::types::MAX_INVOICE_METADATA_BYTES;
+        let exact = serde_json::json!({ "k": "x".repeat(filler.len() - overshoot) });
+        assert_eq!(
+            exact.to_string().len(),
+            crate::types::MAX_INVOICE_METADATA_BYTES
+        );
+        assert!(validate_metadata(Some(&exact)).is_ok());
+
+        // Scalars and arrays are rejected.
+        assert!(matches!(
+            validate_metadata(Some(&serde_json::json!("string"))),
+            Err(DaoInvoiceError::MetadataNotObject)
+        ));
+        assert!(matches!(
+            validate_metadata(Some(&serde_json::json!([1, 2, 3]))),
+            Err(DaoInvoiceError::MetadataNotObject)
         ));
     }
 }

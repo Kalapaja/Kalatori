@@ -482,6 +482,66 @@ mod tests {
         assert!(result.invoices[0].swaps.is_empty());
     }
 
+    /// Load-bearing for the control plane: Konductor's daemon sync reads
+    /// `data['metadata']` at the TOP LEVEL of each `invoices[]` entry of the
+    /// serialized /internal/changes payload. `PublicInvoiceChanges` uses
+    /// `#[serde(flatten)]` on the invoice, so this asserts the flattened
+    /// metadata lands exactly where the consumer expects it.
+    #[tokio::test]
+    async fn test_get_invoice_changes_serializes_metadata_at_top_level() {
+        let dao = create_test_dao().await;
+
+        let metadata = serde_json::json!({"bridge": "tilda", "order_id": "42"});
+        let invoice_data = crate::types::CreateInvoiceData {
+            metadata: Some(metadata.clone()),
+            ..default_create_invoice_data()
+        };
+        dao.create_invoice(invoice_data)
+            .await
+            .unwrap();
+
+        let since = Utc::now() - Duration::hours(1);
+        let result = dao
+            .get_invoice_changes(since)
+            .await
+            .unwrap();
+
+        let payload = serde_json::to_value(result.into_public("https://pay.example")).unwrap();
+        // Top-level of the invoice entry, not nested under "invoice".
+        assert_eq!(
+            payload["invoices"][0]["metadata"],
+            metadata
+        );
+        assert!(
+            payload["invoices"][0]
+                .get("invoice")
+                .is_none()
+        );
+    }
+
+    /// Invoices created without metadata must omit the key entirely (consumers
+    /// default it to `{}`), never serialize `null`.
+    #[tokio::test]
+    async fn test_get_invoice_changes_omits_absent_metadata() {
+        let dao = create_test_dao().await;
+        dao.create_invoice(default_create_invoice_data())
+            .await
+            .unwrap();
+
+        let since = Utc::now() - Duration::hours(1);
+        let result = dao
+            .get_invoice_changes(since)
+            .await
+            .unwrap();
+
+        let payload = serde_json::to_value(result.into_public("https://pay.example")).unwrap();
+        assert!(
+            payload["invoices"][0]
+                .get("metadata")
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn test_get_invoice_changes_with_transactions() {
         let dao = create_test_dao().await;

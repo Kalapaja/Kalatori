@@ -66,6 +66,10 @@ pub enum DaoInvoiceError {
     #[error("Invoice metadata exceeds {MAX_INVOICE_METADATA_BYTES} bytes")]
     MetadataTooLarge,
 
+    /// Metadata is not a JSON object
+    #[error("Invoice metadata must be a JSON object")]
+    MetadataNotObject,
+
     /// Database operation failed
     #[error("Database error during invoice operation")]
     DatabaseError,
@@ -87,7 +91,9 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => "DUPLICATE_ENTITY",
-            DaoInvoiceError::MetadataTooLarge => "VALIDATION_ERROR",
+            DaoInvoiceError::MetadataTooLarge | DaoInvoiceError::MetadataNotObject => {
+                "VALIDATION_ERROR"
+            },
             DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
@@ -107,6 +113,7 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
                 ..
             } => "INVOICE_DUPLICATE_ORDER_ID",
             DaoInvoiceError::MetadataTooLarge => "INVOICE_METADATA_TOO_LARGE",
+            DaoInvoiceError::MetadataNotObject => "INVOICE_METADATA_NOT_OBJECT",
             DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
@@ -126,6 +133,7 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
                 ..
             } => "An invoice with the specified order ID already exists.",
             DaoInvoiceError::MetadataTooLarge => "Invoice metadata is too large.",
+            DaoInvoiceError::MetadataNotObject => "Invoice metadata must be a JSON object.",
             DaoInvoiceError::DatabaseError => "A database error occurred.",
         }
     }
@@ -144,7 +152,9 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => reqwest::StatusCode::CONFLICT,
-            DaoInvoiceError::MetadataTooLarge => reqwest::StatusCode::BAD_REQUEST,
+            DaoInvoiceError::MetadataTooLarge | DaoInvoiceError::MetadataNotObject => {
+                reqwest::StatusCode::BAD_REQUEST
+            },
             DaoInvoiceError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -417,10 +427,14 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
         data: UpdateInvoiceData,
     ) -> Result<Invoice, DaoInvoiceError> {
         let query = sqlx::query_as::<_, InvoiceRow>(
+            // metadata is a stable correlation token (set once at create by API
+            // consumers such as payment bridges). Unlike cart, an update that
+            // omits it must NOT wipe it — COALESCE keeps the existing value when
+            // the bound parameter is NULL, and replaces it when a value is given.
             "UPDATE invoices
             SET amount = ?,
                 cart = ?,
-                metadata = ?,
+                metadata = COALESCE(?, metadata),
                 valid_till = ?,
                 updated_at = datetime('now')
             WHERE id = ?
@@ -973,7 +987,7 @@ mod tests {
             .unwrap();
         assert_eq!(fetched.metadata, Some(metadata));
 
-        // Update replaces metadata; omitted metadata clears it (cart semantics)
+        // Update with a value replaces metadata...
         let new_metadata = serde_json::json!({"external_ref": "bridge-43"});
         let mut update_data = default_update_invoice_data(invoice_id);
         update_data.metadata = Some(new_metadata.clone());
@@ -982,13 +996,18 @@ mod tests {
             .update_invoice_data(update_data)
             .await
             .unwrap();
-        assert_eq!(updated.metadata, Some(new_metadata));
+        assert_eq!(
+            updated.metadata,
+            Some(new_metadata.clone())
+        );
 
-        let cleared = dao
+        // ...but an update that omits metadata KEEPS the existing value (it is a
+        // stable correlation token, unlike cart). This is the COALESCE guard.
+        let kept = dao
             .update_invoice_data(default_update_invoice_data(invoice_id))
             .await
             .unwrap();
-        assert_eq!(cleared.metadata, None);
+        assert_eq!(kept.metadata, Some(new_metadata));
     }
 
     #[tokio::test]
