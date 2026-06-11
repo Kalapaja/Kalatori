@@ -22,6 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         order_id: Uuid::new_v4().to_string(),
         amount: Decimal::ONE_HUNDRED,
         cart: InvoiceCart::empty(),
+        metadata: Some(serde_json::json!({"external_ref": "example-42"})),
         redirect_url: "http://example.com/redirect".to_string(),
         include_transactions: false,
     };
@@ -65,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         invoice_id: created_invoice.id,
         amount: Decimal::ONE_THOUSAND,
         cart,
+        metadata: created_invoice.metadata.clone(),
         include_transactions: false,
     };
 

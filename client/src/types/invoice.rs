@@ -113,6 +113,9 @@ pub struct Invoice {
     pub payment_url: String,
     pub redirect_url: String,
     pub cart: InvoiceCart,
+    /// Opaque merchant-provided metadata, stored and echoed back verbatim
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     pub total_received_amount: Decimal,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transactions: Vec<Transaction>,

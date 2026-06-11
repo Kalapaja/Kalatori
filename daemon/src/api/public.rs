@@ -87,9 +87,13 @@ async fn invoice(
 
     match invoice {
         // If the invoice exists and is active, return it
-        Ok(Some(invoice))
+        Ok(Some(mut invoice))
             if invoice.invoice.status.is_active() || invoice.invoice.updated_at >= response_if =>
         {
+            // `metadata` is merchant-private (it can carry integration callback
+            // URLs, order references, pricing audit). The public payment page is
+            // served to the paying customer's browser, so strip it here.
+            invoice.invoice.metadata = None;
             (StatusCode::OK, Json(invoice)).into_response()
         },
         // TODO: update errors

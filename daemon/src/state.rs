@@ -84,6 +84,21 @@ use crate::types::{
 
 pub use swaps::SwapRequestError;
 
+fn validate_metadata(metadata: Option<&serde_json::Value>) -> Result<(), DaoInvoiceError> {
+    let Some(value) = metadata else {
+        return Ok(());
+    };
+    // Metadata is a key/value bag: reject scalars/arrays so consumers can rely
+    // on object shape (e.g. `metadata ->> 'key'`). Matches the API spec.
+    if !value.is_object() {
+        return Err(DaoInvoiceError::MetadataNotObject);
+    }
+    if value.to_string().len() > crate::types::MAX_INVOICE_METADATA_BYTES {
+        return Err(DaoInvoiceError::MetadataTooLarge);
+    }
+    Ok(())
+}
+
 pub struct AppState<D: DaoInterface = DAO> {
     keyring: KeyringClient,
     dao: D,
@@ -147,6 +162,8 @@ impl<D: DaoInterface> AppState<D> {
         &self,
         params: CreateInvoiceParams,
     ) -> Result<InvoiceWithReceivedAmount, DaoInvoiceError> {
+        validate_metadata(params.metadata.as_ref())?;
+
         let id = Uuid::new_v4();
         // Later we can extend CreateInvoiceParams to include optional chain and
         // asset_id
@@ -222,6 +239,7 @@ impl<D: DaoInterface> AppState<D> {
             order_id: params.order_id,
             amount: params.amount,
             cart: params.cart,
+            metadata: params.metadata,
             redirect_url: params.redirect_url,
             id,
             asset_id,
@@ -275,10 +293,13 @@ impl<D: DaoInterface> AppState<D> {
         &self,
         params: UpdateInvoiceParams,
     ) -> Result<InvoiceWithReceivedAmount, DaoInvoiceError> {
+        validate_metadata(params.metadata.as_ref())?;
+
         let data = UpdateInvoiceData {
             invoice_id: params.invoice_id,
             amount: params.amount,
             cart: params.cart,
+            metadata: params.metadata,
             valid_till: Utc::now()
                 + Duration::milliseconds(
                     self.payments_config
@@ -949,6 +970,7 @@ mod tests {
         expected.order_id == actual.order_id
             && expected.amount == actual.amount
             && expected.cart == actual.cart
+            && expected.metadata == actual.metadata
             && expected.redirect_url == actual.redirect_url
             && expected.asset_id == actual.asset_id
             && expected.chain == actual.chain
@@ -974,6 +996,7 @@ mod tests {
             && expected.payment_address == actual.payment_address
             && expected.status == actual.status
             && expected.cart == actual.cart
+            && expected.metadata == actual.metadata
             && expected.redirect_url == actual.redirect_url
             // It might be off by a few milliseconds, so we compare timestamps.
             // It still might fail if the test runs too slow, but it's unlikely.
@@ -1066,6 +1089,7 @@ mod tests {
             order_id: "order123".to_string(),
             amount: Decimal::new(1000, 2), // 10.00
             cart: InvoiceCart::empty(),
+            metadata: Some(serde_json::json!({"external_ref": "abc-123"})),
             redirect_url: "https://redirect.url".to_string(),
             include_transactions: false,
         };
@@ -1086,6 +1110,7 @@ mod tests {
                 order_id: params.order_id.clone(),
                 amount: params.amount,
                 cart: params.cart.clone(),
+                metadata: params.metadata.clone(),
                 redirect_url: params.redirect_url.clone(),
                 asset_id: 1337.to_string(),
                 asset_name: "USDC".to_string(),
@@ -1163,6 +1188,7 @@ mod tests {
             order_id: "order456".to_string(),
             amount: Decimal::new(5000, 2), // 50.00
             cart: InvoiceCart::empty(),
+            metadata: None,
             redirect_url: "https://redirect.url".to_string(),
             include_transactions: false,
         };
@@ -1202,6 +1228,7 @@ mod tests {
             order_id: "order789".to_string(),
             amount: Decimal::new(7500, 2), // 75.00
             cart: InvoiceCart::empty(),
+            metadata: None,
             redirect_url: "https://redirect.url".to_string(),
             include_transactions: false,
         };
@@ -1212,6 +1239,7 @@ mod tests {
                 order_id: params.order_id.clone(),
                 amount: params.amount,
                 cart: params.cart.clone(),
+                metadata: None,
                 redirect_url: params.redirect_url.clone(),
                 asset_id: 1337.to_string(),
                 asset_name: "USDC".to_string(),
@@ -1261,5 +1289,90 @@ mod tests {
             .invoices_count()
             .await;
         assert_eq!(registry_records_count, 1); // Only the first successful invoice is present
+    }
+
+    #[tokio::test]
+    async fn test_create_invoice_metadata_too_large() {
+        // Oversized metadata is rejected before any keyring or DAO calls
+        // (mocks have no expectations set, so any call would panic)
+        let app_state = setup_app_state().await;
+
+        let params = CreateInvoiceParams {
+            order_id: "order-oversized-metadata".to_string(),
+            amount: Decimal::new(1000, 2),
+            cart: InvoiceCart::empty(),
+            metadata: Some(serde_json::json!({
+                "blob": "x".repeat(crate::types::MAX_INVOICE_METADATA_BYTES),
+            })),
+            redirect_url: "https://redirect.url".to_string(),
+            include_transactions: false,
+        };
+
+        let result = app_state.create_invoice(params).await;
+
+        assert!(matches!(
+            result,
+            Err(DaoInvoiceError::MetadataTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_create_invoice_metadata_not_object() {
+        // Non-object metadata (array/scalar) is rejected before any DAO calls.
+        let app_state = setup_app_state().await;
+
+        let params = CreateInvoiceParams {
+            order_id: "order-array-metadata".to_string(),
+            amount: Decimal::new(1000, 2),
+            cart: InvoiceCart::empty(),
+            metadata: Some(serde_json::json!([
+                "not", "an", "object"
+            ])),
+            redirect_url: "https://redirect.url".to_string(),
+            include_transactions: false,
+        };
+
+        let result = app_state.create_invoice(params).await;
+
+        assert!(matches!(
+            result,
+            Err(DaoInvoiceError::MetadataNotObject)
+        ));
+    }
+
+    #[test]
+    fn test_validate_metadata_boundaries() {
+        // None is always valid.
+        assert!(validate_metadata(None).is_ok());
+
+        // An object exactly at the cap is accepted; one byte over is rejected.
+        // Build an object whose compact serialization length we control.
+        let filler = "x".repeat(crate::types::MAX_INVOICE_METADATA_BYTES);
+        let at_or_over = serde_json::json!({ "k": filler });
+        let serialized_len = at_or_over.to_string().len();
+        assert!(serialized_len > crate::types::MAX_INVOICE_METADATA_BYTES);
+        assert!(matches!(
+            validate_metadata(Some(&at_or_over)),
+            Err(DaoInvoiceError::MetadataTooLarge)
+        ));
+
+        // Trim the filler so the whole object serializes to exactly the cap.
+        let overshoot = serialized_len - crate::types::MAX_INVOICE_METADATA_BYTES;
+        let exact = serde_json::json!({ "k": "x".repeat(filler.len() - overshoot) });
+        assert_eq!(
+            exact.to_string().len(),
+            crate::types::MAX_INVOICE_METADATA_BYTES
+        );
+        assert!(validate_metadata(Some(&exact)).is_ok());
+
+        // Scalars and arrays are rejected.
+        assert!(matches!(
+            validate_metadata(Some(&serde_json::json!("string"))),
+            Err(DaoInvoiceError::MetadataNotObject)
+        ));
+        assert!(matches!(
+            validate_metadata(Some(&serde_json::json!([1, 2, 3]))),
+            Err(DaoInvoiceError::MetadataNotObject)
+        ));
     }
 }

@@ -24,7 +24,8 @@ Primary entity. Tracks payment requests from merchants.
 | amount | TEXT | Decimal string (e.g., "123.456789") |
 | payment_address | TEXT | Derived HD address |
 | status | TEXT | See status transitions below |
-| cart | TEXT | JSON (TEXT) metadata |
+| cart | TEXT | JSON (TEXT) cart items |
+| metadata | TEXT | Optional opaque merchant JSON **object** (max 8 KiB serialized), echoed in private API responses and webhooks; NULL = not provided. Stripped from the public payment-page endpoint. On update it is *sticky* — omitting it keeps the stored value (unlike `cart`). |
 | redirect_url | TEXT | Post-payment redirect |
 | valid_till | TEXT | ISO 8601 expiration |
 | created_at, updated_at | TEXT | ISO 8601 timestamps |

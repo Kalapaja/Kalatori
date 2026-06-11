@@ -1288,6 +1288,7 @@ mod tests {
             amount: Decimal::new(10000, 2),
             payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
             cart: InvoiceCart::empty(),
+            metadata: None,
             redirect_url: "http://localhost:8080/thankyou".to_string(),
             #[expect(clippy::arithmetic_side_effects)]
             valid_till: chrono::Utc::now() + chrono::Duration::hours(24),

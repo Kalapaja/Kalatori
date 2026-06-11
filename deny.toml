@@ -3,7 +3,12 @@
 # output a note when they are encountered.
 
 ignore = [
+    # `paste` is unmaintained; pulled in transitively (no vulnerability, proc-macro only)
     "RUSTSEC-2024-0436",
+    # `proc-macro-error2` is unmaintained; pulled in via alloy-sol-macro (no vulnerability,
+    # proc-macro only). Upstream alloy-rs/core already migrated to proc-macro-error3 on main —
+    # drop this once a release after alloy-core 1.6.0 ships and we update.
+    "RUSTSEC-2026-0173",
 ]
 
 [licenses]
@@ -23,10 +28,52 @@ allow = [
     "GPL-3.0-or-later",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
-    "OpenSSL",
     "Unlicense",
     "bzip2-1.0.6",
 ]
+
+# The subxt crates declare `Apache-2.0 OR GPL-3.0`, where `GPL-3.0` is a deprecated
+# SPDX identifier that makes cargo-deny emit a parse warning (still unfixed upstream
+# as of subxt 0.50.1). Clarify them all to the modern equivalent expression.
+[[licenses.clarify]]
+crate = "subxt"
+expression = "Apache-2.0 OR GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+crate = "subxt-codegen"
+expression = "Apache-2.0 OR GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+crate = "subxt-core"
+expression = "Apache-2.0 OR GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+crate = "subxt-macro"
+expression = "Apache-2.0 OR GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+crate = "subxt-metadata"
+expression = "Apache-2.0 OR GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+crate = "subxt-rpcs"
+expression = "Apache-2.0 OR GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+crate = "subxt-signer"
+expression = "Apache-2.0 OR GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+crate = "subxt-utils-fetchmetadata"
+expression = "Apache-2.0 OR GPL-3.0-only"
+license-files = []
 
 [bans]
 # Lint level for when multiple versions of the same crate are detected
@@ -53,7 +100,7 @@ allow-git = []
 
 [sources.allow-org]
 # github.com organizations to allow git sources for
-github = ["Kalapaja"]
+github = []
 # gitlab.com organizations to allow git sources for
 gitlab = []
 # bitbucket.org organizations to allow git sources for
