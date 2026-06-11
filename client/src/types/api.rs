@@ -92,8 +92,9 @@ pub struct UpdateInvoiceParams {
     #[serde(default = "InvoiceCart::empty")]
     #[serde(skip_serializing_if = "InvoiceCart::is_empty")]
     pub cart: InvoiceCart,
-    /// Replaces the stored metadata, mirroring `cart` semantics: omitting the
-    /// field clears previously stored metadata
+    /// Replaces the stored metadata when provided. Unlike `cart`, metadata is
+    /// sticky: omitting the field keeps the previously stored value. To clear
+    /// it, send an empty object `{}`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
     #[serde(default = "default_include_transactions")]
