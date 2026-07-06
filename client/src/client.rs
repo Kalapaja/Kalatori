@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use secrecy::SecretSlice;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -22,6 +24,15 @@ pub struct KalatoriClient {
     base_url: String,
     config: HmacConfig,
 }
+
+// Money-path resilience: never let a payment-critical call hang forever on a
+// stalled or unreachable daemon. `CONNECT_TIMEOUT` bounds establishing the
+// TCP/TLS connection; `REQUEST_TIMEOUT` bounds the whole request (connect +
+// send + response). These are deliberately tighter than the daemon's own
+// outbound clients (per-request ~60s, no connect timeout) because these calls
+// sit on a latency-sensitive interactive path.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub const CREATE_INVOICE_PATH: &str = "/private/v3/invoice/create";
 pub const GET_INVOICE_PATH: &str = "/private/v3/invoice/get";
@@ -52,8 +63,18 @@ impl KalatoriClient {
     ) -> Self {
         let config = HmacConfig::new(secret_key, 0);
 
+        // Fail fast at construction (like `reqwest::Client::new()` itself, which
+        // unwraps `build()` internally): the timeouts are constant and valid, so
+        // this only fails if the TLS backend/resolver can't initialise — a
+        // startup-time environment fault, not a money-path condition.
+        let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .expect("failed to build reqwest client for KalatoriClient");
+
         Self {
-            client: reqwest::Client::new(),
+            client,
             modify_path: |path| path.to_string(),
             base_url,
             config,
@@ -166,5 +187,31 @@ impl KalatoriClient {
         )?;
 
         self.execute_request(request).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_constants_are_sane() {
+        // `reqwest::Client` doesn't expose its configured timeouts for readback,
+        // so guard the intended money-path bounds at the constant level: a
+        // connect timeout strictly tighter than the whole-request timeout, both
+        // non-zero. This fails if a future edit weakens or drops the values.
+        assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(15));
+        assert!(CONNECT_TIMEOUT < REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn new_builds_client_with_timeouts() {
+        // Exercises the `reqwest::Client::builder()...build().expect(...)` path:
+        // construction must succeed (not panic) with the configured timeouts.
+        let _client = KalatoriClient::new(
+            "http://localhost:8080".to_string(),
+            b"secret".to_vec(),
+        );
     }
 }

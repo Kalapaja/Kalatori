@@ -4,6 +4,9 @@
 
 ignore = [
     "RUSTSEC-2024-0436",
+    # proc-macro-error2 unmaintained. Build-time transitive dep via
+    # alloy-sol-macro; no safe upgrade available and not a vulnerability.
+    "RUSTSEC-2026-0173",
 ]
 
 [licenses]
