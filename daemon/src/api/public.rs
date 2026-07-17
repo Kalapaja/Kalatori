@@ -61,7 +61,7 @@ async fn index(ExtractState(state): ExtractState<ApiState>) -> Html<String> {
             "%VITE_PAYMENT_PAGE_TITLE%",
             &format!(
                 "{} Payment | Kalatori",
-                &shop_meta.shop_name
+                shop_meta.shop_name
             ),
         )
         .replace(
