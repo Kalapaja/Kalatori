@@ -57,7 +57,7 @@ Actor pattern: mpsc channel + oneshot responses. Holds seed phrase (`Zeroize` + 
 Client interface: `KeyringClient` (mockable via `mockall_double`).
 
 ### `daemon/src/chain/` — Chain Monitoring & Execution
-- **`transfer_tracker.rs`** (`TransfersTracker`): Subscribes to finalized blocks per chain, detects incoming transfers, notifies `TransactionsRecorder`
+- **`transfer_tracker.rs`** (`TransfersTracker`): Subscribes to finalized blocks per chain, detects incoming transfers, and notifies `TransactionsRecorder`. Failed subscriptions and streams that end before delivering an event use a cancellation-aware exponential retry delay (1–60 seconds). Retry state resets only after a stream delivers an event; degradation is reported on entry and at most once per minute, with recovery reported separately.
 - **`transactions_recorder.rs`** (`TransactionsRecorder`): Records detected transactions to DB, updates `InvoiceRegistry`
 - **`executor.rs`** (`TransfersExecutor`): Builds and submits payout transactions for both chains. Single executor instance handles Asset Hub + Polygon.
 - **`invoice_registry.rs`** (`InvoiceRegistry`): In-memory tracking of active invoices and their expected amounts. Thread-safe (internal `RwLock`).

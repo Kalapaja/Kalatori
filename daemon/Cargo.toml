@@ -116,6 +116,7 @@ governor = "0.10"
 zip = "8.5"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 mockall = "0.14"
 mockall_double = "0.3"
 httpmock = "0.8"
