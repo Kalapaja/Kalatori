@@ -357,6 +357,41 @@ pub enum DaoError {
     #[error("SQLite database error")]
     Sqlx(#[from] sqlx::Error),
 
+    #[error("database migration failed")]
+    Migration(#[from] sqlx::migrate::MigrateError),
+
+    #[error(
+        "database.require_existing is set but no existing database was found at {path}; refusing to initialize an empty database (was the Litestream restore skipped?)"
+    )]
+    RequiredDatabaseMissing { path: String },
+
+    #[error("failed to inspect database file at {path}")]
+    DatabaseMetadata {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("database.require_existing and database.temporary are incompatible")]
+    IncompatibleDatabaseConfig,
+
+    #[error("failed to open database at {path}")]
+    DatabaseOpen {
+        path: String,
+        #[source]
+        source: sqlx::Error,
+    },
+
+    #[error("database integrity check could not run at {path}")]
+    IntegrityCheckQuery {
+        path: String,
+        #[source]
+        source: sqlx::Error,
+    },
+
+    #[error("database integrity check did not pass at {path}")]
+    IntegrityCheckFailed { path: String },
+
     #[error("invoice not found")]
     InvoiceNotFound,
 

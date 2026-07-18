@@ -378,6 +378,8 @@ pub struct DatabaseConfig {
     pub dir: String,
     #[serde(default)]
     pub temporary: bool,
+    #[serde(default)]
+    pub require_existing: bool,
 }
 
 fn default_signature_max_age_secs() -> u64 {

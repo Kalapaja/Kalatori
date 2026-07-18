@@ -236,9 +236,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     );
 
     // Initialize DAO for SQLite database operations
-    let dao = DAO::new(database_config.clone())
-        .await
-        .map_err(error::DaoError::Sqlx)?;
+    let dao = DAO::new(database_config.clone()).await?;
 
     let invoice_registry = init_invoice_registry(&dao).await?;
 
