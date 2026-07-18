@@ -245,7 +245,8 @@ impl DAO {
             for row in integrity_rows {
                 tracing::error!(
                     database_path,
-                    sqlite_integrity_check = row
+                    sqlite_integrity_check = row,
+                    "SQLite integrity check reported a problem"
                 );
             }
             return Err(DaoError::IntegrityCheckFailed {
