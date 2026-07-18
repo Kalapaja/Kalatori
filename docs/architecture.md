@@ -124,7 +124,7 @@ Eight config types loaded at startup (all support env var overrides):
 | Chains | `chains.json` | Chain endpoints, assets (mandatory) |
 | Payments | `payments.json` | Recipient addresses, account lifetime, default chain/asset |
 | Secrets | `secrets.json` | BIP39 seed phrase, API secret key |
-| Database | (defaults) | Database path, temporary mode |
+| Database | `database.json` | Database path, temporary mode, fail-closed existing-database requirement |
 | Web Server | (defaults) | Host, port (default 0.0.0.0:16726) |
 | Shop | `shop.json` | Webhook URL, shop metadata, signature max age |
 | Logger | `logger.json` | Log level, Loki endpoint |
@@ -136,6 +136,10 @@ Eight config types loaded at startup (all support env var overrides):
 **Security**: Seed phrase and API secret key are zeroized from env/memory after loading.
 
 Example configs in `configs/` directory.
+
+At startup, the daemon always runs SQLite's `PRAGMA integrity_check` before migrations. Set
+`require_existing` (or `KALATORI_DATABASE_REQUIRE_EXISTING`) to refuse startup when the configured
+database file is missing or empty; this is incompatible with temporary in-memory mode.
 
 ## Background Task Management
 

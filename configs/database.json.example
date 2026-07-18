@@ -1,0 +1,5 @@
+{
+  "dir": "./database",
+  "temporary": false,
+  "require_existing": false
+}

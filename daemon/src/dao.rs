@@ -26,6 +26,7 @@ use sqlx::{
 use tokio::sync::Mutex;
 
 use crate::configs::DatabaseConfig;
+use crate::error::DaoError;
 
 // Export domain-specific errors
 pub use changes::DaoChangesError;
@@ -169,7 +170,17 @@ pub struct DAO {
 }
 
 impl DAO {
-    pub async fn new(config: DatabaseConfig) -> DaoResult<Self> {
+    pub async fn new(config: DatabaseConfig) -> Result<Self, DaoError> {
+        if config.require_existing && config.temporary {
+            return Err(DaoError::IncompatibleDatabaseConfig);
+        }
+
+        let database_path = if config.temporary {
+            ":memory:".to_string()
+        } else {
+            format!("{}/{}", config.dir, SQLITE_FILE_NAME)
+        };
+
         let (pool_options, connection_options) = if config.temporary {
             tracing::info!("Using in-memory temporary database");
             let pool_opts = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1);
@@ -178,8 +189,17 @@ impl DAO {
                 .in_memory(true);
             (pool_opts, conn_opts)
         } else {
-            if !std::fs::exists(&config.dir)? {
-                std::fs::create_dir_all(&config.dir)?;
+            if config.require_existing {
+                let is_nonempty_file = std::fs::metadata(&database_path)
+                    .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+                if !is_nonempty_file {
+                    return Err(DaoError::RequiredDatabaseMissing {
+                        path: database_path,
+                    });
+                }
+            }
+            if !std::fs::exists(&config.dir).map_err(sqlx::Error::Io)? {
+                std::fs::create_dir_all(&config.dir).map_err(sqlx::Error::Io)?;
                 tracing::warn!(
                     "Failed to find sqlite3 database directory at {}. Created new directory at {} with database file {} inside.",
                     config.dir,
@@ -189,18 +209,18 @@ impl DAO {
             }
             let pool_opts = sqlx::sqlite::SqlitePoolOptions::new();
             let conn_opts = sqlx::sqlite::SqliteConnectOptions::new()
-                .create_if_missing(true)
-                .filename(format!(
-                    "{}/{}",
-                    config.dir, SQLITE_FILE_NAME,
-                ));
+                .create_if_missing(!config.require_existing)
+                .filename(&database_path);
             (pool_opts, conn_opts)
         };
 
         let pool = pool_options
             .connect_with(connection_options)
             .await
-            .expect("Failed to create database connection pool");
+            .map_err(|source| DaoError::DatabaseOpen {
+                path: database_path.clone(),
+                source,
+            })?;
 
         let dao = Self {
             pool,
@@ -211,6 +231,25 @@ impl DAO {
             "Current SQLite version: {}",
             sqlite_version
         );
+
+        let integrity_rows: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_all(&dao.pool)
+            .await
+            .map_err(|source| DaoError::DatabaseOpen {
+                path: database_path.clone(),
+                source,
+            })?;
+        if integrity_rows.as_slice() != ["ok"] {
+            for row in integrity_rows {
+                tracing::error!(
+                    database_path,
+                    sqlite_integrity_check = row
+                );
+            }
+            return Err(DaoError::IntegrityCheckFailed {
+                path: database_path,
+            });
+        }
 
         tracing::info!("Run database migrations...");
 
@@ -301,9 +340,154 @@ async fn create_test_dao() -> DAO {
     let config = DatabaseConfig {
         dir: String::new(),
         temporary: true,
+        require_existing: false,
     };
 
     DAO::new(config)
         .await
         .expect("Failed to create test DAO")
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "kalatori-dao-test-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir(&path).expect("Failed to create test directory");
+            Self(path)
+        }
+
+        fn database_path(&self) -> PathBuf {
+            self.0.join(SQLITE_FILE_NAME)
+        }
+
+        fn config(
+            &self,
+            require_existing: bool,
+        ) -> DatabaseConfig {
+            DatabaseConfig {
+                dir: self.0.to_string_lossy().into_owned(),
+                temporary: false,
+                require_existing,
+            }
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).expect("Failed to remove test directory");
+        }
+    }
+
+    #[tokio::test]
+    async fn require_existing_rejects_missing_database() {
+        let directory = TestDirectory::new();
+        let database_path = directory.database_path();
+
+        let error = DAO::new(directory.config(true))
+            .await
+            .err()
+            .expect("Missing database must fail");
+
+        assert!(matches!(
+            error,
+            DaoError::RequiredDatabaseMissing { .. }
+        ));
+        assert!(
+            error.to_string().contains(
+                &database_path
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn require_existing_rejects_zero_length_database() {
+        let directory = TestDirectory::new();
+        std::fs::File::create(directory.database_path())
+            .expect("Failed to create empty database file");
+
+        let error = DAO::new(directory.config(true))
+            .await
+            .err()
+            .expect("Empty database must fail");
+
+        assert!(matches!(
+            error,
+            DaoError::RequiredDatabaseMissing { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn require_existing_accepts_initialized_database() {
+        let directory = TestDirectory::new();
+        drop(
+            DAO::new(directory.config(false))
+                .await
+                .expect("Initial database creation failed"),
+        );
+
+        DAO::new(directory.config(true))
+            .await
+            .expect("Existing database must start");
+    }
+
+    #[tokio::test]
+    async fn require_existing_is_incompatible_with_temporary_database() {
+        let error = DAO::new(DatabaseConfig {
+            dir: String::new(),
+            temporary: true,
+            require_existing: true,
+        })
+        .await
+        .err()
+        .expect("Contradictory database config must fail");
+
+        assert!(matches!(
+            error,
+            DaoError::IncompatibleDatabaseConfig
+        ));
+    }
+
+    #[tokio::test]
+    async fn garbage_database_fails_with_its_path() {
+        let directory = TestDirectory::new();
+        let database_path = directory.database_path();
+        std::fs::write(&database_path, b"not a sqlite database")
+            .expect("Failed to create corrupt database file");
+
+        let error = DAO::new(directory.config(true))
+            .await
+            .err()
+            .expect("Corrupt database must fail");
+
+        assert!(
+            error.to_string().contains(
+                &database_path
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn default_mode_creates_and_migrates_fresh_database() {
+        let directory = TestDirectory::new();
+
+        DAO::new(directory.config(false))
+            .await
+            .expect("Fresh database must start");
+
+        assert!(directory.database_path().is_file());
+    }
 }
