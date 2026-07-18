@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 **Please note:**
 This is a public beta release of the Kalatori daemon. While it adheres to the [API specs](https://kalapaja.github.io/kalatori-api), it is still under active development. We encourage you to test it and provide feedback.
 
+## [0.9.3] - 2026-07-18
+
+### 🚀 Features
+
+- Fail-closed database startup gate: `database.require_existing` (default `false`) refuses to start when a required database is missing or empty, instead of silently initializing a new one
+- Unconditional `PRAGMA integrity_check` at startup, before migrations
+
+### 🐛 Bug Fixes
+
+- Runaway reconnect loop in `TransfersTracker`: subscription failures now use capped exponential backoff (#326)
+- `KalatoriClient` now applies connect (5s) and request (15s) timeouts
+
 ## [0.9.2] - 2026-05-29
 
 ### 🚀 Features
