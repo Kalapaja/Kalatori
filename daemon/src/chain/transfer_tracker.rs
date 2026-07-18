@@ -353,6 +353,12 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        Mutex,
+    };
+
+    use futures::stream;
     use mockall::predicate::eq;
     use rust_decimal::Decimal;
 
@@ -371,6 +377,10 @@ mod tests {
     };
 
     use super::*;
+
+    fn pending_transfers_stream() -> TransfersStream<PolygonChainConfig> {
+        Box::pin(stream::pending())
+    }
 
     #[tokio::test(start_paused = true)]
     async fn perform_applies_backoff_between_failed_subscription_cycles() {
@@ -423,6 +433,193 @@ mod tests {
             gaps.iter().all(|gap| *gap >= 1),
             "no attempt may follow the previous one without delay: {gaps:?}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn successful_client_recreation_still_waits_before_resubscribing() {
+        let subscription_attempts = Arc::new(Mutex::new(Vec::new()));
+        let mut replacement_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        replacement_client
+            .expect_chain_name()
+            .return_const("replacement-chain");
+        let replacement_attempts = Arc::clone(&subscription_attempts);
+        replacement_client
+            .expect_subscribe_transfers()
+            .once()
+            .returning(move |_| {
+                replacement_attempts
+                    .lock()
+                    .unwrap()
+                    .push(tokio::time::Instant::now());
+                Ok(pending_transfers_stream())
+            });
+
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_chain_name()
+            .return_const("initial-chain");
+        let initial_attempts = Arc::clone(&subscription_attempts);
+        chain_client
+            .expect_subscribe_transfers()
+            .once()
+            .returning(move |_| {
+                initial_attempts
+                    .lock()
+                    .unwrap()
+                    .push(tokio::time::Instant::now());
+                Err(SubscriptionError::SubscriptionFailed)
+            });
+        chain_client
+            .expect_recreate()
+            .once()
+            .return_once(move || Ok(replacement_client));
+
+        let tracker = TransfersTracker::new(
+            chain_client,
+            InvoiceRegistry::new(),
+            TransactionsRecorder::<DAO>::default(),
+        );
+        let token = CancellationToken::new();
+        let tracker_task = tokio::spawn(tracker.perform(vec![], token.clone()));
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            subscription_attempts
+                .lock()
+                .unwrap()
+                .len(),
+            1
+        );
+        tokio::time::advance(INITIAL_RETRY_DELAY - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            subscription_attempts
+                .lock()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        {
+            let attempt_times = subscription_attempts.lock().unwrap();
+            assert_eq!(attempt_times.len(), 2);
+            assert_eq!(
+                attempt_times[1].duration_since(attempt_times[0]),
+                INITIAL_RETRY_DELAY
+            );
+        }
+
+        token.cancel();
+        tracker_task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_stream_event_drops_subscription_and_backs_off() {
+        assert_stream_failure_drops_subscription_and_backs_off(Box::pin(stream::iter([Err(
+            SubscriptionError::SubscriptionFailed,
+        )])))
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closed_stream_drops_subscription_and_backs_off() {
+        assert_stream_failure_drops_subscription_and_backs_off(Box::pin(stream::empty())).await;
+    }
+
+    async fn assert_stream_failure_drops_subscription_and_backs_off(
+        first_stream: TransfersStream<PolygonChainConfig>
+    ) {
+        let subscription_attempts = Arc::new(Mutex::new(Vec::new()));
+        let first_stream = Arc::new(Mutex::new(Some(first_stream)));
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_chain_name()
+            .return_const("test-chain");
+        let recorded_attempts = Arc::clone(&subscription_attempts);
+        chain_client
+            .expect_subscribe_transfers()
+            .times(2)
+            .returning(move |_| {
+                recorded_attempts
+                    .lock()
+                    .unwrap()
+                    .push(tokio::time::Instant::now());
+                Ok(first_stream
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap_or_else(pending_transfers_stream))
+            });
+
+        let tracker = TransfersTracker::new(
+            chain_client,
+            InvoiceRegistry::new(),
+            TransactionsRecorder::<DAO>::default(),
+        );
+        let token = CancellationToken::new();
+        let tracker_task = tokio::spawn(tracker.perform(vec![], token.clone()));
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            subscription_attempts
+                .lock()
+                .unwrap()
+                .len(),
+            1
+        );
+        tokio::time::advance(INITIAL_RETRY_DELAY - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            subscription_attempts
+                .lock()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        {
+            let attempt_times = subscription_attempts.lock().unwrap();
+            assert_eq!(attempt_times.len(), 2);
+            assert_eq!(
+                attempt_times[1].duration_since(attempt_times[0]),
+                INITIAL_RETRY_DELAY
+            );
+        }
+
+        token.cancel();
+        tracker_task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_while_awaiting_stream_event_stops_without_retrying() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_chain_name()
+            .return_const("test-chain");
+        chain_client
+            .expect_subscribe_transfers()
+            .once()
+            .returning(|_| Ok(pending_transfers_stream()));
+        chain_client.expect_recreate().never();
+
+        let tracker = TransfersTracker::new(
+            chain_client,
+            InvoiceRegistry::new(),
+            TransactionsRecorder::<DAO>::default(),
+        );
+        let token = CancellationToken::new();
+        let started_at = tokio::time::Instant::now();
+        let tracker_task = tokio::spawn(tracker.perform(vec![], token.clone()));
+
+        tokio::task::yield_now().await;
+        token.cancel();
+        tracker_task.await.unwrap();
+
+        assert_eq!(tokio::time::Instant::now(), started_at);
     }
 
     #[test]
@@ -500,6 +697,23 @@ mod tests {
             Duration::from_secs(1)
         );
         assert!(logs_contain(
+            "Transfer tracking recovered"
+        ));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn health_record_without_failures_preserves_initial_state() {
+        let started_at = tokio::time::Instant::now();
+        let mut retry_state = RetryState::new();
+
+        retry_state.record_health_at(started_at);
+
+        assert_eq!(retry_state.delay, INITIAL_RETRY_DELAY);
+        assert_eq!(retry_state.attempts, 0);
+        assert_eq!(retry_state.degraded_since, None);
+        assert_eq!(retry_state.last_warning, None);
+        assert!(!logs_contain(
             "Transfer tracking recovered"
         ));
     }
