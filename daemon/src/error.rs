@@ -365,6 +365,13 @@ pub enum DaoError {
     )]
     RequiredDatabaseMissing { path: String },
 
+    #[error("failed to inspect database file at {path}")]
+    DatabaseMetadata {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("database.require_existing and database.temporary are incompatible")]
     IncompatibleDatabaseConfig,
 
@@ -375,7 +382,14 @@ pub enum DaoError {
         source: sqlx::Error,
     },
 
-    #[error("database integrity check failed at {path}")]
+    #[error("database integrity check could not run at {path}")]
+    IntegrityCheckQuery {
+        path: String,
+        #[source]
+        source: sqlx::Error,
+    },
+
+    #[error("database integrity check did not pass at {path}")]
     IntegrityCheckFailed { path: String },
 
     #[error("invoice not found")]

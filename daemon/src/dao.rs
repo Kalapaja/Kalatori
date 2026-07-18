@@ -190,8 +190,16 @@ impl DAO {
             (pool_opts, conn_opts)
         } else {
             if config.require_existing {
-                let is_nonempty_file = std::fs::metadata(&database_path)
-                    .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+                let is_nonempty_file = match std::fs::metadata(&database_path) {
+                    Ok(metadata) => metadata.is_file() && metadata.len() > 0,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(source) => {
+                        return Err(DaoError::DatabaseMetadata {
+                            path: database_path,
+                            source,
+                        });
+                    },
+                };
                 if !is_nonempty_file {
                     return Err(DaoError::RequiredDatabaseMissing {
                         path: database_path,
@@ -226,16 +234,10 @@ impl DAO {
             pool,
         };
 
-        let sqlite_version = dao.sqlite_version().await?;
-        tracing::info!(
-            "Current SQLite version: {}",
-            sqlite_version
-        );
-
         let integrity_rows: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
             .fetch_all(&dao.pool)
             .await
-            .map_err(|source| DaoError::DatabaseOpen {
+            .map_err(|source| DaoError::IntegrityCheckQuery {
                 path: database_path.clone(),
                 source,
             })?;
@@ -250,6 +252,12 @@ impl DAO {
                 path: database_path,
             });
         }
+
+        let sqlite_version = dao.sqlite_version().await?;
+        tracing::info!(
+            "Current SQLite version: {}",
+            sqlite_version
+        );
 
         tracing::info!("Run database migrations...");
 
@@ -384,7 +392,8 @@ mod startup_tests {
 
     impl Drop for TestDirectory {
         fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.0).expect("Failed to remove test directory");
+            #[expect(let_underscore_drop)]
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
@@ -471,6 +480,10 @@ mod startup_tests {
             .err()
             .expect("Corrupt database must fail");
 
+        assert!(matches!(
+            error,
+            DaoError::IntegrityCheckQuery { .. }
+        ));
         assert!(
             error.to_string().contains(
                 &database_path
@@ -478,6 +491,45 @@ mod startup_tests {
                     .into_owned()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn garbage_database_is_rejected_without_require_existing() {
+        let directory = TestDirectory::new();
+        let database_path = directory.database_path();
+        std::fs::write(&database_path, b"not a sqlite database")
+            .expect("Failed to create corrupt database file");
+
+        let error = DAO::new(directory.config(false))
+            .await
+            .err()
+            .expect("Corrupt database must fail in default mode");
+
+        assert!(matches!(
+            error,
+            DaoError::IntegrityCheckQuery { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn require_existing_reports_metadata_errors_honestly() {
+        let directory = TestDirectory::new();
+        std::os::unix::fs::symlink(
+            SQLITE_FILE_NAME,
+            directory.database_path(),
+        )
+        .expect("Failed to create symlink loop");
+
+        let error = DAO::new(directory.config(true))
+            .await
+            .err()
+            .expect("Uninspectable database must fail");
+
+        assert!(matches!(
+            error,
+            DaoError::DatabaseMetadata { .. }
+        ));
     }
 
     #[tokio::test]
