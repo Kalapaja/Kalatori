@@ -992,20 +992,26 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                                         buffer.insert(block_number, transaction_hash, log_index, transfer);
                                     },
                                     Err(e) => {
-                                        tracing::warn!(
+                                        // The log decoded, so this is one of our Transfer
+                                        // events: failing to record it means a payment we
+                                        // will not see again until the invoice expires.
+                                        tracing::error!(
                                             error = ?e,
-                                            "Failed to process transfer event"
+                                            tx_hash = ?log.transaction_hash,
+                                            "Failed to process transfer event, skipping it"
                                         );
-                                        break
+                                        continue
                                     },
                                 }
                             },
                             Err(e) => {
+                                // One log we cannot decode must not take down tracking for
+                                // every other asset on this subscription.
                                 tracing::debug!(
                                     error = ?e,
-                                    "Failed to decode Transfer event from log"
+                                    "Failed to decode Transfer event from log, skipping it"
                                 );
-                                break
+                                continue
                             },
                         }
                     },
