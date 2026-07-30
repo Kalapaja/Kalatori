@@ -1,6 +1,6 @@
 # Kalatori — AI Agent Guide
 
-Self-hosted, non-custodial blockchain payment gateway daemon for Polkadot Asset Hub and Polygon. Derives unique HD payment accounts per invoice, monitors chains for incoming payments, auto-withdraws to merchant recipient. License: GPLv3. **Rust edition 2024, MSRV 1.88.** Status: Public Beta.
+Self-hosted, non-custodial blockchain payment gateway daemon for Polkadot Asset Hub and Polygon. Derives unique HD payment accounts per invoice, monitors chains for incoming payments, auto-withdraws to merchant recipient. License: GPLv3. **Rust edition 2024, MSRV 1.91.** Status: Public Beta.
 
 ## Critical Pitfalls
 

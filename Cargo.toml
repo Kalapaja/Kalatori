@@ -7,6 +7,12 @@ members = [
 resolver = "3"
 
 [workspace.package]
+# Actual floor of the current lockfile, measured across all crate versions in
+# the graph. Every member inherits it, so there is one number to keep honest --
+# including the client, which is consumed as a library and for which MSRV is
+# part of the public contract. Also feeds resolver = "3" MSRV-aware version
+# selection, which is what keeps alloy at 2.1.x (see .github/dependabot.yml).
+rust-version = "1.91"
 authors = [
 	"Alexander Slesarev <slesarew@gmail.com>",
     	"Vova Lando <vova.lando@gmail.com>",

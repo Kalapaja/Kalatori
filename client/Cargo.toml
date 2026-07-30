@@ -3,6 +3,7 @@ name = "kalatori-client"
 version = "0.1.0"
 edition = "2024"
 description = "A client for non-castodial crypto payment-gateway Kalatori."
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 readme.workspace = true
