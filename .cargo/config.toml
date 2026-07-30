@@ -1,3 +1,12 @@
+[env]
+# Keep AWS-LC on the sources pinned by aws-lc-sys on every build surface, not
+# only in the Dockerfile. Inert at the locked 0.40.0, which has no system probe;
+# from 0.43.0 the build script probes OPENSSL_DIR, OPENSSL_LIB_DIR and
+# pkg-config, and without this a dev or CI build could link a detected system
+# library while the image vendors its own. Not `force`, so an operator who sets
+# the variable deliberately still wins.
+AWS_LC_SYS_USE_SYSTEM = "0"
+
 [alias]
 bin = ["run", "--package", "cargo-bin", "--"]
 insta = ["bin", "cargo-insta"]
