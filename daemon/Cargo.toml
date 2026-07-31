@@ -89,7 +89,14 @@ parity-scale-codec = { version = "3", features = ["derive"] }
 # Tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "json"] }
-tracing-loki = "0.2"
+# Default features pull reqwest/native-tls, i.e. OpenSSL on Linux, alongside the
+# rustls/aws-lc stack every money path already uses. Log shipping does not get to
+# add a second TLS implementation. `compat-0-2-1` is not optional: the crate
+# refuses to compile without it.
+tracing-loki = { version = "0.2", default-features = false, features = [
+    "compat-0-2-1",
+    "rustls",
+] }
 
 # Utils
 config = "0.15"
