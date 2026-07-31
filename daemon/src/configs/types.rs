@@ -264,6 +264,16 @@ impl ChainsConfig {
                     ChainType::Polygon => DEFAULT_POLYGON_ENDPOINTS,
                 };
 
+                // These are free public endpoints with no availability guarantee.
+                // An operator who never configured any has no other way to find
+                // out which node their payments depend on.
+                tracing::warn!(
+                    chain = %chain,
+                    endpoints = ?endpoints,
+                    "No endpoints configured, falling back to free public defaults. \
+                     Configure your own endpoints for production use."
+                );
+
                 chain_config.endpoints = endpoints
                     .iter()
                     .map(|s| ChainEndpoint::Universal(s.to_string()))
@@ -823,4 +833,72 @@ pub struct SwapsConfig {
     pub zero_ex: ZeroExApiConfig,
     #[serde(default)]
     pub fees: Option<IntegratorFees>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_chains_config() -> ChainsConfig {
+        ChainsConfig {
+            chains: HashMap::new(),
+        }
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn default_endpoints_are_announced_when_none_configured() {
+        let mut config = empty_chains_config();
+
+        config.set_default_chains_if_missing();
+
+        for chain in ChainType::iter() {
+            assert!(
+                config.chains[&chain]
+                    .get_random_requests_endpoint()
+                    .is_some(),
+                "{chain} was left without endpoints"
+            );
+        }
+
+        // The point of the warning is that an operator who configured nothing
+        // can still tell from the log which node their payments depend on.
+        assert!(logs_contain(
+            "falling back to free public defaults"
+        ));
+        assert!(logs_contain(
+            "wss://polygon-bor-rpc.publicnode.com"
+        ));
+        assert!(logs_contain(
+            "wss://asset-hub-polkadot-rpc.n.dwellir.com"
+        ));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn configured_endpoints_are_left_alone_and_unannounced() {
+        let configured = "wss://polygon.example.internal";
+        let mut config = empty_chains_config();
+        config.chains.insert(
+            ChainType::Polygon,
+            ChainConfig {
+                endpoints: vec![ChainEndpoint::Universal(configured.to_string())],
+                ..ChainConfig::default()
+            },
+        );
+
+        config.set_default_chains_if_missing();
+
+        assert_eq!(
+            config.chains[&ChainType::Polygon].get_random_requests_endpoint(),
+            Some(configured.to_string()),
+        );
+        assert!(!logs_contain(
+            "wss://polygon-bor-rpc.publicnode.com"
+        ));
+        // Asset Hub was still unconfigured, so it does get the warning.
+        assert!(logs_contain(
+            "wss://asset-hub-polkadot-rpc.n.dwellir.com"
+        ));
+    }
 }
