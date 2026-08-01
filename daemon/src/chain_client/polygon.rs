@@ -6,7 +6,6 @@
 mod consts;
 mod pimlico_client;
 
-use std::str::FromStr;
 use std::time::Duration;
 
 use alloy::eips::eip7702::Authorization;
@@ -372,35 +371,122 @@ impl From<String> for GeneralTransactionId {
 // Utility Functions
 // ============================================================================
 
-/// Convert a U256 value to Decimal with the given number of decimals
+/// 10^18, the wei-per-ether scaling factor Pimlico denominates exchange rates
+/// in. Built from limbs so it is a `const` and cannot panic at runtime.
+const WEI_PER_ETHER: U256 = U256::from_limbs([1_000_000_000_000_000_000, 0, 0, 0]);
+
+/// Convert a U256 amount in base units to `Decimal` with the given number of
+/// decimals.
+///
+/// Returns `None` when the value cannot be represented exactly by `Decimal`
+/// (more than 28 significant digits, or `decimals` above `Decimal`'s maximum
+/// scale of 28). This *must* stay fallible: substituting `Decimal::ZERO` on
+/// failure — as this function used to do — records a real incoming payment as
+/// a zero-amount transfer, i.e. as if the customer had paid nothing.
 fn u256_to_decimal(
     value: U256,
     decimals: u8,
-) -> Decimal {
-    // Convert U256 to string and parse as Decimal
-    let value_str = value.to_string();
-    let raw_decimal = Decimal::from_str(&value_str).unwrap_or(Decimal::ZERO);
+) -> Option<Decimal> {
+    // Convert U256 to string and parse as Decimal. `from_str_exact` (unlike
+    // `from_str`) refuses to silently round away significant digits.
+    let raw_decimal = Decimal::from_str_exact(&value.to_string()).ok()?;
 
-    // Apply decimal places
-    let scale = Decimal::new(1, u32::from(decimals));
-    raw_decimal * scale
+    // Apply decimal places. `Decimal::new` panics for scale > 28, so go through
+    // the fallible constructor.
+    let scale = Decimal::try_new(1, u32::from(decimals)).ok()?;
+    raw_decimal.checked_mul(scale)
 }
 
-/// Convert a Decimal to U256 with the given number of decimals
+/// Convert a `Decimal` amount to U256 base units with the given number of
+/// decimals.
+///
+/// Returns `None` when the scaled value does not fit `u128`. Also fallible for
+/// the money-safety reason above: returning `U256::ZERO` here would build a
+/// transfer that moves nothing while the payout is marked as sent.
 fn decimal_to_u256(
     value: Decimal,
     decimals: u8,
-) -> U256 {
-    // Scale up by decimals
-    let multiplier = Decimal::new(10_i64.pow(u32::from(decimals)), 0);
-    #[expect(clippy::arithmetic_side_effects)]
-    let scaled = value * multiplier;
+) -> Option<U256> {
+    // Scale up by decimals. `10_i64.pow` overflows for decimals > 18.
+    let multiplier = Decimal::try_new(
+        10_i64.checked_pow(u32::from(decimals))?,
+        0,
+    )
+    .ok()?;
 
     // Convert to U256
-    scaled
+    value
+        .checked_mul(multiplier)?
         .to_u128()
         .map(U256::from)
-        .unwrap_or(U256::ZERO)
+}
+
+/// Compute the paymaster's maximum charge, denominated in the fee token.
+///
+/// Every input here (`gas_params`, `gas_price`, `quote`) comes verbatim from a
+/// Pimlico bundler JSON-RPC response, so none of it is trusted. A hostile or
+/// buggy bundler can hand back values whose sum or product exceeds `U256::MAX`;
+/// unchecked `+`/`*` would then panic (with overflow checks on) or wrap to a
+/// tiny number that is silently subtracted from the customer's payout. Both are
+/// unacceptable, so overflow is a build failure.
+fn calculate_max_cost_in_token<T: ChainConfig>(
+    gas_params: &GasParams,
+    gas_price: &GasPrice,
+    quote: &TokenQuote,
+) -> Result<U256, TransactionError<T>> {
+    let overflow = || TransactionError::BuildFailed {
+        reason: "Paymaster gas quote overflows U256".to_string(),
+    };
+
+    // Calculate max gas
+    let user_op_max_gas = gas_params
+        .pre_verification_gas
+        .checked_add(gas_params.call_gas_limit)
+        .and_then(|g| g.checked_add(gas_params.verification_gas_limit))
+        .and_then(|g| g.checked_add(gas_params.paymaster_post_op_gas_limit))
+        .and_then(|g| g.checked_add(gas_params.paymaster_verification_gas_limit))
+        .ok_or_else(overflow)?;
+
+    let user_op_max_cost = user_op_max_gas
+        .checked_mul(gas_price.max_fee_per_gas)
+        .ok_or_else(overflow)?;
+    let post_op_cost = quote
+        .post_op_gas
+        .checked_mul(gas_price.max_fee_per_gas)
+        .ok_or_else(overflow)?;
+    let total_cost_wei = user_op_max_cost
+        .checked_add(post_op_cost)
+        .ok_or_else(overflow)?;
+
+    total_cost_wei
+        .checked_mul(quote.exchange_rate)
+        .ok_or_else(overflow)?
+        .checked_div(WEI_PER_ETHER)
+        .ok_or_else(overflow)
+}
+
+/// Narrow a U256 gas/fee field to the `u128` slot that ERC-4337 packs it into.
+///
+/// `U256::to::<u128>()` panics above `u128::MAX`, and every value passed here
+/// originates from an unvalidated Pimlico bundler response, so a malformed or
+/// hostile reply would crash the daemon mid-payout. Report it as a build
+/// failure instead.
+fn u256_to_u128<T: ChainConfig>(
+    value: U256,
+    field: &'static str,
+) -> Result<u128, TransactionError<T>> {
+    u128::try_from(value).map_err(|_| {
+        tracing::warn!(
+            error.category = CHAIN_CLIENT,
+            error.operation = "compute_user_op_hash",
+            field,
+            value = %value,
+            "Bundler returned a gas field that exceeds u128"
+        );
+        TransactionError::BuildFailed {
+            reason: format!("Bundler field `{field}` exceeds u128"),
+        }
+    })
 }
 
 pub(super) fn pack_u128_to_bytes(
@@ -571,7 +657,19 @@ impl PolygonClient {
         #[expect(clippy::cast_sign_loss)]
         let timestamp = chrono::Utc::now().timestamp_millis() as u64;
 
-        let amount = u256_to_decimal(event.value, asset_info.decimals);
+        let amount = u256_to_decimal(event.value, asset_info.decimals).ok_or_else(|| {
+            tracing::warn!(
+                error.category = CHAIN_CLIENT,
+                error.operation = "log_to_transfer",
+                asset_id = %asset_id,
+                value = %event.value,
+                decimals = asset_info.decimals,
+                "Transfer amount is not representable as a Decimal; skipping block"
+            );
+            SubscriptionError::BlockProcessingFailed {
+                block_number: 0,
+            }
+        })?;
 
         Ok(ChainTransfer {
             asset_id,
@@ -626,26 +724,6 @@ impl PolygonClient {
         )
     }
 
-    fn calculate_max_cost_in_token(
-        &self,
-        gas_params: &GasParams,
-        gas_price: &GasPrice,
-        quote: &TokenQuote,
-    ) -> U256 {
-        // Calculate max gas
-        let user_op_max_gas = gas_params.pre_verification_gas
-            + gas_params.call_gas_limit
-            + gas_params.verification_gas_limit
-            + gas_params.paymaster_post_op_gas_limit
-            + gas_params.paymaster_verification_gas_limit;
-
-        let user_op_max_cost = user_op_max_gas * gas_price.max_fee_per_gas;
-        let post_op_cost = quote.post_op_gas * gas_price.max_fee_per_gas;
-        let total_cost_wei = user_op_max_cost + post_op_cost;
-
-        (total_cost_wei * quote.exchange_rate) / U256::from(10).pow(U256::from(18))
-    }
-
     fn build_call(
         &self,
         recipient: Address,
@@ -683,40 +761,48 @@ impl PolygonClient {
     fn compute_user_op_hash(
         transaction: &PolygonUnsignedTransaction,
         paymaster_data: &[u8],
-    ) -> B256 {
+    ) -> Result<B256, TransactionError<PolygonChainConfig>> {
         let type_hash = keccak256(b"PackedUserOperation(address sender,uint256 nonce,bytes initCode,bytes callData,bytes32 accountGasLimits,uint256 preVerificationGas,bytes32 gasFees,bytes paymasterAndData)");
 
         let account_gas_limits = pack_u128_to_bytes(
-            transaction
-                .gas_params
-                .verification_gas_limit
-                .to(),
-            transaction
-                .gas_params
-                .call_gas_limit
-                .to(),
+            u256_to_u128(
+                transaction
+                    .gas_params
+                    .verification_gas_limit,
+                "verification_gas_limit",
+            )?,
+            u256_to_u128(
+                transaction.gas_params.call_gas_limit,
+                "call_gas_limit",
+            )?,
         );
 
         let gas_fees = pack_u128_to_bytes(
-            transaction
-                .gas_price
-                .max_priority_fee_per_gas
-                .to(),
-            transaction
-                .gas_price
-                .max_fee_per_gas
-                .to(),
+            u256_to_u128(
+                transaction
+                    .gas_price
+                    .max_priority_fee_per_gas,
+                "max_priority_fee_per_gas",
+            )?,
+            u256_to_u128(
+                transaction.gas_price.max_fee_per_gas,
+                "max_fee_per_gas",
+            )?,
         );
 
         let paymaster_gas_limits = pack_u128_to_bytes(
-            transaction
-                .gas_params
-                .paymaster_verification_gas_limit
-                .to(),
-            transaction
-                .gas_params
-                .paymaster_post_op_gas_limit
-                .to(),
+            u256_to_u128(
+                transaction
+                    .gas_params
+                    .paymaster_verification_gas_limit,
+                "paymaster_verification_gas_limit",
+            )?,
+            u256_to_u128(
+                transaction
+                    .gas_params
+                    .paymaster_post_op_gas_limit,
+                "paymaster_post_op_gas_limit",
+            )?,
         );
 
         let paymaster_and_data = [
@@ -754,14 +840,14 @@ impl PolygonClient {
             verifying_contract: ENTRYPOINT,
         };
 
-        keccak256(
+        Ok(keccak256(
             [
                 &[0x19, 0x01],
                 domain.hash_struct().as_slice(),
                 struct_hash.as_slice(),
             ]
             .concat(),
-        )
+        ))
     }
 }
 
@@ -889,7 +975,20 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
         // alloy 1.4 returns the value directly
         let balance = balance_result;
-        let balance_decimal = u256_to_decimal(balance, decimals);
+        let balance_decimal = u256_to_decimal(balance, decimals).ok_or_else(|| {
+            tracing::warn!(
+                error.category = CHAIN_CLIENT,
+                error.operation = "fetch_balance",
+                asset_id = %asset_id,
+                account = %account,
+                balance = %balance,
+                decimals,
+                "Balance is not representable as a Decimal"
+            );
+            QueryError::NotFound {
+                query_type: "erc20_balance".to_string(),
+            }
+        })?;
 
         tracing::trace!(
             ?balance,
@@ -1103,7 +1202,12 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             })?
             .decimals;
 
-        let amount_wei = decimal_to_u256(amount, decimals);
+        let amount_wei =
+            decimal_to_u256(amount, decimals).ok_or_else(|| TransactionError::BuildFailed {
+                reason: format!(
+                    "Amount {amount} with {decimals} decimals does not fit u128 base units"
+                ),
+            })?;
 
         let contract = IERC20::new(asset_id, self.provider.clone());
         let entrypoint_contract = IERC20::new(ENTRYPOINT, self.provider.clone());
@@ -1271,7 +1375,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         inner.op_hash = Some(Self::compute_user_op_hash(
             &inner,
             &paymaster_data,
-        ));
+        )?);
         let encoded_paymaster_data = const_hex::encode_prefixed(paymaster_data.clone());
         inner.paymaster_data = Some(encoded_paymaster_data.clone());
 
@@ -1338,11 +1442,11 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                 reason: "Failed to get quote from paymaster".to_string(),
             })?;
 
-        let max_cost_in_usdc_wei = self.calculate_max_cost_in_token(
+        let max_cost_in_usdc_wei = calculate_max_cost_in_token::<PolygonChainConfig>(
             &inner.gas_params,
             &inner.gas_price,
             usdc_quote,
-        );
+        )?;
 
         let amount_wei = inner
             .amount_wei
@@ -1355,7 +1459,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             inner.asset_id,
         );
         inner.call_data = call_data;
-        let op_hash = Self::compute_user_op_hash(&inner, &paymaster_data);
+        let op_hash = Self::compute_user_op_hash(&inner, &paymaster_data)?;
 
         if amount_wei.is_zero() {
             return Err(TransactionError::InsufficientBalance {
@@ -1436,10 +1540,18 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             // to fill it from saved transaction parameters
             match receipt {
                 Ok(Some(data)) if data.success => {
+                    let amount = u256_to_decimal(unsigned.amount_wei, asset_info.decimals)
+                        .ok_or_else(|| TransactionError::BuildFailed {
+                            reason: format!(
+                                "Transferred amount {} with {} decimals is not representable as a Decimal",
+                                unsigned.amount_wei, asset_info.decimals
+                            ),
+                        })?;
+
                     return Ok(ChainTransfer {
                         asset_id,
                         asset_name: asset_info.name,
-                        amount: u256_to_decimal(unsigned.amount_wei, asset_info.decimals),
+                        amount,
                         sender: data.sender,
                         recipient: data.receipt.to,
                         transaction_id: data.receipt.transaction_hash,
@@ -1558,11 +1670,11 @@ mod tests {
     fn test_u256_decimal_conversion() {
         // 1 USDC = 1_000_000 (6 decimals)
         let value = U256::from(1_000_000_u64);
-        let decimal = u256_to_decimal(value, 6);
+        let decimal = u256_to_decimal(value, 6).unwrap();
         assert_eq!(decimal, Decimal::new(1, 0)); // 1.0
 
         // Convert back
-        let back = decimal_to_u256(decimal, 6);
+        let back = decimal_to_u256(decimal, 6).unwrap();
         assert_eq!(back, value);
     }
 
@@ -1709,6 +1821,162 @@ mod tests {
             worst_case < WS_MESSAGES_TIMEOUT_DURATION,
             "alloy would still be retrying after {worst_case:?}, past our own \
              {WS_MESSAGES_TIMEOUT_DURATION:?} timeout, blocking endpoint rotation",
+        );
+
+    #[test]
+    fn u256_to_decimal_handles_18_decimal_tokens() {
+        // 10 units of an 18-decimal token: 10e18 base units. This exceeds
+        // `i64::MAX` (~9.22e18 is close, 10e18 is over) and used to be the
+        // motivating case for silent corruption.
+        let value = U256::from(10_000_000_000_000_000_000_u128);
+        assert_eq!(
+            u256_to_decimal(value, 18).unwrap(),
+            Decimal::new(10, 0)
+        );
+    }
+
+    #[test]
+    fn u256_to_decimal_rejects_values_beyond_decimal_range() {
+        // Decimal's mantissa is 96 bits (~7.9e28); 1e30 base units cannot be
+        // represented. The old code returned `Decimal::ZERO`, silently turning
+        // a huge payment into "nothing received".
+        let value = U256::from(10u8).pow(U256::from(30u8));
+        assert_eq!(u256_to_decimal(value, 18), None);
+
+        // U256::MAX must not panic either.
+        assert_eq!(u256_to_decimal(U256::MAX, 18), None);
+    }
+
+    #[test]
+    fn u256_to_decimal_rejects_scale_above_decimal_max() {
+        // `Decimal::new(1, 29)` panics; the fallible path must return None.
+        assert_eq!(
+            u256_to_decimal(U256::from(1u8), 29),
+            None
+        );
+    }
+
+    #[test]
+    fn decimal_to_u256_rejects_unrepresentable_values() {
+        // `10_i64.pow(19)` overflows i64.
+        assert_eq!(decimal_to_u256(Decimal::ONE, 19), None);
+
+        // Scaled value beyond u128 must not silently become zero.
+        assert_eq!(decimal_to_u256(Decimal::MAX, 18), None);
+    }
+
+    #[test]
+    fn u256_to_u128_accepts_max_and_rejects_one_over() {
+        let max = U256::from(u128::MAX);
+        assert_eq!(
+            u256_to_u128::<PolygonChainConfig>(max, "call_gas_limit").unwrap(),
+            u128::MAX
+        );
+
+        let over = max
+            .checked_add(U256::from(1u8))
+            .unwrap();
+        let err = u256_to_u128::<PolygonChainConfig>(over, "call_gas_limit").unwrap_err();
+        assert!(matches!(
+            err,
+            TransactionError::BuildFailed { .. }
+        ));
+    }
+
+    fn quote(
+        post_op_gas: U256,
+        exchange_rate: U256,
+    ) -> TokenQuote {
+        TokenQuote {
+            token: Address::ZERO,
+            paymaster: Address::ZERO,
+            exchange_rate,
+            post_op_gas,
+            exchange_rate_native_to_usd: U256::ZERO,
+            balance_slot: U256::ZERO,
+            allowance_slot: U256::ZERO,
+        }
+    }
+
+    #[test]
+    fn calculate_max_cost_in_token_computes_realistic_quote() {
+        // 115_000 total gas * 100 gwei = 1.15e16 wei, + 40_000 * 100 gwei
+        // = 1.55e16 wei; times an exchange rate of 1e18 (1:1), divided by 1e18.
+        let gas_params = GasParams::dummy();
+        let gas_price = GasPrice {
+            max_fee_per_gas: U256::from(100_000_000_000_u64),
+            max_priority_fee_per_gas: U256::from(1_000_000_000_u64),
+        };
+
+        let cost = calculate_max_cost_in_token::<PolygonChainConfig>(
+            &gas_params,
+            &gas_price,
+            &quote(U256::from(40_000), WEI_PER_ETHER),
+        )
+        .unwrap();
+
+        assert_eq!(
+            cost,
+            U256::from(15_500_000_000_000_000_u64)
+        );
+    }
+
+    #[test]
+    fn calculate_max_cost_in_token_rejects_hostile_quote() {
+        // A bundler returning U256::MAX everywhere must produce an error, not
+        // a panic and not a wrapped-around (tiny) fee silently deducted from
+        // the customer's payout.
+        let gas_params = GasParams {
+            pre_verification_gas: U256::MAX,
+            call_gas_limit: U256::MAX,
+            verification_gas_limit: U256::MAX,
+            paymaster_post_op_gas_limit: U256::MAX,
+            paymaster_verification_gas_limit: U256::MAX,
+        };
+        let gas_price = GasPrice {
+            max_fee_per_gas: U256::MAX,
+            max_priority_fee_per_gas: U256::MAX,
+        };
+
+        let err = calculate_max_cost_in_token::<PolygonChainConfig>(
+            &gas_params,
+            &gas_price,
+            &quote(U256::MAX, U256::MAX),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            TransactionError::BuildFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn calculate_max_cost_in_token_rejects_overflowing_exchange_rate() {
+        // Gas sums fine, but the exchange rate multiplication overflows.
+        let gas_price = GasPrice {
+            max_fee_per_gas: U256::from(1u8),
+            max_priority_fee_per_gas: U256::from(1u8),
+        };
+
+        let err = calculate_max_cost_in_token::<PolygonChainConfig>(
+            &GasParams::dummy(),
+            &gas_price,
+            &quote(U256::from(1u8), U256::MAX),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            TransactionError::BuildFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn wei_per_ether_is_ten_to_the_eighteenth() {
+        assert_eq!(
+            WEI_PER_ETHER,
+            U256::from(10u8).pow(U256::from(18u8))
         );
     }
 }

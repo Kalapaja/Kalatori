@@ -54,6 +54,11 @@ pub enum SwapRequestError {
     AssetMetadataUnavailable { asset_id: String },
     #[error("Database error")]
     DatabaseError,
+    /// Scaling the invoice's unfilled amount into integer token base units
+    /// overflowed. Kept distinct from `DatabaseError` because it is a bad
+    /// amount, not a storage fault, and is not worth retrying.
+    #[error("Amount {amount} cannot be converted to token base units")]
+    AmountConversion { amount: Decimal },
 }
 
 impl From<SwapsExecutorError> for SwapRequestError {
@@ -323,10 +328,15 @@ impl<D: DaoInterface> AppState<D> {
                 }
             })?;
 
-            (invoice.unfilled_amount() / one_unit)
-                .to_u128()
-                // TODO: change error
-                .ok_or(SwapRequestError::DatabaseError)?
+            // `/ one_unit` is a multiplication by 10^decimals and panics on
+            // `Decimal` overflow; `to_u128` rejects anything that does not fit.
+            let amount = invoice.unfilled_amount();
+            amount
+                .checked_div(one_unit)
+                .and_then(|scaled| scaled.to_u128())
+                .ok_or(SwapRequestError::AmountConversion {
+                    amount,
+                })?
         };
 
         let data = CreateSwapData {

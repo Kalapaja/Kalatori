@@ -94,9 +94,18 @@ impl InvoiceWithReceivedAmount {
         }
     }
 
-    /// Returns invoice's unfilled amount or 0 if it's filled or overpaid
+    /// Returns invoice's unfilled amount or 0 if it's filled or overpaid.
+    ///
+    /// Uses `saturating_sub`: `Decimal`'s `-` panics on overflow, and this is
+    /// called from request handlers. Saturating is safe here because the result
+    /// is clamped to the non-negative range anyway — an underflow can only push
+    /// it further below zero, and an overflow towards `Decimal::MAX` preserves
+    /// the "still owed" meaning rather than inventing a zero balance.
     pub fn unfilled_amount(&self) -> Decimal {
-        (self.invoice.amount - self.total_received_amount).max(Decimal::ZERO)
+        self.invoice
+            .amount
+            .saturating_sub(self.total_received_amount)
+            .max(Decimal::ZERO)
     }
 }
 
@@ -201,7 +210,10 @@ pub fn default_create_invoice_data() -> CreateInvoiceData {
         payment_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7".to_string(),
         cart: InvoiceCart::empty(),
         redirect_url: "http://localhost:8080/thankyou".to_string(),
-        #[expect(clippy::arithmetic_side_effects)]
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "test fixture: `Utc::now()` plus a fixed 24 hours cannot overflow DateTime<Utc>"
+        )]
         valid_till: now + chrono::Duration::hours(24),
     }
 }
@@ -214,7 +226,76 @@ pub fn default_update_invoice_data(invoice_id: Uuid) -> UpdateInvoiceData {
         invoice_id,
         amount: Decimal::new(15000, 2),
         cart: InvoiceCart::empty(),
-        #[expect(clippy::arithmetic_side_effects)]
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "test fixture: `Utc::now()` plus a fixed 24 hours cannot overflow DateTime<Utc>"
+        )]
         valid_till: now + chrono::Duration::hours(24),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_received(
+        amount: Decimal,
+        total_received_amount: Decimal,
+    ) -> InvoiceWithReceivedAmount {
+        let mut invoice = default_invoice();
+        invoice.amount = amount;
+
+        InvoiceWithReceivedAmount {
+            invoice,
+            total_received_amount,
+        }
+    }
+
+    #[test]
+    fn unfilled_amount_reports_the_remainder() {
+        assert_eq!(
+            with_received(
+                Decimal::new(100, 0),
+                Decimal::new(40, 0)
+            )
+            .unfilled_amount(),
+            Decimal::new(60, 0)
+        );
+    }
+
+    #[test]
+    fn unfilled_amount_is_zero_when_filled_or_overpaid() {
+        assert_eq!(
+            with_received(
+                Decimal::new(100, 0),
+                Decimal::new(100, 0)
+            )
+            .unfilled_amount(),
+            Decimal::ZERO
+        );
+        assert_eq!(
+            with_received(
+                Decimal::new(100, 0),
+                Decimal::new(250, 0)
+            )
+            .unfilled_amount(),
+            Decimal::ZERO
+        );
+    }
+
+    #[test]
+    fn unfilled_amount_saturates_instead_of_panicking() {
+        // `Decimal::MAX - Decimal::MIN` overflows; the plain `-` this used to
+        // use would panic inside a request handler.
+        assert_eq!(
+            with_received(Decimal::MAX, Decimal::MIN).unfilled_amount(),
+            Decimal::MAX
+        );
+
+        // The opposite direction saturates negative and is then clamped to 0.
+        assert_eq!(
+            with_received(Decimal::MIN, Decimal::MAX).unfilled_amount(),
+            Decimal::ZERO
+        );
     }
 }

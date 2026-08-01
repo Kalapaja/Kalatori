@@ -715,19 +715,24 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
             })?
             .decimals;
 
-        #[expect(clippy::arithmetic_side_effects)]
-        let normalized_amount = amount / Decimal::new(1, decimals.into());
-
-        let transaction_amount = normalized_amount
-            .to_u128()
+        // Dividing by `Decimal::new(1, decimals)` is really a multiplication by
+        // `10^decimals`. `Decimal::new` panics for `decimals` above 28 and the
+        // division panics on `Decimal` overflow, both on values derived from
+        // on-chain asset metadata and a merchant-supplied payout amount.
+        let transaction_amount = Decimal::try_new(1, decimals.into())
+            .ok()
+            .and_then(|unit| amount.checked_div(unit))
+            .and_then(|normalized| normalized.to_u128())
             .ok_or_else(|| {
                 tracing::error!(
                     amount = %amount,
-                    normalized = %normalized_amount,
-                    "Amount exceeds u128::MAX after normalization"
+                    decimals,
+                    "Amount cannot be normalized into u128 base units"
                 );
                 TransactionError::BuildFailed {
-                    reason: format!("Amount {amount} exceeds u128::MAX after normalization"),
+                    reason: format!(
+                        "Amount {amount} cannot be normalized into u128 base units with {decimals} decimals"
+                    ),
                 }
             })?;
 

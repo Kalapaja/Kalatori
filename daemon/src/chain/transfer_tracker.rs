@@ -528,6 +528,10 @@ mod tests {
         assert_stream_failure_drops_subscription_and_backs_off(Box::pin(stream::empty())).await;
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "test-only: subtracting 1ms from the INITIAL_RETRY_DELAY constant on tokio's paused clock"
+    )]
     async fn assert_stream_failure_drops_subscription_and_backs_off(
         first_stream: TransfersStream<PolygonChainConfig>
     ) {
@@ -650,6 +654,10 @@ mod tests {
 
     #[test]
     #[tracing_test::traced_test]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "test-only: offsetting a tokio paused-clock Instant by fixed second-scale Durations"
+    )]
     fn degraded_warnings_are_rate_limited() {
         let started_at = tokio::time::Instant::now();
         let mut retry_state = RetryState::new();
@@ -678,6 +686,10 @@ mod tests {
 
     #[test]
     #[tracing_test::traced_test]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "test-only: offsetting a tokio paused-clock Instant by fixed second-scale Durations"
+    )]
     fn successful_event_resets_backoff_after_recovery() {
         let started_at = tokio::time::Instant::now();
         let mut retry_state = RetryState::new();

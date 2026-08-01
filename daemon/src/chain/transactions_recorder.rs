@@ -33,6 +33,12 @@ pub enum TransactionsRecorderError {
         chain: ChainType,
         general_transaction_id: GeneralTransactionId,
     },
+    /// A payment-amount computation overflowed `Decimal`'s range. Recording a
+    /// wrapped total — or panicking, which `Decimal`'s `+`/`-` do on overflow —
+    /// would mean paying out or refunding the wrong sum, so the whole DB
+    /// transaction is abandoned instead and the transfer is retried.
+    #[error("Amount computation overflowed while {operation}")]
+    AmountOverflow { operation: &'static str },
 }
 
 #[derive(Clone)]
@@ -196,7 +202,13 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             // In case when invoice is overpaid and refund is required, we schedule payout
             // with original invoice amount and refund with the rest amount
             let payout_amount = invoice.amount;
-            let refund_amount = total_received_amount - payout_amount;
+            let refund_amount = total_received_amount
+                .checked_sub(payout_amount)
+                .ok_or(
+                    TransactionsRecorderError::AmountOverflow {
+                        operation: "computing overpayment refund",
+                    },
+                )?;
 
             self.add_payout_to_dao_transaction(
                 dao_transaction,
@@ -256,8 +268,12 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
         invoice: &InvoiceWithReceivedAmount,
         transaction: IncomingTransaction,
     ) -> Result<(InvoiceWithReceivedAmount, Decimal), TransactionsRecorderError> {
-        let updated_received_amount =
-            invoice.total_received_amount + transaction.transfer_info.amount;
+        let updated_received_amount = invoice
+            .total_received_amount
+            .checked_add(transaction.transfer_info.amount)
+            .ok_or(TransactionsRecorderError::AmountOverflow {
+                operation: "accumulating received amount",
+            })?;
 
         let underpayment_tolerance = self
             .config
@@ -265,7 +281,13 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 invoice.invoice.chain,
                 &invoice.invoice.asset_id,
             );
-        let min_paid_amount = invoice.invoice.amount - underpayment_tolerance;
+        let min_paid_amount = invoice
+            .invoice
+            .amount
+            .checked_sub(underpayment_tolerance)
+            .ok_or(TransactionsRecorderError::AmountOverflow {
+                operation: "applying underpayment tolerance",
+            })?;
 
         let overpayment_tolerance = self
             .config
@@ -273,7 +295,13 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 invoice.invoice.chain,
                 &invoice.invoice.asset_id,
             );
-        let max_paid_amount = invoice.invoice.amount + overpayment_tolerance;
+        let max_paid_amount = invoice
+            .invoice
+            .amount
+            .checked_add(overpayment_tolerance)
+            .ok_or(TransactionsRecorderError::AmountOverflow {
+                operation: "applying overpayment tolerance",
+            })?;
 
         let is_underpaid = updated_received_amount < min_paid_amount;
         let is_overpaid = updated_received_amount > max_paid_amount;
@@ -399,6 +427,22 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 );
 
                 return Err(TransactionsRecorderError::DaoTransactionError);
+            },
+            Err(TransactionsRecorderError::AmountOverflow {
+                operation,
+            }) => {
+                tracing::error!(
+                    invoice_id = %invoice.id,
+                    filled_amount = %updated_received_amount,
+                    operation,
+                    "Amount overflow while storing transaction for invoice; nothing was committed"
+                );
+
+                return Err(
+                    TransactionsRecorderError::AmountOverflow {
+                        operation,
+                    },
+                );
             },
         };
 

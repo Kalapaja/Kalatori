@@ -171,18 +171,9 @@ insta = { version = "1", features = ["json", "yaml", "redactions"] }
 default = []
 dev_api = []
 
-[profile.dev]
-debug = "line-tables-only"
-
-[profile.dev.package."*"]
-opt-level = 3
-
-[profile.release]
-strip = true
-lto = true
-codegen-units = 1
-panic = "abort"
-overflow-checks = true
+# NOTE: `[profile.*]` tables MUST live in the workspace root `Cargo.toml`.
+# Cargo silently ignores profile tables declared in non-root workspace members,
+# so they are intentionally absent here. See the root manifest.
 
 [lints]
 workspace = true

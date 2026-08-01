@@ -73,6 +73,10 @@ pub fn encrypt_state(
         .encrypt(&nonce, code_verifier.as_bytes())
         .expect("XChaCha20-Poly1305 encryption should not fail");
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "NONCE_LEN is 24 and `ciphertext` is a PKCE verifier (<= 128 bytes) plus a 16-byte tag; the sum cannot approach usize::MAX, and it only sizes a Vec"
+    )]
     let mut output = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     output.extend_from_slice(&nonce);
     output.extend_from_slice(&ciphertext);

@@ -135,6 +135,10 @@ impl TryFrom<ZeroExGetQuoteResponse> for SwapQuote {
             // leave placeholder for now but in future probably it'll be better
             // to make this field optional
             estimated_to_amount: Decimal::ZERO,
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "`Utc::now()` plus a fixed 5 minutes cannot approach DateTime<Utc>'s bounds"
+            )]
             valid_till: Utc::now() + TimeDelta::minutes(5),
             quote_details: RawSwapDetails::ZeroEx(details),
         })
@@ -191,6 +195,10 @@ impl TryFrom<ZeroExGaslessGetQuoteResponse> for SwapQuote {
             // leave placeholder for now but in future probably it'll be better
             // to make this field optional
             estimated_to_amount: Decimal::ZERO,
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "`Utc::now()` plus a fixed 5 minutes cannot approach DateTime<Utc>'s bounds"
+            )]
             valid_till: Utc::now() + TimeDelta::minutes(5),
             quote_details: RawSwapDetails::ZeroExGasless(details),
         })

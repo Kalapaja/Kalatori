@@ -57,6 +57,10 @@ pub fn default_webhook_event(invoice_id: Uuid) -> GenericEvent<super::PublicInvo
         cart: kalatori_client::types::InvoiceCart {
             items: vec![],
         },
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "test fixture: `Utc::now()` plus a fixed 24 hours cannot overflow DateTime<Utc>"
+        )]
         valid_till: Utc::now() + chrono::Duration::hours(24),
         created_at: Utc::now(),
         updated_at: Utc::now(),

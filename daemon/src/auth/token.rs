@@ -189,31 +189,57 @@ fn get_string_claim(
 }
 
 /// Check if a token is expired, accounting for clock tolerance.
+///
+/// `exp` comes from the token and `clock_tolerance_secs` from configuration, so
+/// neither is bounded here. `Duration::seconds` panics outside `TimeDelta`'s
+/// range and `DateTime + Duration` panics on date overflow; both now fail
+/// closed — an unrepresentable deadline is treated as expired rather than
+/// crashing the request or granting an eternally valid token.
 pub fn is_expired(
     claims: &TokenClaims,
     clock_tolerance_secs: u64,
 ) -> bool {
     let now = Utc::now();
-    let tolerance =
-        chrono::Duration::seconds(i64::try_from(clock_tolerance_secs).unwrap_or(i64::MAX));
-    now > claims.exp + tolerance
+    let Some(tolerance) = i64::try_from(clock_tolerance_secs)
+        .ok()
+        .and_then(chrono::TimeDelta::try_seconds)
+    else {
+        return true
+    };
+
+    claims
+        .exp
+        .checked_add_signed(tolerance)
+        .is_none_or(|deadline| now > deadline)
 }
 
 /// Check if a token is past its midpoint (should trigger opportunistic
 /// refresh). Midpoint = iat + (exp - iat) / 2, adapting to clipped support
 /// session tokens per spec §7.2.
+///
+/// `exp`/`iat` come straight from the token. The plain `-`, `/` and `+` this
+/// used to use all panic on overflow; the checked chain below cannot, and fails
+/// towards refreshing if a midpoint is somehow not representable.
 pub fn is_past_midpoint(claims: &TokenClaims) -> bool {
-    let lifetime = claims.exp - claims.iat;
-    let midpoint = claims.iat + lifetime / 2;
-    Utc::now() > midpoint
+    claims
+        .exp
+        .signed_duration_since(claims.iat)
+        .checked_div(2)
+        .and_then(|half| claims.iat.checked_add_signed(half))
+        .is_none_or(|midpoint| Utc::now() > midpoint)
 }
 
 /// Check if an expired token is within the 5-minute refresh grace window
 /// (auth server will still accept it for refresh).
+///
+/// Fails closed: an `exp` so large that adding five minutes overflows gets no
+/// grace window.
 pub fn is_within_refresh_grace(claims: &TokenClaims) -> bool {
     let now = Utc::now();
-    let grace_end = claims.exp + chrono::Duration::minutes(5);
-    now <= grace_end
+    claims
+        .exp
+        .checked_add_signed(chrono::TimeDelta::minutes(5))
+        .is_some_and(|grace_end| now <= grace_end)
 }
 
 // ============================================================================
@@ -371,6 +397,72 @@ mod tests {
             raw_token: String::new(),
         };
         assert!(!is_past_midpoint(&claims2));
+    }
+
+    fn claims_at(
+        iat: DateTime<Utc>,
+        exp: DateTime<Utc>,
+    ) -> TokenClaims {
+        TokenClaims {
+            iss: String::new(),
+            sub: String::new(),
+            email: String::new(),
+            picture: None,
+            aud: String::new(),
+            role: Role::Owner,
+            iat,
+            exp,
+            raw_token: String::new(),
+        }
+    }
+
+    #[test]
+    fn is_expired_fails_closed_on_absurd_clock_tolerance() {
+        // `chrono::Duration::seconds(i64::MAX)` panics, and the old code fed
+        // exactly that value in whenever the configured tolerance exceeded
+        // `i64`. Fail closed instead of crashing the request.
+        let claims = claims_at(Utc::now(), Utc::now());
+        assert!(is_expired(&claims, u64::MAX));
+    }
+
+    #[test]
+    fn is_expired_fails_closed_when_deadline_overflows() {
+        // `exp` at the far end of the representable range: `exp + tolerance`
+        // has no answer, so the token must not be treated as valid forever.
+        let claims = claims_at(Utc::now(), DateTime::<Utc>::MAX_UTC);
+        assert!(is_expired(&claims, 86_400));
+    }
+
+    #[test]
+    fn is_past_midpoint_handles_extreme_claims_without_panicking() {
+        // Maximal lifetime: midpoint lands in the distant past, so the token
+        // reads as past its midpoint. The point is that the arithmetic returns
+        // instead of panicking on the widest representable span.
+        assert!(is_past_midpoint(&claims_at(
+            DateTime::<Utc>::MIN_UTC,
+            DateTime::<Utc>::MAX_UTC,
+        )));
+
+        // Both bounds at the maximum: zero lifetime, midpoint == exp, far in
+        // the future.
+        assert!(!is_past_midpoint(&claims_at(
+            DateTime::<Utc>::MAX_UTC,
+            DateTime::<Utc>::MAX_UTC,
+        )));
+
+        // Malformed token with `exp` before `iat`: the lifetime is negative and
+        // the halving must not trip `Sub`'s overflow panic.
+        assert!(is_past_midpoint(&claims_at(
+            DateTime::<Utc>::MAX_UTC,
+            DateTime::<Utc>::MIN_UTC,
+        )));
+    }
+
+    #[test]
+    fn is_within_refresh_grace_fails_closed_on_overflow() {
+        // `exp + 5 minutes` overflows, so there is no grace window.
+        let claims = claims_at(Utc::now(), DateTime::<Utc>::MAX_UTC);
+        assert!(!is_within_refresh_grace(&claims));
     }
 
     #[test]

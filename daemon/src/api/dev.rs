@@ -121,7 +121,17 @@ async fn mint_token_handler(
     );
 
     let now = Utc::now();
-    let exp = now + chrono::Duration::minutes(i64::try_from(req.exp_minutes).unwrap_or(60));
+    // `exp_minutes` is request-controlled: `Duration::minutes` panics outside
+    // `TimeDelta`'s range and `DateTime + Duration` panics on date overflow, so
+    // an absurd value would take the handler down. Fall back to the default.
+    let exp = i64::try_from(req.exp_minutes)
+        .ok()
+        .and_then(chrono::TimeDelta::try_minutes)
+        .and_then(|d| now.checked_add_signed(d))
+        .unwrap_or_else(|| {
+            now.checked_add_signed(chrono::TimeDelta::minutes(60))
+                .unwrap_or(now)
+        });
 
     let claims = TokenClaims {
         iss: dev_auth.issuer.clone(),

@@ -75,6 +75,10 @@ pub enum ChainExecutorError {
         from_chain: SwapChainType,
         to_chain: SwapChainType,
     },
+    /// Scaling a `Decimal` amount into integer token base units overflowed.
+    /// Previously this was `.unwrap()`, which crashed the executor task.
+    #[error("Amount {amount} cannot be converted to token base units")]
+    AmountConversion { amount: Decimal },
 }
 
 impl ChainExecutorError {
@@ -92,8 +96,30 @@ impl ChainExecutorError {
             UnsupportedSwapDirection {
                 ..
             } => false,
+            // Deterministic in the amount: retrying produces the same failure.
+            AmountConversion {
+                ..
+            } => false,
         }
     }
+}
+
+/// Scale a `Decimal` amount into integer token base units.
+///
+/// `amount / Decimal::new(1, precision)` is really a multiplication by
+/// `10^precision`, which panics on `Decimal` overflow, and `.to_u128()` returns
+/// `None` for negative or oversized results. Both used to be unhandled.
+fn to_base_units(
+    amount: Decimal,
+    precision: u32,
+) -> Result<u128, ChainExecutorError> {
+    Decimal::try_new(1, precision)
+        .ok()
+        .and_then(|unit| amount.checked_div(unit))
+        .and_then(|scaled| scaled.to_u128())
+        .ok_or(ChainExecutorError::AmountConversion {
+            amount,
+        })
 }
 
 const MAX_CONCURRENT_TRANSFERS: u32 = 10;
@@ -567,15 +593,12 @@ impl<
             )
         };
 
-        // TODO: make it more normally. Add some helpers for such operation, get
-        // precision from prestored values
+        // TODO: get precision from prestored values instead of hardcoding 6
         #[expect(
             clippy::unwrap_used,
             reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
         )]
-        let from_amount_units = (request.amount / Decimal::new(1, 6))
-            .to_u128()
-            .unwrap();
+        let from_amount_units = to_base_units(request.amount, 6)?;
 
         let data = CreateSwapData {
             invoice_id: request.invoice_id,
@@ -783,7 +806,11 @@ impl<
             .collect_pending_payout_requests(limit)
             .await?;
 
-        let remaining_limit = limit - u32::try_from(payout_requests.len()).unwrap_or(0);
+        // `collect_pending_payout_requests` is expected to honour `limit`, but a
+        // DAO that returns more rows must not underflow this counter into ~4
+        // billion and defeat the concurrency cap.
+        let remaining_limit =
+            limit.saturating_sub(u32::try_from(payout_requests.len()).unwrap_or(u32::MAX));
 
         let refund_requests = self
             .collect_pending_refund_requests(remaining_limit)
@@ -1156,6 +1183,50 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn to_base_units_scales_by_precision() {
+        assert_eq!(
+            to_base_units(Decimal::from_str("1.5").unwrap(), 6).unwrap(),
+            1_500_000
+        );
+        assert_eq!(
+            to_base_units(Decimal::ZERO, 6).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn to_base_units_rejects_overflowing_amount() {
+        // Scaling `Decimal::MAX` by 10^6 overflows `Decimal`; the old code did
+        // this with a bare `/` and `.unwrap()`, panicking the executor task.
+        let err = to_base_units(Decimal::MAX, 6).unwrap_err();
+        assert!(matches!(
+            err,
+            ChainExecutorError::AmountConversion { .. }
+        ));
+        assert!(!err.is_retriable());
+    }
+
+    #[test]
+    fn to_base_units_rejects_negative_amount() {
+        // `to_u128` returns None for negatives; that used to be an `unwrap`.
+        let err = to_base_units(Decimal::from_str("-1").unwrap(), 6).unwrap_err();
+        assert!(matches!(
+            err,
+            ChainExecutorError::AmountConversion { .. }
+        ));
+    }
+
+    #[test]
+    fn to_base_units_rejects_precision_beyond_decimal_scale() {
+        // `Decimal::new(1, 29)` panics; the fallible path must return an error.
+        let err = to_base_units(Decimal::ONE, 29).unwrap_err();
+        assert!(matches!(
+            err,
+            ChainExecutorError::AmountConversion { .. }
+        ));
+    }
 
     fn setup_executor() -> TransfersExecutor<
         MockDaoInterface,

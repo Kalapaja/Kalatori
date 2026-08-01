@@ -33,6 +33,11 @@ unused = "warn"
 
 [workspace.lints.clippy]
 allow_attributes = "deny"
+# This is a payment daemon: a silent wrap or truncation in an amount, fee or
+# token-unit conversion is a money bug. Every `+`/`-`/`*`/`/` on a numeric or
+# `Decimal` type must be explicitly checked, saturating, or justified with an
+# `#[expect(..., reason = "...")]` that says why it cannot overflow.
+arithmetic_side_effects = "warn"
 cargo_common_metadata = "warn"
 cast_possible_truncation = "warn"
 ignored_unit_patterns = "warn"
@@ -60,6 +65,22 @@ unwrap_used = "deny"
 # prone to poorly handle the file renaming that can result in their history erasure.
 mod_module_files = "warn"
 # TODO: we'll add docs and remove this later
+
+# Build profiles. These MUST live in the workspace root manifest: Cargo silently
+# ignores `[profile.*]` tables declared in non-root workspace members, which is
+# how `overflow-checks` quietly stopped applying to the release binary.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
 
 [workspace.metadata.bin]
 # Please keep in sync with subxt version in daemon/Cargo.toml and in subxt-cli version in Dockerfile
