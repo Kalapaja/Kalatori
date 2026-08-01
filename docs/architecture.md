@@ -55,6 +55,7 @@ SQLite via sqlx 0.8. `DaoInterface` + `DaoTransactionInterface` traits (mockable
 - `polygon.rs` — Polygon via alloy 1.5 (secp256k1 keys, ERC-20 tokens, Pimlico paymaster for gas abstraction)
 
 `AssetInfoStore` trait for per-chain asset metadata. Error types in `errors.rs` follow the [error handling principles](error-handling.md).
+Incoming base-unit amounts are normalized at the asset scale before conversion to `Decimal`. Outgoing amounts must convert exactly to integer base units; sub-base-unit dust and unrepresentable precision are rejected, and deterministic amount failures are not retried.
 
 ### `daemon/src/chain_client/keyring.rs` — Keyring (Actor)
 Actor pattern: mpsc channel + oneshot responses. Holds seed phrase (`Zeroize` + `ZeroizeOnDrop`). Handles both:
@@ -65,7 +66,7 @@ Client interface: `KeyringClient` (mockable via `mockall_double`).
 
 ### `daemon/src/chain/` — Chain Monitoring & Execution
 - **`transfer_tracker.rs`** (`TransfersTracker`): Subscribes to finalized blocks per chain, detects incoming transfers, and notifies `TransactionsRecorder`. Failed subscriptions and streams that end before delivering an event use a cancellation-aware exponential retry delay (1–60 seconds). Retry state resets only after a stream delivers an event; degradation is reported on entry and at most once per minute, with recovery reported separately.
-- **`transactions_recorder.rs`** (`TransactionsRecorder`): Records detected transactions to DB, updates `InvoiceRegistry`. Its transaction-scoped recording path lets Asset Hub balance reconciliation read the persisted received total and write a synthetic adjustment in one SQLite transaction; payout/refund/webhook/status side effects use that same path and the registry changes only after commit.
+- **`transactions_recorder.rs`** (`TransactionsRecorder`): Records detected transactions to DB, updates `InvoiceRegistry`. Its transaction-scoped recording path lets Asset Hub balance reconciliation read the persisted received total and write a synthetic adjustment in one SQLite transaction; payout/refund/webhook/status side effects use that same path and the registry changes only after commit. Checked amount failures abort the database transaction and are surfaced with invoice/transaction coordinates; durable live-event replay remains a separate persistence concern.
 - **`executor.rs`** (`TransfersExecutor`): Builds and submits payout transactions for both chains. Single executor instance handles Asset Hub + Polygon.
 - **`invoice_registry.rs`** (`InvoiceRegistry`): In-memory tracking of active invoices and their expected amounts. Thread-safe (internal `RwLock`). Invoice-data refreshes update only records that are still present, preserving the received amount; they never reinsert an invoice removed concurrently after reaching a terminal status.
 
@@ -76,7 +77,7 @@ Periodic background task. Checks for expired invoices, handles cleanup and statu
 Periodic background task. Sends unsent webhook events from DB to configured URLs with HMAC signatures.
 
 ### `daemon/src/etherscan_client.rs` — EtherscanClient
-Client for Etherscan/Polygonscan API. Used by ExpirationDetector for transaction verification on EVM chains.
+Client for Etherscan/Polygonscan API. Used by ExpirationDetector for transaction verification on EVM chains. Transfer conversion is isolated per response item: unrepresentable items are logged with chain coordinates while valid items in the same batch continue through reconciliation.
 
 ### `daemon/src/types/` — Domain Types
 Business logic models: `Invoice`, `Payout`, `Transaction`, `Refund`, `Swap`, `WebhookEvent`, `Changes`. Separate from DAO row types and API response types.
@@ -87,6 +88,7 @@ Monolithic `Error` enum with `PrettyCause` trait. Being migrated to domain-speci
 ### `daemon/src/utils/` — Utilities
 - `logger.rs` — tracing-subscriber setup, optional Loki integration (see [TLS](#tls))
 - `logging.rs` — Structured log category/operation constants
+- `amount.rs` — Exact checked conversion between token base units and `Decimal`
 - `task_tracker.rs` — Wraps `tokio_util::task::TaskTracker` with error collection
 - `shutdown.rs` — `ShutdownNotification`, `CancellationToken`, panic hook, signal handling
 
@@ -174,7 +176,7 @@ Ten config types loaded at startup (all support env var overrides):
 | Config | File | Key Fields |
 |--------|------|------------|
 | Chains | `chains.json` | Chain endpoints (optional — see below), assets |
-| Payments | `payments.json` | Recipient addresses, account lifetime, default chain/asset |
+| Payments | `payments.json` | Recipient addresses, invoice lifetime, default chain/asset |
 | Secrets | `secrets.json` | BIP39 seed phrase, API secret key |
 | Database | `database.json` | Database path, temporary mode, fail-closed existing-database requirement |
 | Web Server | (defaults) | Host, port (default 0.0.0.0:16726) |
@@ -198,6 +200,8 @@ endpoints currently cannot be supplied by environment variable at all
 **Custom prefix**: `KALATORI_APP_ENV_PREFIX`
 **Config directory**: `KALATORI_CONFIG_DIR_PATH`
 **Security**: Seed phrase and API secret key are zeroized from env/memory after loading.
+
+`invoice_lifetime_millis` is validated during configuration loading. Startup fails with an invalid-configuration error when the duration cannot produce a representable invoice expiry timestamp.
 
 Example configs in `configs/` directory.
 

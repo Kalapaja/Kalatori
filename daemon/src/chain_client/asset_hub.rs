@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use rust_decimal::prelude::{
-    Decimal,
-    ToPrimitive,
-};
+use rust_decimal::prelude::Decimal;
 use subxt::blocks::Block;
 use subxt::config::{
     DefaultExtrinsicParams,
@@ -23,6 +20,7 @@ use tracing::{
 };
 
 use crate::types::ChainType;
+use crate::utils::decimal_to_base_units;
 
 use super::{
     AssetInfo,
@@ -719,20 +717,16 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
         // `10^decimals`. `Decimal::new` panics for `decimals` above 28 and the
         // division panics on `Decimal` overflow, both on values derived from
         // on-chain asset metadata and a merchant-supplied payout amount.
-        let transaction_amount = Decimal::try_new(1, decimals.into())
-            .ok()
-            .and_then(|unit| amount.checked_div(unit))
-            .and_then(|normalized| normalized.to_u128())
-            .ok_or_else(|| {
+        let transaction_amount =
+            decimal_to_base_units(amount, decimals.into()).ok_or_else(|| {
                 tracing::error!(
                     amount = %amount,
                     decimals,
                     "Amount cannot be normalized into u128 base units"
                 );
-                TransactionError::BuildFailed {
-                    reason: format!(
-                        "Amount {amount} cannot be normalized into u128 base units with {decimals} decimals"
-                    ),
+                TransactionError::InvalidAmountPrecision {
+                    amount,
+                    decimals: u32::from(decimals),
                 }
             })?;
 

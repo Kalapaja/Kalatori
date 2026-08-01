@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use sqlx::QueryBuilder;
 use sqlx::types::{
     Json,
@@ -71,6 +72,11 @@ pub enum DaoInvoiceError {
     /// or deployment-history problem, not a database failure.
     #[error("Chain {chain} cannot be a payout destination")]
     UnsupportedPayoutChain { chain: ChainType },
+    /// Stored incoming amounts cannot be totaled without overflowing Decimal.
+    #[error("Incoming amount total overflowed for invoice {invoice_id}")]
+    AmountOverflow { invoice_id: Uuid },
+    #[error("Configured invoice lifetime cannot produce a valid expiry timestamp")]
+    InvalidInvoiceLifetime,
 }
 
 impl crate::api::ApiErrorExt for DaoInvoiceError {
@@ -92,7 +98,11 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::UnsupportedPayoutChain {
                 ..
             }
-            | DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
+            | DaoInvoiceError::DatabaseError
+            | DaoInvoiceError::AmountOverflow {
+                ..
+            }
+            | DaoInvoiceError::InvalidInvoiceLifetime => "INTERNAL_SERVER_ERROR",
         }
     }
 
@@ -114,6 +124,10 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
                 ..
             }
             | DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
+            DaoInvoiceError::AmountOverflow {
+                ..
+            } => "INVOICE_AMOUNT_OVERFLOW",
+            DaoInvoiceError::InvalidInvoiceLifetime => "INVALID_INVOICE_LIFETIME",
         }
     }
 
@@ -137,6 +151,10 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
                 ..
             } => "The payout could not be prepared for this invoice's chain.",
             DaoInvoiceError::DatabaseError => "A database error occurred.",
+            DaoInvoiceError::AmountOverflow {
+                ..
+            } => "Stored invoice amounts cannot be totaled.",
+            DaoInvoiceError::InvalidInvoiceLifetime => "Configured invoice lifetime is invalid.",
         }
     }
 
@@ -157,7 +175,11 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::UnsupportedPayoutChain {
                 ..
             }
-            | DaoInvoiceError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            | DaoInvoiceError::DatabaseError
+            | DaoInvoiceError::AmountOverflow {
+                ..
+            }
+            | DaoInvoiceError::InvalidInvoiceLifetime => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }
@@ -192,8 +214,12 @@ struct InvoiceWithAmountsRow {
     amounts: sqlx::types::Json<Vec<String>>,
 }
 
-impl From<InvoiceWithAmountsRow> for InvoiceWithReceivedAmount {
-    fn from(row: InvoiceWithAmountsRow) -> Self {
+impl TryFrom<InvoiceWithAmountsRow> for InvoiceWithReceivedAmount {
+    type Error = DaoInvoiceError;
+
+    fn try_from(row: InvoiceWithAmountsRow) -> Result<Self, Self::Error> {
+        let invoice: Invoice = row.invoice.into();
+        let invoice_id = invoice.id;
         let incoming_amount = row
             .amounts
             .0
@@ -203,12 +229,26 @@ impl From<InvoiceWithAmountsRow> for InvoiceWithReceivedAmount {
                     .parse::<rust_decimal::Decimal>()
                     .ok()
             })
-            .sum();
+            .try_fold(Decimal::ZERO, |total, amount| {
+                total
+                    .checked_add(amount)
+                    .ok_or_else(|| {
+                        tracing::error!(
+                            %invoice_id,
+                            accumulated_amount = %total,
+                            transaction_amount = %amount,
+                            "Stored incoming transfer total overflowed"
+                        );
+                        DaoInvoiceError::AmountOverflow {
+                            invoice_id,
+                        }
+                    })
+            })?;
 
-        Self {
-            invoice: row.invoice.into(),
+        Ok(Self {
+            invoice,
             total_received_amount: incoming_amount,
-        }
+        })
     }
 }
 
@@ -331,7 +371,8 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
         )
         .bind(invoice_id);
 
-        self.fetch_optional(query)
+        let row: Option<InvoiceWithAmountsRow> = self
+            .fetch_optional(query)
             .await
             .map_err(|e| {
                 tracing::debug!(
@@ -342,7 +383,10 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
                     "Failed to fetch invoice with received amount"
                 );
                 DaoInvoiceError::DatabaseError
-            })
+            })?;
+
+        row.map(InvoiceWithReceivedAmount::try_from)
+            .transpose()
     }
 
     /// Get all active invoices that need to be monitored and total amount of
@@ -369,7 +413,8 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
             ORDER BY i.created_at ASC",
         );
 
-        self.fetch_all(query)
+        let rows: Vec<InvoiceWithAmountsRow> = self
+            .fetch_all(query)
             .await
             .map_err(|e| {
                 tracing::debug!(
@@ -379,7 +424,11 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
                     "Failed to fetch paid amounts for invoices"
                 );
                 DaoInvoiceError::DatabaseError
-            })
+            })?;
+
+        rows.into_iter()
+            .map(InvoiceWithReceivedAmount::try_from)
+            .collect()
     }
 
     async fn update_invoice_status(
@@ -531,7 +580,8 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
 
         let query = builder.build_query_as::<InvoiceWithAmountsRow>();
 
-        self.fetch_all(query)
+        let rows: Vec<InvoiceWithAmountsRow> = self
+            .fetch_all(query)
             .await
             .map_err(|e| {
                 tracing::debug!(
@@ -541,7 +591,11 @@ pub trait DaoInvoiceMethods: DaoExecutor + 'static {
                     "Failed to fetch paginated invoices"
                 );
                 DaoInvoiceError::DatabaseError
-            })
+            })?;
+
+        rows.into_iter()
+            .map(InvoiceWithReceivedAmount::try_from)
+            .collect()
     }
 
     /// Count invoices matching the given filters (for pagination metadata).
@@ -688,11 +742,46 @@ mod tests {
         Transaction,
         TransactionType,
         default_create_invoice_data,
+        default_invoice,
         default_transaction,
         default_update_invoice_data,
     };
 
     use super::*;
+
+    #[test]
+    fn stored_received_amount_overflow_is_an_error() {
+        let invoice = default_invoice();
+        let invoice_id = invoice.id;
+        let row = InvoiceWithAmountsRow {
+            invoice: InvoiceRow {
+                id: invoice.id,
+                order_id: invoice.order_id,
+                asset_id: invoice.asset_id,
+                asset_name: invoice.asset_name,
+                chain: invoice.chain,
+                amount: Text(invoice.amount),
+                payment_address: invoice.payment_address,
+                status: invoice.status,
+                cart: Json(invoice.cart),
+                redirect_url: invoice.redirect_url,
+                valid_till: invoice.valid_till,
+                created_at: invoice.created_at,
+                updated_at: invoice.updated_at,
+            },
+            amounts: Json(vec![
+                Decimal::MAX.to_string(),
+                Decimal::ONE.to_string(),
+            ]),
+        };
+
+        assert!(matches!(
+            InvoiceWithReceivedAmount::try_from(row),
+            Err(DaoInvoiceError::AmountOverflow {
+                invoice_id: id,
+            }) if id == invoice_id
+        ));
+    }
 
     #[expect(clippy::too_many_lines)]
     #[tokio::test]

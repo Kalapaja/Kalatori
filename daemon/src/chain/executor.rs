@@ -56,7 +56,10 @@ use crate::types::{
     TransferDestinationParams,
     TransferInfo,
 };
-use crate::utils::RefundDestinationDetector;
+use crate::utils::{
+    RefundDestinationDetector,
+    decimal_to_base_units,
+};
 
 #[derive(Debug, PartialEq, Eq, Clone, Error)]
 pub enum ChainExecutorError {
@@ -79,6 +82,8 @@ pub enum ChainExecutorError {
     /// Previously this was `.unwrap()`, which crashed the executor task.
     #[error("Amount {amount} cannot be converted to token base units")]
     AmountConversion { amount: Decimal },
+    #[error("Amount {amount} is invalid for an asset with {decimals} decimals")]
+    InvalidAmountPrecision { amount: Decimal, decimals: u32 },
 }
 
 impl ChainExecutorError {
@@ -99,6 +104,9 @@ impl ChainExecutorError {
             // Deterministic in the amount: retrying produces the same failure.
             AmountConversion {
                 ..
+            }
+            | InvalidAmountPrecision {
+                ..
             } => false,
         }
     }
@@ -113,13 +121,9 @@ fn to_base_units(
     amount: Decimal,
     precision: u32,
 ) -> Result<u128, ChainExecutorError> {
-    Decimal::try_new(1, precision)
-        .ok()
-        .and_then(|unit| amount.checked_div(unit))
-        .and_then(|scaled| scaled.to_u128())
-        .ok_or(ChainExecutorError::AmountConversion {
-            amount,
-        })
+    decimal_to_base_units(amount, precision).ok_or(ChainExecutorError::AmountConversion {
+        amount,
+    })
 }
 
 const MAX_CONCURRENT_TRANSFERS: u32 = 10;
@@ -321,6 +325,9 @@ async fn send_transfer_request<T: ChainConfig, C: BlockChainClient<T>>(
         )]
         Err(TransactionError::BuildFailed {
             ..
+        })
+        | Err(TransactionError::InvalidAmountPrecision {
+            ..
         }) => unreachable!(),
     };
 
@@ -426,8 +433,17 @@ impl<
                     "Failed to build transfer transaction",
                 );
 
-                ChainExecutorError::BuildTransfer {
-                    reason: format!("Failed to build transfer transaction: {e}"),
+                match e {
+                    TransactionError::InvalidAmountPrecision {
+                        amount,
+                        decimals,
+                    } => ChainExecutorError::InvalidAmountPrecision {
+                        amount,
+                        decimals,
+                    },
+                    error => ChainExecutorError::BuildTransfer {
+                        reason: format!("Failed to build transfer transaction: {error}"),
+                    },
                 }
             })?;
 
@@ -1224,6 +1240,20 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn to_base_units_rejects_sub_base_unit_dust() {
+        let amount = Decimal::from_str("1.0000001").unwrap();
+        let error = to_base_units(amount, 6).unwrap_err();
+
+        assert_eq!(
+            error,
+            ChainExecutorError::AmountConversion {
+                amount,
+            }
+        );
+        assert!(!error.is_retriable());
+    }
+
     fn setup_executor() -> TransfersExecutor<
         MockDaoInterface,
         MockBlockChainClient<AssetHubChainConfig>,
@@ -1382,6 +1412,38 @@ mod tests {
                             .to_string()
                 }
             );
+        }
+
+        // A deterministic amount/precision failure must retain its domain
+        // classification so the worker marks it terminal instead of retrying.
+        {
+            let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+            let amount = request.amount;
+
+            polygon_client
+                .expect_build_transfer()
+                .returning(move |_, _, _, _| {
+                    Err(
+                        TransactionError::InvalidAmountPrecision {
+                            amount,
+                            decimals: 6,
+                        },
+                    )
+                });
+
+            let error = executor
+                .build_and_sign_transfer(&Arc::new(polygon_client), &request)
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                error,
+                ChainExecutorError::InvalidAmountPrecision {
+                    amount,
+                    decimals: 6,
+                }
+            );
+            assert!(!error.is_retriable());
         }
 
         // Test case 3:

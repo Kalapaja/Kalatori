@@ -36,7 +36,8 @@ pub enum TransactionsRecorderError {
     /// A payment-amount computation overflowed `Decimal`'s range. Recording a
     /// wrapped total — or panicking, which `Decimal`'s `+`/`-` do on overflow —
     /// would mean paying out or refunding the wrong sum, so the whole DB
-    /// transaction is abandoned instead and the transfer is retried.
+    /// transaction is abandoned instead. Callers surface the transfer for
+    /// reconciliation/manual recovery because no durable replay queue exists.
     #[error("Amount computation overflowed while {operation}")]
     AmountOverflow { operation: &'static str },
 }
@@ -149,6 +150,7 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
         total_received_amount: Decimal,
     ) -> Result<(), TransactionsRecorderError> {
         let invoice_id = transaction.invoice_id;
+        let incoming_transaction_id = transaction.transaction_id.clone();
 
         dao_transaction
             .create_transaction(transaction.into())
@@ -204,11 +206,19 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             let payout_amount = invoice.amount;
             let refund_amount = total_received_amount
                 .checked_sub(payout_amount)
-                .ok_or(
+                .ok_or_else(|| {
+                    tracing::error!(
+                        %invoice_id,
+                        transaction_id = ?incoming_transaction_id,
+                        lhs = %total_received_amount,
+                        rhs = %payout_amount,
+                        operation = "computing overpayment refund",
+                        "Amount operation overflowed; database transaction will be abandoned"
+                    );
                     TransactionsRecorderError::AmountOverflow {
                         operation: "computing overpayment refund",
-                    },
-                )?;
+                    }
+                })?;
 
             self.add_payout_to_dao_transaction(
                 dao_transaction,
@@ -268,14 +278,24 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
         invoice: &InvoiceWithReceivedAmount,
         transaction: IncomingTransaction,
     ) -> Result<(InvoiceWithReceivedAmount, Decimal), TransactionsRecorderError> {
-        let updated_received_amount = invoice
-            .total_received_amount
-            .checked_add(transaction.transfer_info.amount)
-            .ok_or(
+        let transaction_id = transaction.transaction_id.clone();
+        let transaction_amount = transaction.transfer_info.amount;
+        let total_received_amount = invoice.total_received_amount;
+        let updated_received_amount = total_received_amount
+            .checked_add(transaction_amount)
+            .ok_or_else(|| {
+                tracing::error!(
+                    invoice_id = %invoice.invoice.id,
+                    ?transaction_id,
+                    lhs = %total_received_amount,
+                    rhs = %transaction_amount,
+                    operation = "accumulating received amount",
+                    "Amount operation overflowed; incoming transfer was not recorded"
+                );
                 TransactionsRecorderError::AmountOverflow {
                     operation: "accumulating received amount",
-                },
-            )?;
+                }
+            })?;
 
         let underpayment_tolerance = self
             .config
@@ -287,11 +307,19 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             .invoice
             .amount
             .checked_sub(underpayment_tolerance)
-            .ok_or(
+            .ok_or_else(|| {
+                tracing::error!(
+                    invoice_id = %invoice.invoice.id,
+                    ?transaction_id,
+                    lhs = %invoice.invoice.amount,
+                    rhs = %underpayment_tolerance,
+                    operation = "applying underpayment tolerance",
+                    "Amount operation overflowed; incoming transfer was not recorded"
+                );
                 TransactionsRecorderError::AmountOverflow {
                     operation: "applying underpayment tolerance",
-                },
-            )?;
+                }
+            })?;
 
         let overpayment_tolerance = self
             .config
@@ -303,11 +331,19 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             .invoice
             .amount
             .checked_add(overpayment_tolerance)
-            .ok_or(
+            .ok_or_else(|| {
+                tracing::error!(
+                    invoice_id = %invoice.invoice.id,
+                    ?transaction_id,
+                    lhs = %invoice.invoice.amount,
+                    rhs = %overpayment_tolerance,
+                    operation = "applying overpayment tolerance",
+                    "Amount operation overflowed; incoming transfer was not recorded"
+                );
                 TransactionsRecorderError::AmountOverflow {
                     operation: "applying overpayment tolerance",
-                },
-            )?;
+                }
+            })?;
 
         let is_underpaid = updated_received_amount < min_paid_amount;
         let is_overpaid = updated_received_amount > max_paid_amount;

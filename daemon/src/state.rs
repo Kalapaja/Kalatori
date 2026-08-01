@@ -104,13 +104,14 @@ pub struct AppState<D: DaoInterface = DAO> {
 /// The previous `as i64` cast wrapped values above `i64::MAX` into a *negative*
 /// lifetime, producing an invoice that was already expired, and the subsequent
 /// `Utc::now() + Duration` panicked for lifetimes near the top of the range.
-/// Both cases now clamp to the largest representable instant instead.
-fn invoice_valid_till(invoice_lifetime_millis: u64) -> DateTime<Utc> {
+/// Invalid lifetimes are rejected at configuration load. This remains
+/// fallible as defense in depth for directly-constructed test/application
+/// state.
+fn invoice_valid_till(invoice_lifetime_millis: u64) -> Option<DateTime<Utc>> {
     i64::try_from(invoice_lifetime_millis)
         .ok()
         .and_then(chrono::TimeDelta::try_milliseconds)
         .and_then(|lifetime| Utc::now().checked_add_signed(lifetime))
-        .unwrap_or(DateTime::<Utc>::MAX_UTC)
 }
 
 impl<D: DaoInterface> AppState<D> {
@@ -191,7 +192,8 @@ impl<D: DaoInterface> AppState<D> {
         let valid_till = invoice_valid_till(
             self.payments_config
                 .invoice_lifetime_millis,
-        );
+        )
+        .ok_or(DaoInvoiceError::InvalidInvoiceLifetime)?;
 
         let payment_address = match chain {
             ChainType::PolkadotAssetHub => {
@@ -302,7 +304,8 @@ impl<D: DaoInterface> AppState<D> {
             valid_till: invoice_valid_till(
                 self.payments_config
                     .invoice_lifetime_millis,
-            ),
+            )
+            .ok_or(DaoInvoiceError::InvalidInvoiceLifetime)?,
         };
 
         let dao_transaction = self
@@ -770,7 +773,7 @@ impl<D: DaoInterface> AppState<D> {
             .invoices
             .sort_by_key(|i| i.invoice.updated_at);
 
-        Ok(internal_response.into_public(&self.payments_config.payment_url_base))
+        internal_response.into_public(&self.payments_config.payment_url_base)
     }
 
     pub fn get_shop_meta(&self) -> ShopMetaConfig {
@@ -1225,7 +1228,8 @@ mod tests {
                     app_state
                         .payments_config
                         .invoice_lifetime_millis,
-                ),
+                )
+                .unwrap(),
             }
         };
 
@@ -1350,7 +1354,8 @@ mod tests {
                     app_state
                         .payments_config
                         .invoice_lifetime_millis,
-                ),
+                )
+                .unwrap(),
             }
         };
 

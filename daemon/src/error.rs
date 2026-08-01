@@ -21,6 +21,9 @@ pub enum Error {
     #[error("failed to parse the config parameter `{0}`")]
     ConfigParse(&'static str),
 
+    #[error(transparent)]
+    InvalidConfiguration(#[from] crate::configs::PaymentsConfigError),
+
     #[error("chain {0:?} doesn't have any `endpoints` in the config")]
     EmptyEndpoints(String),
 

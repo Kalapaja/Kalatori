@@ -6,6 +6,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::str::FromStr;
 
+use chrono::Utc;
 use kalatori_client::strum::IntoEnumIterator;
 use rand::prelude::*;
 use rust_decimal::Decimal;
@@ -355,7 +356,33 @@ pub struct PaymentsConfig {
     pub slippage_params: HashMap<ChainType, HashMap<String, SlippageParams>>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum PaymentsConfigError {
+    #[error(
+        "invalid configuration: invoice_lifetime_millis={value} cannot produce a valid expiry timestamp"
+    )]
+    InvalidInvoiceLifetime { value: u64 },
+}
+
 impl PaymentsConfig {
+    pub fn validate(&self) -> Result<(), PaymentsConfigError> {
+        let valid_lifetime = i64::try_from(self.invoice_lifetime_millis)
+            .ok()
+            .and_then(chrono::TimeDelta::try_milliseconds)
+            .and_then(|lifetime| Utc::now().checked_add_signed(lifetime))
+            .is_some();
+
+        if !valid_lifetime {
+            return Err(
+                PaymentsConfigError::InvalidInvoiceLifetime {
+                    value: self.invoice_lifetime_millis,
+                },
+            )
+        }
+
+        Ok(())
+    }
+
     pub(super) fn set_default_asset_id_if_missing(&mut self) {
         for chain in ChainType::iter() {
             let default = match chain {
@@ -968,6 +995,43 @@ mod tests {
         config.warn_if_zero_ex_rpc_is_public_default();
 
         logs_assert(assert_no_sentinel_leaked);
+    }
+}
+
+#[cfg(test)]
+mod payments_config_tests {
+    use super::*;
+
+    fn payments_config(invoice_lifetime_millis: u64) -> PaymentsConfig {
+        PaymentsConfig {
+            recipient: HashMap::new(),
+            invoice_lifetime_millis,
+            default_chain: ChainType::Polygon,
+            default_asset_id: HashMap::new(),
+            payment_url_base: "https://example.test".to_string(),
+            slippage_params: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn rejects_invoice_lifetime_that_cannot_produce_an_expiry() {
+        assert!(matches!(
+            payments_config(u64::MAX).validate(),
+            Err(
+                PaymentsConfigError::InvalidInvoiceLifetime {
+                    value: u64::MAX,
+                }
+            )
+        ));
+    }
+
+    #[test]
+    fn accepts_default_invoice_lifetime() {
+        assert!(
+            payments_config(DEFAULT_INVOICE_LIFETIME_MILLIS)
+                .validate()
+                .is_ok()
+        );
     }
 }
 

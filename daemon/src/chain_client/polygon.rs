@@ -37,14 +37,15 @@ use alloy::sol_types::{
 };
 use chrono::Utc;
 use futures::StreamExt;
-use rust_decimal::prelude::{
-    Decimal,
-    ToPrimitive,
-};
+use rust_decimal::prelude::Decimal;
 use tracing::instrument;
 
 use crate::types::ChainType;
 use crate::utils::logging::category::CHAIN_CLIENT;
+use crate::utils::{
+    decimal_from_base_units,
+    decimal_to_base_units,
+};
 
 use super::{
     AssetInfo,
@@ -387,14 +388,7 @@ fn u256_to_decimal(
     value: U256,
     decimals: u8,
 ) -> Option<Decimal> {
-    // Convert U256 to string and parse as Decimal. `from_str_exact` (unlike
-    // `from_str`) refuses to silently round away significant digits.
-    let raw_decimal = Decimal::from_str_exact(&value.to_string()).ok()?;
-
-    // Apply decimal places. `Decimal::new` panics for scale > 28, so go through
-    // the fallible constructor.
-    let scale = Decimal::try_new(1, u32::from(decimals)).ok()?;
-    raw_decimal.checked_mul(scale)
+    decimal_from_base_units(&value.to_string(), u32::from(decimals))
 }
 
 /// Convert a `Decimal` amount to U256 base units with the given number of
@@ -407,18 +401,7 @@ fn decimal_to_u256(
     value: Decimal,
     decimals: u8,
 ) -> Option<U256> {
-    // Scale up by decimals. `10_i64.pow` overflows for decimals > 18.
-    let multiplier = Decimal::try_new(
-        10_i64.checked_pow(u32::from(decimals))?,
-        0,
-    )
-    .ok()?;
-
-    // Convert to U256
-    value
-        .checked_mul(multiplier)?
-        .to_u128()
-        .map(U256::from)
+    decimal_to_base_units(value, u32::from(decimals)).map(U256::from)
 }
 
 /// Compute the paymaster's maximum charge, denominated in the fee token.
@@ -1225,12 +1208,12 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             })?
             .decimals;
 
-        let amount_wei =
-            decimal_to_u256(amount, decimals).ok_or_else(|| TransactionError::BuildFailed {
-                reason: format!(
-                    "Amount {amount} with {decimals} decimals does not fit u128 base units"
-                ),
-            })?;
+        let amount_wei = decimal_to_u256(amount, decimals).ok_or(
+            TransactionError::InvalidAmountPrecision {
+                amount,
+                decimals: u32::from(decimals),
+            },
+        )?;
 
         let contract = IERC20::new(asset_id, self.provider.clone());
         let entrypoint_contract = IERC20::new(ENTRYPOINT, self.provider.clone());
@@ -1922,14 +1905,16 @@ mod tests {
     }
 
     #[test]
-    fn u256_to_decimal_rejects_values_beyond_decimal_range() {
-        // Decimal's mantissa is 96 bits (~7.9e28); 1e30 base units cannot be
-        // represented. The old code returned `Decimal::ZERO`, silently turning
-        // a huge payment into "nothing received".
+    fn u256_to_decimal_accepts_scaled_values_with_large_base_unit_mantissas() {
+        // 1e30 base units at 18 decimals is exactly 1e12 tokens. Constructing
+        // Decimal from the raw base-unit integer first incorrectly rejected it.
         let value = U256::from(10u8).pow(U256::from(30u8));
-        assert_eq!(u256_to_decimal(value, 18), None);
+        assert_eq!(
+            u256_to_decimal(value, 18),
+            Some(Decimal::from(1_000_000_000_000_u64))
+        );
 
-        // U256::MAX must not panic either.
+        // U256::MAX remains genuinely unrepresentable at this scale.
         assert_eq!(u256_to_decimal(U256::MAX, 18), None);
     }
 
@@ -1944,8 +1929,17 @@ mod tests {
 
     #[test]
     fn decimal_to_u256_rejects_unrepresentable_values() {
-        // `10_i64.pow(19)` overflows i64.
-        assert_eq!(decimal_to_u256(Decimal::ONE, 19), None);
+        assert_eq!(
+            decimal_to_u256(Decimal::ONE, 19),
+            Some(U256::from(
+                10_000_000_000_000_000_000_u128
+            ))
+        );
+
+        assert_eq!(
+            decimal_to_u256(Decimal::ONE, 28),
+            Some(U256::from(10u8).pow(U256::from(28u8)))
+        );
 
         // Scaled value beyond u128 must not silently become zero.
         assert_eq!(decimal_to_u256(Decimal::MAX, 18), None);
@@ -2071,6 +2065,20 @@ mod tests {
         // The sign check is what `to_u128` provides. Without it a negative
         // payout amount would scale into an unsigned base-unit value and move
         // real funds; the existing cases here all use positive inputs.
-        assert_eq!(decimal_to_u256(Decimal::try_new(-1, 0).unwrap(), 6), None);
+        assert_eq!(
+            decimal_to_u256(Decimal::try_new(-1, 0).unwrap(), 6),
+            None
+        );
+    }
+
+    #[test]
+    fn decimal_to_u256_rejects_sub_base_unit_dust() {
+        assert_eq!(
+            decimal_to_u256(
+                Decimal::from_str_exact("1.0000001").unwrap(),
+                6
+            ),
+            None
+        );
     }
 }

@@ -25,6 +25,14 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 const DEGRADED_WARNING_INTERVAL: Duration = Duration::from_secs(60);
 
+#[derive(Debug, thiserror::Error)]
+enum TransferTrackerError {
+    #[error(transparent)]
+    Subscription(#[from] SubscriptionError),
+    #[error(transparent)]
+    Recorder(#[from] TransactionsRecorderError),
+}
+
 struct RetryState {
     delay: Duration,
     degraded_since: Option<tokio::time::Instant>,
@@ -157,7 +165,7 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
     async fn process_transfer(
         &self,
         transfer: GeneralChainTransfer,
-    ) {
+    ) -> Result<(), TransactionsRecorderError> {
         if let Some(mut invoice) = self
             .registry
             .find_invoice_by_address(
@@ -175,6 +183,7 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
             );
 
             let transaction = IncomingTransaction::from_chain_transfer(invoice_id, transfer);
+            let transaction_id = transaction.transaction_id.clone();
 
             match self
                 .transactions_recorder
@@ -193,24 +202,30 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                     %invoice_id,
                     "Transfer is already presented in database, invoice hasn't been updated"
                 ),
-                Err(e) => tracing::warn!(
-                    %invoice_id,
-                    error = ?e,
-                    "Error while trying to store transfer in database, invoice hasn't been updated"
-                ),
+                Err(error) => {
+                    tracing::error!(
+                        %invoice_id,
+                        ?transaction_id,
+                        error = ?error,
+                        "Incoming transfer was not recorded; durable replay is required for guaranteed recovery"
+                    );
+                    return Err(error)
+                },
             };
         }
+
+        Ok(())
     }
 
     async fn handle_subscription_event(
         &self,
         event: Option<Result<Vec<ChainTransfer<T>>, SubscriptionError>>,
-    ) -> Result<(), SubscriptionError> {
+    ) -> Result<(), TransferTrackerError> {
         match event {
             Some(Ok(transfers)) => {
                 for transfer in transfers {
                     self.process_transfer(transfer.into())
-                        .await;
+                        .await?;
                 }
 
                 Ok(())
@@ -222,11 +237,11 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                     error.source = ?e,
                     "Error receiving transfer event"
                 );
-                Err(e)
+                Err(e.into())
             },
             None => {
                 tracing::debug!("Transfer event subscription ended");
-                Err(SubscriptionError::StreamClosed)
+                Err(SubscriptionError::StreamClosed.into())
             },
         }
     }
@@ -292,12 +307,23 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                     match subscription_event {
                         Some(Ok(transfers)) => {
                             retry_state.record_health();
-                            let _result = self
+                            if let Err(error) = self
                                 .handle_subscription_event(Some(Ok(transfers)))
-                                .await;
+                                .await
+                            {
+                                tracing::error!(
+                                    error = ?error,
+                                    "Transfer subscription event was not fully processed"
+                                );
+                            }
                         },
                         failed_event => {
-                            let _result = self.handle_subscription_event(failed_event).await;
+                            if let Err(error) = self.handle_subscription_event(failed_event).await {
+                                tracing::warn!(
+                                    error = ?error,
+                                    "Transfer subscription failed"
+                                );
+                            }
                             subscription = None;
                             let retry_delay = retry_state.record_failure();
                             tokio::select! {
@@ -747,7 +773,10 @@ mod tests {
         //   - No recorder calls
         let transfer = default_general_chain_transfer();
 
-        tracker.process_transfer(transfer).await;
+        tracker
+            .process_transfer(transfer)
+            .await
+            .unwrap();
         tracker
             .transactions_recorder
             .checkpoint();
@@ -793,7 +822,8 @@ mod tests {
 
         tracker
             .process_transfer(transfer.clone())
-            .await;
+            .await
+            .unwrap();
         tracker
             .transactions_recorder
             .checkpoint();
@@ -832,7 +862,8 @@ mod tests {
 
         tracker
             .process_transfer(transfer.clone())
-            .await;
+            .await
+            .unwrap();
         tracker
             .transactions_recorder
             .checkpoint();
@@ -853,18 +884,47 @@ mod tests {
             .transactions_recorder
             .expect_process_invoice_transaction()
             .with(
-                eq(invoice),
+                eq(invoice.clone()),
                 eq(expected_transaction.clone()),
             )
             .once()
             .returning(|_, _| Err(TransactionsRecorderError::DaoTransactionError));
 
-        tracker.process_transfer(transfer).await;
+        assert!(matches!(
+            tracker
+                .process_transfer(transfer.clone())
+                .await,
+            Err(TransactionsRecorderError::DaoTransactionError)
+        ));
         tracker
             .transactions_recorder
             .checkpoint();
         assert!(logs_contain(
-            "Error while trying to store transfer in database, invoice hasn't been updated"
+            "Incoming transfer was not recorded"
+        ));
+
+        // An amount overflow must propagate through the live-tracking caller;
+        // logging it and returning Ok would permanently forget the event.
+        tracker
+            .transactions_recorder
+            .expect_process_invoice_transaction()
+            .with(eq(invoice), eq(expected_transaction))
+            .once()
+            .returning(|_, _| {
+                Err(
+                    TransactionsRecorderError::AmountOverflow {
+                        operation: "accumulating received amount",
+                    },
+                )
+            });
+
+        assert!(matches!(
+            tracker.process_transfer(transfer).await,
+            Err(
+                TransactionsRecorderError::AmountOverflow {
+                    operation: "accumulating received amount",
+                }
+            )
         ));
     }
 
@@ -916,7 +976,7 @@ mod tests {
         let result = tracker
             .handle_subscription_event(Some(Ok(transfers)))
             .await;
-        assert_eq!(result, Ok(()));
+        assert!(result.is_ok());
 
         // Test case 2:
         // - Unsuccessful case
@@ -927,10 +987,12 @@ mod tests {
         let result = tracker
             .handle_subscription_event(None)
             .await;
-        assert_eq!(
+        assert!(matches!(
             result,
-            Err(SubscriptionError::StreamClosed)
-        );
+            Err(TransferTrackerError::Subscription(
+                SubscriptionError::StreamClosed
+            ))
+        ));
 
         // Test case 3:
         // - Unsuccessful case
@@ -943,9 +1005,11 @@ mod tests {
                 SubscriptionError::SubscriptionFailed,
             )))
             .await;
-        assert_eq!(
+        assert!(matches!(
             result,
-            Err(SubscriptionError::SubscriptionFailed)
-        );
+            Err(TransferTrackerError::Subscription(
+                SubscriptionError::SubscriptionFailed
+            ))
+        ));
     }
 }

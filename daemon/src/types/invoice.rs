@@ -65,6 +65,12 @@ pub struct InvoiceWithReceivedAmount {
     pub total_received_amount: Decimal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvoiceAmountError {
+    #[error("Invoice {invoice_id} amount remainder cannot be represented")]
+    UnrepresentableRemainder { invoice_id: Uuid },
+}
+
 impl InvoiceWithReceivedAmount {
     pub fn into_public_invoice(
         self,
@@ -96,16 +102,19 @@ impl InvoiceWithReceivedAmount {
 
     /// Returns invoice's unfilled amount or 0 if it's filled or overpaid.
     ///
-    /// Uses `saturating_sub`: `Decimal`'s `-` panics on overflow, and this is
-    /// called from request handlers. Saturating is safe here because the result
-    /// is clamped to the non-negative range anyway — an underflow can only push
-    /// it further below zero, and an overflow towards `Decimal::MAX` preserves
-    /// the "still owed" meaning rather than inventing a zero balance.
-    pub fn unfilled_amount(&self) -> Decimal {
+    /// The subtraction is fallible because extreme/corrupt signed amounts can
+    /// exceed Decimal's representable range. Only a successfully computed
+    /// negative remainder is clamped to zero.
+    pub fn unfilled_amount(&self) -> Result<Decimal, InvoiceAmountError> {
         self.invoice
             .amount
-            .saturating_sub(self.total_received_amount)
-            .max(Decimal::ZERO)
+            .checked_sub(self.total_received_amount)
+            .map(|remainder| remainder.max(Decimal::ZERO))
+            .ok_or(
+                InvoiceAmountError::UnrepresentableRemainder {
+                    invoice_id: self.invoice.id,
+                },
+            )
     }
 }
 
@@ -258,7 +267,8 @@ mod tests {
                 Decimal::new(100, 0),
                 Decimal::new(40, 0)
             )
-            .unfilled_amount(),
+            .unfilled_amount()
+            .unwrap(),
             Decimal::new(60, 0)
         );
     }
@@ -270,7 +280,8 @@ mod tests {
                 Decimal::new(100, 0),
                 Decimal::new(100, 0)
             )
-            .unfilled_amount(),
+            .unfilled_amount()
+            .unwrap(),
             Decimal::ZERO
         );
         assert_eq!(
@@ -278,24 +289,36 @@ mod tests {
                 Decimal::new(100, 0),
                 Decimal::new(250, 0)
             )
-            .unfilled_amount(),
+            .unfilled_amount()
+            .unwrap(),
             Decimal::ZERO
         );
     }
 
     #[test]
-    fn unfilled_amount_saturates_instead_of_panicking() {
+    fn unfilled_amount_rejects_unrepresentable_remainders() {
         // `Decimal::MAX - Decimal::MIN` overflows; the plain `-` this used to
         // use would panic inside a request handler.
+        let invoice = with_received(Decimal::MAX, Decimal::MIN);
         assert_eq!(
-            with_received(Decimal::MAX, Decimal::MIN).unfilled_amount(),
-            Decimal::MAX
+            invoice.unfilled_amount(),
+            Err(
+                InvoiceAmountError::UnrepresentableRemainder {
+                    invoice_id: invoice.invoice.id,
+                }
+            )
         );
 
-        // The opposite direction saturates negative and is then clamped to 0.
+        // The opposite direction is just as unrepresentable; zero is only used
+        // after a successful negative subtraction.
+        let invoice = with_received(Decimal::MIN, Decimal::MAX);
         assert_eq!(
-            with_received(Decimal::MIN, Decimal::MAX).unfilled_amount(),
-            Decimal::ZERO
+            invoice.unfilled_amount(),
+            Err(
+                InvoiceAmountError::UnrepresentableRemainder {
+                    invoice_id: invoice.invoice.id,
+                }
+            )
         );
     }
 }

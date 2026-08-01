@@ -15,6 +15,8 @@ use serde::{
 };
 use uuid::Uuid;
 
+use crate::dao::DaoChangesError;
+
 use kalatori_client::types::{
     ChainType,
     Invoice as PublicInvoice,
@@ -152,16 +154,16 @@ impl ChangesResponse {
     pub fn into_public(
         self,
         payment_url_base: &str,
-    ) -> PublicChangesResponse {
-        PublicChangesResponse {
+    ) -> Result<PublicChangesResponse, DaoChangesError> {
+        Ok(PublicChangesResponse {
             invoices: self
                 .invoices
                 .into_iter()
                 .map(|ic| ic.into_public(payment_url_base))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             sync_timestamp: self.sync_timestamp,
             kalatori_version: VERSION,
-        }
+        })
     }
 }
 
@@ -169,13 +171,28 @@ impl InvoiceChanges {
     fn into_public(
         self,
         payment_url_base: &str,
-    ) -> PublicInvoiceChanges {
+    ) -> Result<PublicInvoiceChanges, DaoChangesError> {
         // Calculate total received amount from incoming transactions
-        let total_received_amount: Decimal = self
-            .transactions
-            .iter()
-            .map(|t| t.transfer_info.amount)
-            .sum();
+        let invoice_id = self.invoice.id;
+        let total_received_amount =
+            self.transactions
+                .iter()
+                .try_fold(Decimal::ZERO, |total, transaction| {
+                    total
+                        .checked_add(transaction.transfer_info.amount)
+                        .ok_or_else(|| {
+                            tracing::error!(
+                                %invoice_id,
+                                transaction_id = ?transaction.transaction_id,
+                                accumulated_amount = %total,
+                                transaction_amount = %transaction.transfer_info.amount,
+                                "Incoming transfer total overflowed while building changes response"
+                            );
+                            DaoChangesError::AmountOverflow {
+                                invoice_id,
+                            }
+                        })
+                })?;
 
         // Convert invoice to public invoice
         let public_invoice = self
@@ -183,7 +200,7 @@ impl InvoiceChanges {
             .with_amount(total_received_amount)
             .into_public_invoice(payment_url_base);
 
-        PublicInvoiceChanges {
+        Ok(PublicInvoiceChanges {
             invoice: public_invoice,
             incoming_transactions: self
                 .transactions
@@ -201,7 +218,7 @@ impl InvoiceChanges {
                 .map(RefundChanges::into_public)
                 .collect(),
             swaps: self.swaps,
-        }
+        })
     }
 }
 
@@ -578,5 +595,41 @@ impl TryFrom<FrontEndSwapJson> for FrontEndSwap {
             created_at: json.created_at,
             updated_at: json.updated_at,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{
+        default_invoice,
+        default_transaction,
+    };
+
+    #[test]
+    fn changes_conversion_rejects_received_amount_overflow() {
+        let invoice = default_invoice();
+        let invoice_id = invoice.id;
+        let mut first = default_transaction(invoice_id);
+        first.transfer_info.amount = Decimal::MAX;
+        let mut second = default_transaction(invoice_id);
+        second.transfer_info.amount = Decimal::ONE;
+
+        let error = InvoiceChanges {
+            invoice,
+            transactions: vec![first, second],
+            payouts: vec![],
+            refunds: vec![],
+            swaps: vec![],
+        }
+        .into_public("https://example.test")
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DaoChangesError::AmountOverflow {
+                invoice_id: id,
+            } if id == invoice_id
+        ));
     }
 }

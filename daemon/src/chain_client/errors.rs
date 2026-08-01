@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use thiserror::Error;
 
 use crate::utils::logging::category::CHAIN_CLIENT;
@@ -94,6 +95,11 @@ pub enum TransactionError<T: ChainConfig> {
     /// Transaction building failed (invalid parameters, signing failure, etc.)
     #[error("Transaction building failed: {reason}")]
     BuildFailed { reason: String },
+
+    /// The requested transfer amount cannot be represented exactly in the
+    /// asset's base units. This is deterministic and must not be retried.
+    #[error("Amount {amount} is invalid for an asset with {decimals} decimals")]
+    InvalidAmountPrecision { amount: Decimal, decimals: u32 },
 
     /// Transaction was submitted but final status is unknown
     #[error("Transaction submission status unknown")]
