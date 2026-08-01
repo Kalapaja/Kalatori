@@ -1021,6 +1021,8 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                 decimals,
                 "Balance is not representable as a Decimal"
             );
+            // The balance was fetched successfully; it is the conversion that
+            // failed, so this must not be reported as missing data.
             QueryError::DecodeFailed {
                 data_type: format!("ERC-20 balance {balance} with {decimals} decimals"),
             }
@@ -2062,5 +2064,13 @@ mod tests {
             WEI_PER_ETHER,
             U256::from(10u8).pow(U256::from(18u8))
         );
+    }
+
+    #[test]
+    fn decimal_to_u256_rejects_negative_amounts() {
+        // The sign check is what `to_u128` provides. Without it a negative
+        // payout amount would scale into an unsigned base-unit value and move
+        // real funds; the existing cases here all use positive inputs.
+        assert_eq!(decimal_to_u256(Decimal::try_new(-1, 0).unwrap(), 6), None);
     }
 }
