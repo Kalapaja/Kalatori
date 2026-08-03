@@ -3,7 +3,6 @@ mod tracker;
 
 #[cfg_attr(test, mockall_double::double)]
 pub use executor::SwapsExecutor;
-#[cfg_attr(not(test), expect(unused_imports))]
 pub use executor::SwapsExecutorError;
 pub use tracker::SwapsTracker;
 

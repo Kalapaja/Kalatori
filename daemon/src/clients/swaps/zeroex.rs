@@ -248,9 +248,29 @@ impl TryFrom<RawSwapDetails> for ZeroExGaslessRawTransaction {
 
 pub type ZeroExGaslessQuoteDetails = ZeroExGaslessRawTransaction;
 
-impl From<ZeroExErrorResponse> for SwapsClientError {
-    fn from(_value: ZeroExErrorResponse) -> Self {
-        Self::UnknownApiError
+impl ZeroExErrorResponse {
+    /// 0x reports the failure kind only through the HTTP status; the error body
+    /// carries no status field, so the caller has to pass it in.
+    fn into_client_error(
+        self,
+        status: reqwest::StatusCode,
+    ) -> SwapsClientError {
+        tracing::warn!(
+            %status,
+            name = ?self.name,
+            message = ?self.message,
+            data = ?self.data,
+            "0x API returned an error response"
+        );
+
+        // Provider-side failures are not the requester's fault
+        if status.is_server_error() {
+            return SwapsClientError::UnknownApiError;
+        }
+
+        SwapsClientError::ProviderRejected {
+            message: self.message,
+        }
     }
 }
 
@@ -336,6 +356,8 @@ impl SwapsClient for ZeroExClient {
                 SwapsClientError::UnknownApiError
             })?;
 
+        let status = response.status();
+
         let text = response.text().await.map_err(|e| {
             tracing::warn!(error = ?e, "Failed to extract response text from 0x response");
             SwapsClientError::UnknownApiError
@@ -350,7 +372,7 @@ impl SwapsClient for ZeroExClient {
 
         match result {
             ZeroExResponse::Ok(resp) => Ok(resp),
-            ZeroExResponse::Err(e) => Err(e.into()),
+            ZeroExResponse::Err(e) => Err(e.into_client_error(status)),
         }
     }
 
@@ -466,6 +488,8 @@ impl ZeroExGaslessClient {
             SwapsClientError::UnknownApiError
         })?;
 
+        let status = response.status();
+
         let text = response.text().await.map_err(|e| {
             tracing::warn!(error = ?e, "Failed to extract response text from 0x response");
             SwapsClientError::UnknownApiError
@@ -480,7 +504,7 @@ impl ZeroExGaslessClient {
 
         match result {
             ZeroExResponse::Ok(resp) => Ok(resp),
-            ZeroExResponse::Err(e) => Err(e.into()),
+            ZeroExResponse::Err(e) => Err(e.into_client_error(status)),
         }
     }
 
@@ -673,5 +697,45 @@ impl SwapsClient for ZeroExGaslessClient {
             .await?;
 
         Ok(response.status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_response_classification() {
+        let error = ZeroExErrorResponse {
+            name: "INSUFFICIENT_LIQUIDITY".to_string(),
+            message: "Insufficient liquidity for this trade".to_string(),
+            data: ZeroExErrorResponseData {
+                zid: "0x1".to_string(),
+                details: None,
+            },
+        };
+
+        assert_eq!(
+            error.into_client_error(reqwest::StatusCode::BAD_REQUEST),
+            SwapsClientError::ProviderRejected {
+                message: "Insufficient liquidity for this trade".to_string(),
+            }
+        );
+
+        let server_error = ZeroExErrorResponse {
+            name: "INTERNAL_SERVER_ERROR".to_string(),
+            message: "Internal server error".to_string(),
+            data: ZeroExErrorResponseData {
+                zid: "0x2".to_string(),
+                details: None,
+            },
+        };
+
+        // A provider 5xx is not the requester's fault, so it must not surface
+        // as a 422 ProviderRejected
+        assert_eq!(
+            server_error.into_client_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            SwapsClientError::UnknownApiError
+        );
     }
 }

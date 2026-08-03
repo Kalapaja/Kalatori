@@ -221,7 +221,6 @@ pub fn default_bungee_raw_transaction() -> BungeeRawTransaction {
     }
 }
 
-#[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BungeeApiResponse<T> {
@@ -230,14 +229,26 @@ struct BungeeApiResponse<T> {
     success: bool,
     #[serde(default)]
     message: Option<String>,
-    #[expect(dead_code)]
     #[serde(default)]
     status_code: Option<u32>,
 }
 
 impl<T> From<BungeeApiResponse<T>> for SwapsClientError {
-    fn from(_value: BungeeApiResponse<T>) -> Self {
-        Self::UnknownApiError
+    fn from(value: BungeeApiResponse<T>) -> Self {
+        tracing::warn!(
+            message = ?value.message,
+            status_code = ?value.status_code,
+            "Bungee API returned an error response"
+        );
+
+        match (value.status_code, value.message) {
+            // Provider-side failures are not the requester's fault
+            (Some(status), _) if status >= 500 => Self::UnknownApiError,
+            (_, Some(message)) => Self::ProviderRejected {
+                message,
+            },
+            _ => Self::UnknownApiError,
+        }
     }
 }
 
@@ -1114,5 +1125,45 @@ mod tests {
             .unwrap();
         assert_eq!(response, expected_response);
         mock.assert();
+    }
+    #[test]
+    fn test_error_response_classification() {
+        let rejection: SwapsClientError = BungeeApiResponse::<()> {
+            result: None,
+            success: false,
+            message: Some("Amount is too low".to_string()),
+            status_code: Some(400),
+        }
+        .into();
+        assert_eq!(
+            rejection,
+            SwapsClientError::ProviderRejected {
+                message: "Amount is too low".to_string(),
+            }
+        );
+
+        let provider_failure: SwapsClientError = BungeeApiResponse::<()> {
+            result: None,
+            success: false,
+            message: Some("Internal server error".to_string()),
+            status_code: Some(500),
+        }
+        .into();
+        assert_eq!(
+            provider_failure,
+            SwapsClientError::UnknownApiError
+        );
+
+        let opaque: SwapsClientError = BungeeApiResponse::<()> {
+            result: None,
+            success: false,
+            message: None,
+            status_code: None,
+        }
+        .into();
+        assert_eq!(
+            opaque,
+            SwapsClientError::UnknownApiError
+        );
     }
 }
