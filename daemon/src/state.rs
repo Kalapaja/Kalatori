@@ -320,6 +320,13 @@ impl<D: DaoInterface> AppState<D> {
         // We allow to update only unpaid invoices, so the received amount is zero
         let result = result.with_amount(Decimal::ZERO);
 
+        // Payment detection matches against the in-memory registry, so the
+        // updated amount/expiry must be visible there too, not only in the
+        // database.
+        self.registry
+            .refresh_invoice(result.clone())
+            .await;
+
         Ok(result)
     }
 

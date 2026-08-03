@@ -98,6 +98,22 @@ impl InvoiceRegistry {
             .cloned()
     }
 
+    /// Replace the stored invoice data (amount, cart, expiry, ...) while
+    /// preserving the received amount tracked so far. Inserts the record as-is
+    /// when the invoice isn't tracked yet.
+    pub async fn refresh_invoice(
+        &self,
+        mut record: InvoiceWithReceivedAmount,
+    ) {
+        let mut invoices = self.invoices.write().await;
+
+        if let Some(existing) = invoices.get(&record.invoice.id) {
+            record.total_received_amount = existing.total_received_amount;
+        }
+
+        invoices.insert(record.invoice.id, record);
+    }
+
     pub async fn update_filled_amount(
         &self,
         invoice_id: &Uuid,
@@ -146,6 +162,72 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_refresh_invoice_preserves_received_amount() {
+        let registry = InvoiceRegistry::new();
+
+        let invoice_id = Uuid::new_v4();
+        let original = Invoice {
+            id: invoice_id,
+            chain: ChainType::Polygon,
+            asset_id: "1".to_string(),
+            payment_address: "1".to_string(),
+            ..default_invoice()
+        };
+
+        registry
+            .add_invoice(
+                original
+                    .clone()
+                    .with_amount(Decimal::TEN),
+            )
+            .await;
+
+        // Refresh with updated invoice data; the tracked received amount must
+        // survive even though the caller passes zero
+        let updated = Invoice {
+            amount: Decimal::ONE_HUNDRED,
+            ..original
+        };
+        registry
+            .refresh_invoice(
+                updated
+                    .clone()
+                    .with_amount(Decimal::ZERO),
+            )
+            .await;
+
+        let stored = registry
+            .get_invoice(&invoice_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.invoice, updated);
+        assert_eq!(
+            stored.total_received_amount,
+            Decimal::TEN
+        );
+
+        // Refreshing an untracked invoice inserts it as-is
+        let other_id = Uuid::new_v4();
+        let other = Invoice {
+            id: other_id,
+            ..default_invoice()
+        };
+        registry
+            .refresh_invoice(other.clone().with_amount(Decimal::ONE))
+            .await;
+
+        let stored = registry
+            .get_invoice(&other_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.invoice, other);
+        assert_eq!(
+            stored.total_received_amount,
+            Decimal::ONE
+        );
+    }
 
     #[tokio::test]
     async fn test_invoice_registry() {
