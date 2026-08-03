@@ -1,23 +1,16 @@
 use std::collections::HashMap;
 
-use futures::{
-    StreamExt,
-    stream,
-};
 use rust_decimal::prelude::{
     Decimal,
     ToPrimitive,
 };
-use subxt::blocks::{
-    Block,
-    ExtrinsicDetails,
-    FoundExtrinsic,
-};
+use subxt::blocks::Block;
 use subxt::config::{
     DefaultExtrinsicParams,
     DefaultExtrinsicParamsBuilder,
     ExtrinsicParams,
 };
+use subxt::events::Phase;
 use subxt::utils::H256;
 use subxt::{
     Config,
@@ -92,8 +85,6 @@ impl Config for SubxtAssetHubConfig {
 type SubxtAssetHubClient = subxt::OnlineClient<SubxtAssetHubConfig>;
 
 // Runtime type aliases for Asset Hub transfer operations
-type TransferExtrinsic = runtime::assets::calls::types::Transfer;
-type TransferAllExtrinsic = runtime::assets::calls::types::TransferAll;
 type TransferredEvent = runtime::assets::events::Transferred;
 
 // For unsigned and signed transaction types use wrappers to be able to compare
@@ -225,20 +216,6 @@ impl From<(u32, u32)> for GeneralTransactionId {
     }
 }
 
-enum AnyTransferExtrinsic {
-    Transfer(FoundExtrinsic<SubxtAssetHubConfig, SubxtAssetHubClient, TransferExtrinsic>),
-    TransferAll(FoundExtrinsic<SubxtAssetHubConfig, SubxtAssetHubClient, TransferAllExtrinsic>),
-}
-
-impl AnyTransferExtrinsic {
-    pub fn details(&self) -> &ExtrinsicDetails<SubxtAssetHubConfig, SubxtAssetHubClient> {
-        match self {
-            AnyTransferExtrinsic::Transfer(e) => &e.details,
-            AnyTransferExtrinsic::TransferAll(e) => &e.details,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct AssetHubClient {
     config: crate::configs::ChainConfig,
@@ -340,11 +317,15 @@ impl AssetHubClient {
             },
         };
 
-        // Get extrinsics
-        let extrinsics = match block.extrinsics().await {
-            Ok(e) => e,
+        // Scan block events directly instead of decoding specific transfer
+        // extrinsics: this catches every `assets.Transferred` event no matter
+        // which call emitted it (transfer, transfer_keep_alive, batch, proxy,
+        // ...) and lets us log decode failures instead of silently dropping
+        // them.
+        let events = match block.events().await {
+            Ok(events) => events,
             Err(e) => {
-                tracing::error!("Failed to fetch extrinsics for block {block_number}: {e}");
+                tracing::error!("Failed to fetch events for block {block_number}: {e}");
                 return Err(
                     SubscriptionError::BlockProcessingFailed {
                         block_number,
@@ -353,60 +334,79 @@ impl AssetHubClient {
             },
         };
 
-        // Find transfer and transfer_all extrinsics
-        // TODO: Handle errors in decoding extrinsics
-        let transfer_extrinsics = extrinsics
-            .find::<TransferExtrinsic>()
-            .filter_map(Result::ok)
-            .map(AnyTransferExtrinsic::Transfer);
+        let mut transfers = Vec::new();
 
-        let transfer_all_extrinsics = extrinsics
-            .find::<TransferAllExtrinsic>()
-            .filter_map(Result::ok)
-            .map(AnyTransferExtrinsic::TransferAll);
+        for event in events.iter() {
+            let event = match event {
+                Ok(event) => event,
+                Err(e) => {
+                    warn!(
+                        block_number,
+                        error = ?e,
+                        "Failed to decode an event, an incoming transfer may have been missed; the balance checker will recover it"
+                    );
+                    continue;
+                },
+            };
 
-        let all_transfer_extrinsics = transfer_extrinsics.chain(transfer_all_extrinsics);
+            let transferred = match event.as_event::<TransferredEvent>() {
+                Ok(Some(transferred)) => transferred,
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!(
+                        block_number,
+                        error = ?e,
+                        "Failed to decode assets.Transferred event, an incoming transfer may have been missed; the balance checker will recover it"
+                    );
+                    continue;
+                },
+            };
 
-        let events = stream::iter(all_transfer_extrinsics)
-            .filter_map(|ext| async move {
-                let index = ext.details().index();
+            let Some(asset_info) = assets.get(&transferred.asset_id) else {
+                continue;
+            };
 
-                ext.details()
-                    .events()
-                    .await
-                    .ok()
-                    .map(|evs| (index, evs))
-            })
-            .collect::<Vec<_>>()
-            .await;
+            let Phase::ApplyExtrinsic(extrinsic_index) = event.phase() else {
+                // `Transferred` is only emitted by dispatched calls; anything
+                // else would leave us without a transaction id.
+                warn!(
+                    block_number,
+                    phase = ?event.phase(),
+                    "assets.Transferred event outside of an extrinsic, skipping"
+                );
+                continue;
+            };
 
-        let transfers = events
-            .into_iter()
-            .flat_map(|(index, events)| {
-                events
-                    .find::<TransferredEvent>()
-                    .filter_map(Result::ok)
-                    .filter_map(|event| {
-                        let asset_info = assets.get(&event.asset_id)?;
+            let Ok(amount_units) = i64::try_from(transferred.amount) else {
+                tracing::error!(
+                    block_number,
+                    asset_id = transferred.asset_id,
+                    amount = transferred.amount,
+                    "Transfer amount exceeds the supported range, skipping"
+                );
+                continue;
+            };
 
-                        Some(ChainTransfer {
-                            asset_id: event.asset_id,
-                            asset_name: asset_info.name.clone(),
-                            // TODO: check event.amount? Cast is quite unsafe
-                            #[expect(clippy::cast_possible_truncation)]
-                            amount: Decimal::new(
-                                event.amount as i64,
-                                asset_info.decimals.into(),
-                            ),
-                            sender: event.from,
-                            recipient: event.to,
-                            transaction_id: (block_number, index),
-                            timestamp,
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+            let Ok(amount) = Decimal::try_new(amount_units, asset_info.decimals.into()) else {
+                tracing::error!(
+                    block_number,
+                    asset_id = transferred.asset_id,
+                    decimals = asset_info.decimals,
+                    "Asset decimals exceed the supported range, skipping transfer"
+                );
+                continue;
+            };
+
+            transfers.push(ChainTransfer {
+                asset_id: transferred.asset_id,
+                asset_name: asset_info.name.clone(),
+                amount,
+                sender: transferred.from,
+                recipient: transferred.to,
+                transaction_id: (block_number, extrinsic_index),
+                timestamp,
+            });
+        }
 
         Ok(transfers)
     }
