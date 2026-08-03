@@ -92,10 +92,44 @@ impl InvoiceRegistry {
             .values()
             .find(|inv| {
                 inv.invoice.chain == chain
-                    && inv.invoice.payment_address == address
-                    && inv.invoice.asset_id == asset_id
+                    && match chain {
+                        // EVM hex addresses are case-insensitive (casing is
+                        // only a checksum), and restored invoices may store a
+                        // differently-cased address than the chain client
+                        // reports
+                        ChainType::Polygon => {
+                            inv.invoice
+                                .payment_address
+                                .eq_ignore_ascii_case(address)
+                                && inv
+                                    .invoice
+                                    .asset_id
+                                    .eq_ignore_ascii_case(asset_id)
+                        },
+                        // Base58/SS58 and numeric asset ids are case-sensitive
+                        ChainType::PolkadotAssetHub => {
+                            inv.invoice.payment_address == address
+                                && inv.invoice.asset_id == asset_id
+                        },
+                    }
             })
             .cloned()
+    }
+
+    /// Replace the stored invoice data (amount, cart, expiry, ...) while
+    /// preserving the received amount tracked so far. Inserts the record as-is
+    /// when the invoice isn't tracked yet.
+    pub async fn refresh_invoice(
+        &self,
+        mut record: InvoiceWithReceivedAmount,
+    ) {
+        let mut invoices = self.invoices.write().await;
+
+        if let Some(existing) = invoices.get(&record.invoice.id) {
+            record.total_received_amount = existing.total_received_amount;
+        }
+
+        invoices.insert(record.invoice.id, record);
     }
 
     pub async fn update_filled_amount(
@@ -146,6 +180,133 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_find_invoice_by_address_is_case_insensitive_for_polygon() {
+        let registry = InvoiceRegistry::new();
+
+        // Restored invoices may store addresses as they were cased in an old
+        // config (e.g. all-lowercase)
+        let polygon_invoice = Invoice {
+            chain: ChainType::Polygon,
+            asset_id: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359".to_string(),
+            payment_address: "0x45f077823c8d036a1a9f7cd28e86bd98191df2b7".to_string(),
+            ..default_invoice()
+        }
+        .with_amount(Decimal::ZERO);
+
+        registry
+            .add_invoice(polygon_invoice.clone())
+            .await;
+
+        // The chain client reports checksummed addresses
+        let found = registry
+            .find_invoice_by_address(
+                "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7",
+                ChainType::Polygon,
+                "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+            )
+            .await;
+        assert_eq!(found, Some(polygon_invoice));
+
+        // Asset Hub addresses are base58 and stay case-sensitive
+        let hub_address = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
+        let hub_invoice = Invoice {
+            chain: ChainType::PolkadotAssetHub,
+            asset_id: "1337".to_string(),
+            payment_address: hub_address.to_string(),
+            ..default_invoice()
+        }
+        .with_amount(Decimal::ZERO);
+
+        registry
+            .add_invoice(hub_invoice.clone())
+            .await;
+
+        let found = registry
+            .find_invoice_by_address(
+                hub_address,
+                ChainType::PolkadotAssetHub,
+                "1337",
+            )
+            .await;
+        assert_eq!(found, Some(hub_invoice));
+
+        let not_found = registry
+            .find_invoice_by_address(
+                hub_address.to_lowercase().as_str(),
+                ChainType::PolkadotAssetHub,
+                "1337",
+            )
+            .await;
+        assert_eq!(not_found, None);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_invoice_preserves_received_amount() {
+        let registry = InvoiceRegistry::new();
+
+        let invoice_id = Uuid::new_v4();
+        let original = Invoice {
+            id: invoice_id,
+            chain: ChainType::Polygon,
+            asset_id: "1".to_string(),
+            payment_address: "1".to_string(),
+            ..default_invoice()
+        };
+
+        registry
+            .add_invoice(
+                original
+                    .clone()
+                    .with_amount(Decimal::TEN),
+            )
+            .await;
+
+        // Refresh with updated invoice data; the tracked received amount must
+        // survive even though the caller passes zero
+        let updated = Invoice {
+            amount: Decimal::ONE_HUNDRED,
+            ..original
+        };
+        registry
+            .refresh_invoice(
+                updated
+                    .clone()
+                    .with_amount(Decimal::ZERO),
+            )
+            .await;
+
+        let stored = registry
+            .get_invoice(&invoice_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.invoice, updated);
+        assert_eq!(
+            stored.total_received_amount,
+            Decimal::TEN
+        );
+
+        // Refreshing an untracked invoice inserts it as-is
+        let other_id = Uuid::new_v4();
+        let other = Invoice {
+            id: other_id,
+            ..default_invoice()
+        };
+        registry
+            .refresh_invoice(other.clone().with_amount(Decimal::ONE))
+            .await;
+
+        let stored = registry
+            .get_invoice(&other_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.invoice, other);
+        assert_eq!(
+            stored.total_received_amount,
+            Decimal::ONE
+        );
+    }
 
     #[tokio::test]
     async fn test_invoice_registry() {

@@ -152,6 +152,7 @@ impl EtherscanClient {
             .filter_map(|trans| {
                 (trans.to.to_lowercase() == address.to_lowercase())
                     .then(|| trans.into_incoming_transaction(invoice_id))
+                    .flatten()
             })
             .collect();
 

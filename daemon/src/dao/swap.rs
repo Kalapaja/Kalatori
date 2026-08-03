@@ -574,6 +574,47 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             })
     }
 
+    /// Attach the executor-side transaction hash to a swap without touching
+    /// its status. Used after an external submission when the swap has
+    /// already been marked `Submitted` (and may have been picked up by the
+    /// tracker and moved to `Pending` in the meantime).
+    async fn update_swap_transaction_hash(
+        &self,
+        swap_id: Uuid,
+        transaction_hash: String,
+    ) -> Result<Swap, DaoSwapError> {
+        let query = sqlx::query_as::<_, SwapRow>(
+            "UPDATE swaps
+            SET swap_details = json_set(
+                    swap_details,
+                    '$.transaction_hash', ?
+                )
+            WHERE id = ?
+            RETURNING *",
+        )
+        .bind(transaction_hash)
+        .bind(swap_id);
+
+        self.fetch_one(query)
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.swap",
+                    error.operation = "update_swap_transaction_hash",
+                    %swap_id,
+                    error.source = ?e,
+                    "Failed to update swap transaction hash"
+                );
+
+                match e {
+                    sqlx::Error::RowNotFound => DaoSwapError::NotFound {
+                        swap_id,
+                    },
+                    _ => DaoSwapError::DatabaseError,
+                }
+            })
+    }
+
     async fn update_swap_completed(
         &self,
         swap_id: Uuid,
@@ -989,6 +1030,53 @@ mod tests {
             result,
             DaoSwapError::InvoiceNotFound {
                 invoice_id
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_swap_transaction_hash_preserves_status() {
+        let dao = create_test_dao().await;
+
+        let invoice = default_create_invoice_data();
+        let invoice_id = invoice.id;
+        dao.create_invoice(invoice)
+            .await
+            .unwrap();
+
+        let swap = default_swap(invoice_id);
+        let swap_id = swap.id;
+        dao.create_swap(swap).await.unwrap();
+
+        // Simulate the executor flow: the swap is marked submitted before the
+        // external call...
+        dao.update_swap_submitted(swap_id)
+            .await
+            .unwrap();
+        // ...the tracker may pick it up in the meantime (Submitted → Pending)...
+        dao.get_submitted_swaps().await.unwrap();
+
+        // ...and the transaction hash lands afterwards without a status
+        // transition (Pending → Submitted would violate the trigger)
+        let updated = dao
+            .update_swap_transaction_hash(swap_id, "hash123".to_string())
+            .await
+            .unwrap();
+        assert_eq!(updated.status, SwapStatus::Pending);
+        assert_eq!(
+            updated.swap_details.transaction_hash,
+            Some("hash123".to_string())
+        );
+
+        let missing = Uuid::new_v4();
+        let err = dao
+            .update_swap_transaction_hash(missing, "hash".to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            DaoSwapError::NotFound {
+                swap_id: missing
             }
         );
     }

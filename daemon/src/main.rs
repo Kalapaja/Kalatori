@@ -185,6 +185,22 @@ fn validate_and_extend_configs(
         .validate_recipients(&required_recipients)
         .map_err(|_| Error::Fatal)?;
 
+    // Canonicalize EVM asset addresses before any comparisons/merges: chain
+    // clients report checksummed addresses, and a differently-cased config
+    // entry would never match them
+    payments_config
+        .canonicalize_evm_asset_ids()
+        .map_err(|error| {
+            tracing::error!(%error, "Invalid EVM asset address in payments config");
+            Error::Fatal
+        })?;
+    chains_config
+        .canonicalize_evm_asset_ids()
+        .map_err(|error| {
+            tracing::error!(%error, "Invalid EVM asset address in chains config");
+            Error::Fatal
+        })?;
+
     // Extend chains config with default and restored asset IDs
     chains_config.add_default_asset_ids(&payments_config.default_asset_id);
     chains_config.add_restored_asset_ids(restored_asset_ids);
@@ -315,6 +331,25 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
             .await,
     );
 
+    // Collect asset decimals per chain (used to convert invoice amounts to
+    // smallest units for swaps)
+    let asset_decimals_map = HashMap::from([
+        (
+            ChainType::PolkadotAssetHub,
+            asset_hub_client
+                .asset_info_store()
+                .asset_decimals_map()
+                .await,
+        ),
+        (
+            ChainType::Polygon,
+            polygon_client
+                .asset_info_store()
+                .asset_decimals_map()
+                .await,
+        ),
+    ]);
+
     let keyring = Keyring::new(secrets_config.seed);
     // Please don't keep keyring_client in this scope, it must be moved in order to
     // keep graceful shutdown working.
@@ -411,6 +446,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         invoice_registry,
         swaps_executor,
         asset_names_map,
+        asset_decimals_map,
         payments_config,
         shop_config,
         secrets_config.api_secret_key,

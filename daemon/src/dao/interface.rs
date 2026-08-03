@@ -328,6 +328,12 @@ pub trait DaoInterface: Send + Sync + 'static {
         transaction_hash: String,
     ) -> Result<Swap, DaoSwapError>;
 
+    async fn update_swap_transaction_hash(
+        &self,
+        swap_id: Uuid,
+        transaction_hash: String,
+    ) -> Result<Swap, DaoSwapError>;
+
     async fn update_swap_completed(
         &self,
         swap_id: Uuid,
@@ -976,6 +982,14 @@ impl DaoInterface for DAO {
         transaction_hash: String,
     ) -> Result<Swap, DaoSwapError> {
         DaoSwapMethods::update_swap_submitted_with_hash(self, swap_id, transaction_hash).await
+    }
+
+    async fn update_swap_transaction_hash(
+        &self,
+        swap_id: Uuid,
+        transaction_hash: String,
+    ) -> Result<Swap, DaoSwapError> {
+        DaoSwapMethods::update_swap_transaction_hash(self, swap_id, transaction_hash).await
     }
 
     async fn update_swap_completed(

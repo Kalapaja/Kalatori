@@ -114,8 +114,14 @@ pub struct ApprovalTransaction {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapTransactionInternal {
-    // TODO: check if it's true? But also probably if it's false API should return us an error?
+    // Across simulates against the depositor's CURRENT state, so this is
+    // legitimately `false` before the user has granted approvals. We no longer
+    // act on it — the gas parameters decide whether a quote is usable (see
+    // `TryFrom` below) — but it must still never be *required*: Across's schema
+    // marks it optional and `/swap/gasless` omits it altogether, so a bare
+    // `bool` would fail the entire quote the first time it is absent.
     #[expect(dead_code)]
+    #[serde(default = "default_simulation_success")]
     pub simulation_success: bool,
     pub chain_id: u64,
     pub to: String,
@@ -133,6 +139,12 @@ pub struct SwapTransactionInternal {
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
     pub max_priority_fee_per_gas: Option<u128>,
+}
+
+fn default_simulation_success() -> bool {
+    // Only reached when Across omits the field entirely. The value is never
+    // read; it exists so an absent `simulationSuccess` doesn't fail the quote.
+    true
 }
 
 #[serde_as]

@@ -91,6 +91,7 @@ pub struct AppState<D: DaoInterface = DAO> {
     swaps_executor: SwapsExecutor<D>,
     github_client: GithubClient,
     asset_names_map: HashMap<String, String>,
+    asset_decimals_map: HashMap<ChainType, HashMap<String, u8>>,
     payments_config: PaymentsConfig,
     shop_config: ShopConfig,
     api_secret_key: SecretString,
@@ -104,6 +105,7 @@ impl<D: DaoInterface> AppState<D> {
         registry: InvoiceRegistry,
         swaps_executor: SwapsExecutor<D>,
         asset_names_map: HashMap<String, String>,
+        asset_decimals_map: HashMap<ChainType, HashMap<String, u8>>,
         payments_config: PaymentsConfig,
         shop_config: ShopConfig,
         api_secret_key: SecretString,
@@ -117,6 +119,7 @@ impl<D: DaoInterface> AppState<D> {
             swaps_executor,
             github_client,
             asset_names_map,
+            asset_decimals_map,
             payments_config,
             shop_config,
             api_secret_key,
@@ -319,6 +322,13 @@ impl<D: DaoInterface> AppState<D> {
 
         // We allow to update only unpaid invoices, so the received amount is zero
         let result = result.with_amount(Decimal::ZERO);
+
+        // Payment detection matches against the in-memory registry, so the
+        // updated amount/expiry must be visible there too, not only in the
+        // database.
+        self.registry
+            .refresh_invoice(result.clone())
+            .await;
 
         Ok(result)
     }
@@ -893,6 +903,11 @@ mod tests {
             (1984.to_string(), "USDt".to_string()),
         ]);
 
+        let asset_decimals_map = HashMap::from([(
+            ChainType::PolkadotAssetHub,
+            HashMap::from([(1337.to_string(), 6), (1984.to_string(), 6)]),
+        )]);
+
         let config = PaymentsConfig {
             default_chain: ChainType::PolkadotAssetHub,
             default_asset_id: HashMap::from([(
@@ -935,6 +950,7 @@ mod tests {
             registry,
             swaps_executor,
             asset_names_map,
+            asset_decimals_map,
             config,
             shop_config,
             SecretString::from("secret"),

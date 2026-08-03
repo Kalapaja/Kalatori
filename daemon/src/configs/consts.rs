@@ -26,6 +26,11 @@ pub const DEFAULT_POLYGON_ENDPOINTS: &[&str] = &[
 /// Native USDC on Polygon PoS (Circle's official deployment)
 pub const DEFAULT_POLYGON_USDC_ADDRESS: &str = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
 
+/// How many blocks a Polygon transfer must stay on-chain before it's treated as
+/// received. Polygon PoS blocks are ~2s; 12 confirmations ≈ 24s, which covers
+/// ordinary reorgs and milestone finality lag.
+pub const DEFAULT_POLYGON_CONFIRMATIONS: u64 = 12;
+
 pub const DEFAULT_UNDERPAYMENT_TOLERANCE: Decimal = dec!(0.1);
 
 pub const DEFAULT_OVERPAYMENT_TOLERANCE: Decimal = dec!(0.1);

@@ -166,37 +166,84 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
                 _ => SwapsExecutorError::DatabaseError,
             })?;
 
+        // Persist the submission attempt BEFORE handing the swap to the
+        // external executor: if the daemon crashes or the later updates fail,
+        // the swap is already `Submitted` and visible to the tracker instead
+        // of silently staying `Created` while funds are in flight.
+        let submitted_swap = self
+            .update_swap_submitted_internally(swap_signature.swap_id)
+            .await?;
+
         // TODO: In case of error need to check an error thoroughly.
         // If it's problem with signature, we can mark it as failed.
         // If it's some kind of network error, we can retry it.
         // In any way we have to understand if it was received by bungee
         // and is being processed to avoid double-payments or just missing
         // the transaction.
-        let transaction_hash = self
+        let transaction_hash = match self
             .clients
             .submit_transaction(
                 swap.request.swap_executor,
                 &swap.swap_details,
             )
-            .await?;
+            .await
+        {
+            Ok(transaction_hash) => transaction_hash,
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    "External executor rejected swap submission, marking swap as failed"
+                );
+
+                // The submission may still have been accepted (e.g. on a
+                // network timeout); actually arriving funds are detected by
+                // the chain transfer subscription regardless, and the Failed
+                // record keeps the attempt visible for reconciliation.
+                if let Err(db_error) = self
+                    .dao
+                    .update_swap_failed(swap_signature.swap_id, e.to_string())
+                    .await
+                {
+                    tracing::error!(
+                        error = ?db_error,
+                        "Failed to mark swap as failed after a submission error, swap stays visible to the tracker"
+                    );
+                }
+
+                return Err(e.into());
+            },
+        };
 
         tracing::Span::current().record("transaction_hash", &transaction_hash);
 
-        self.dao
-            .update_swap_submitted_with_hash(swap_signature.swap_id, transaction_hash)
+        // The tracker polls the database with a short interval and may have
+        // already moved the swap from `Submitted` to `Pending`, so only the
+        // transaction hash is written here — no status transition.
+        match self
+            .dao
+            .update_swap_transaction_hash(swap_signature.swap_id, transaction_hash)
             .await
-            .map_err(|e| match e {
-                DaoSwapError::NotFound {
-                    swap_id,
-                } => SwapsExecutorError::SwapNotFound {
-                    swap_id,
-                },
-                _ => SwapsExecutorError::DatabaseError,
-            })?;
-
-        tracing::info!("Swap has been submitted successfully");
-
-        Ok(swap)
+        {
+            Ok(swap) => {
+                tracing::info!("Swap has been submitted successfully");
+                Ok(swap)
+            },
+            Err(e) => {
+                // The submission itself succeeded — don't report a failure to
+                // the caller (a retry could double-submit). The swap stays
+                // Submitted/Pending without a hash and needs manual
+                // reconciliation, which this error record points at.
+                //
+                // Return the post-`Submitted` row, never the pre-submission
+                // `swap`: that one still reads `Created`, which would tell the
+                // caller nothing was sent while funds are already in flight.
+                tracing::error!(
+                    error = ?e,
+                    "Swap was submitted but recording its transaction hash failed, manual reconciliation required"
+                );
+                Ok(submitted_swap)
+            },
+        }
     }
 
     /// Mark swap as `Submitted` in database. Use this method for swaps which
@@ -204,7 +251,6 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
     /// requests to executor or sent to blockhain directly. For swaps which has
     /// been sent on front-end use `update_swap_submitted_on_front_end`
     /// method.
-    #[expect(dead_code)]
     async fn update_swap_submitted_internally(
         &self,
         swap_id: Uuid,
