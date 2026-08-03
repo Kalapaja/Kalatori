@@ -74,6 +74,16 @@ fn default_confirmations() -> u64 {
     DEFAULT_POLYGON_CONFIRMATIONS
 }
 
+/// Normalize an EVM address to its EIP-55 checksummed form. Chain clients
+/// report addresses in this form, so configured addresses must match it
+/// byte-for-byte to be comparable as strings.
+fn checksummed_evm_address(address: &str) -> Result<String, String> {
+    address
+        .parse::<alloy::primitives::Address>()
+        .map(|addr| addr.to_checksum(None))
+        .map_err(|_| format!("Invalid EVM asset address: {address}"))
+}
+
 // TODO: add some docs for fields, their purpose might be not obvious
 #[derive(Deserialize, Clone, Debug)]
 pub struct ChainConfig {
@@ -189,11 +199,51 @@ impl ChainsConfig {
                 .unwrap();
 
             for asset_id in asset_ids {
+                // Old invoices may store the address as it was cased in the
+                // config back then; canonicalize so it doesn't duplicate the
+                // configured entry
+                let asset_id = if chain_type == ChainType::Polygon {
+                    match checksummed_evm_address(&asset_id) {
+                        Ok(canonical) => canonical,
+                        Err(error) => {
+                            tracing::warn!(
+                                %asset_id,
+                                %error,
+                                "Restored asset id is not a valid EVM address, keeping it as-is"
+                            );
+                            asset_id
+                        },
+                    }
+                } else {
+                    asset_id
+                };
+
                 if !chain_config.assets.contains(&asset_id) {
                     chain_config.assets.push(asset_id);
                 }
             }
         }
+    }
+
+    /// Canonicalize configured EVM asset addresses to their checksummed form
+    /// so a differently-cased config entry still matches addresses reported
+    /// by the chain clients.
+    pub fn canonicalize_evm_asset_ids(&mut self) -> Result<(), String> {
+        let Some(chain_config) = self.chains.get_mut(&ChainType::Polygon) else {
+            return Ok(());
+        };
+
+        for asset_id in &mut chain_config.assets {
+            *asset_id = checksummed_evm_address(asset_id)?;
+        }
+
+        // Canonicalization can collapse entries that differed only in casing
+        let mut seen = HashSet::new();
+        chain_config
+            .assets
+            .retain(|asset_id| seen.insert(asset_id.clone()));
+
+        Ok(())
     }
 
     pub(super) fn set_default_chains_if_missing(&mut self) {
@@ -341,6 +391,37 @@ impl PaymentsConfig {
         Ok(())
     }
 
+    /// Canonicalize configured EVM asset addresses (default asset and
+    /// slippage keys) to their checksummed form so lookups by chain-reported
+    /// addresses match regardless of how the config file cased them.
+    pub fn canonicalize_evm_asset_ids(&mut self) -> Result<(), String> {
+        if let Some(asset_id) = self
+            .default_asset_id
+            .get_mut(&ChainType::Polygon)
+        {
+            *asset_id = checksummed_evm_address(asset_id)?;
+        }
+
+        if let Some(params) = self
+            .slippage_params
+            .remove(&ChainType::Polygon)
+        {
+            let mut canonical = HashMap::with_capacity(params.len());
+
+            for (asset_id, slippage) in params {
+                canonical.insert(
+                    checksummed_evm_address(&asset_id)?,
+                    slippage,
+                );
+            }
+
+            self.slippage_params
+                .insert(ChainType::Polygon, canonical);
+        }
+
+        Ok(())
+    }
+
     pub fn get_asset_slippage_params(
         &self,
         chain: ChainType,
@@ -348,7 +429,21 @@ impl PaymentsConfig {
     ) -> SlippageParams {
         self.slippage_params
             .get(&chain)
-            .and_then(|map| map.get(asset_id).copied())
+            .and_then(|map| {
+                map.get(asset_id).or_else(|| {
+                    // EVM hex addresses are case-insensitive (casing is only
+                    // a checksum) and invoices restored from older databases
+                    // may carry a differently-cased asset id
+                    (chain == ChainType::Polygon)
+                        .then(|| {
+                            map.iter()
+                                .find(|(key, _)| key.eq_ignore_ascii_case(asset_id))
+                                .map(|(_, params)| params)
+                        })
+                        .flatten()
+                })
+            })
+            .copied()
             .unwrap_or_default()
     }
 
@@ -368,6 +463,105 @@ impl PaymentsConfig {
     ) -> Decimal {
         self.get_asset_slippage_params(chain, asset_id)
             .overpayment_tolerance
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const USDC_LOWER: &str = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
+    const USDC_CHECKSUMMED: &str = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
+    const USDT_LOWER: &str = "0xc2132d05d31c914a87c6611c10748aeb04b58e8f";
+    const USDT_CHECKSUMMED: &str = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
+
+    #[test]
+    fn test_canonicalize_payments_evm_asset_ids() {
+        let slippage = SlippageParams {
+            underpayment_tolerance: Decimal::new(5, 1),
+            overpayment_tolerance: Decimal::ZERO,
+        };
+
+        let mut config = PaymentsConfig {
+            recipient: HashMap::new(),
+            invoice_lifetime_millis: 1,
+            default_chain: ChainType::Polygon,
+            default_asset_id: HashMap::from([
+                (
+                    ChainType::Polygon,
+                    USDC_LOWER.to_string(),
+                ),
+                (
+                    ChainType::PolkadotAssetHub,
+                    "1337".to_string(),
+                ),
+            ]),
+            payment_url_base: String::new(),
+            slippage_params: HashMap::from([(
+                ChainType::Polygon,
+                HashMap::from([(USDT_LOWER.to_string(), slippage)]),
+            )]),
+        };
+
+        config
+            .canonicalize_evm_asset_ids()
+            .unwrap();
+
+        assert_eq!(
+            config.default_asset_id[&ChainType::Polygon],
+            USDC_CHECKSUMMED
+        );
+        // Non-EVM chains are untouched
+        assert_eq!(
+            config.default_asset_id[&ChainType::PolkadotAssetHub],
+            "1337"
+        );
+        assert!(config.slippage_params[&ChainType::Polygon].contains_key(USDT_CHECKSUMMED));
+
+        // Lookups keep working for historic lowercase asset ids
+        let found = config.get_asset_slippage_params(ChainType::Polygon, USDT_LOWER);
+        assert_eq!(
+            found.underpayment_tolerance,
+            slippage.underpayment_tolerance
+        );
+
+        // Invalid EVM addresses are rejected
+        config.default_asset_id.insert(
+            ChainType::Polygon,
+            "not-an-address".to_string(),
+        );
+        assert!(
+            config
+                .canonicalize_evm_asset_ids()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_chains_evm_asset_ids() {
+        let mut config = ChainsConfig {
+            chains: HashMap::from([(
+                ChainType::Polygon,
+                ChainConfig {
+                    // The same asset cased two ways plus another asset
+                    assets: vec![
+                        USDC_LOWER.to_string(),
+                        USDC_CHECKSUMMED.to_string(),
+                        USDT_LOWER.to_string(),
+                    ],
+                    ..Default::default()
+                },
+            )]),
+        };
+
+        config
+            .canonicalize_evm_asset_ids()
+            .unwrap();
+
+        assert_eq!(
+            config.chains[&ChainType::Polygon].assets,
+            vec![USDC_CHECKSUMMED.to_string(), USDT_CHECKSUMMED.to_string(),]
+        );
     }
 }
 

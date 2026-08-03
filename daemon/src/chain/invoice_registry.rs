@@ -92,8 +92,26 @@ impl InvoiceRegistry {
             .values()
             .find(|inv| {
                 inv.invoice.chain == chain
-                    && inv.invoice.payment_address == address
-                    && inv.invoice.asset_id == asset_id
+                    && match chain {
+                        // EVM hex addresses are case-insensitive (casing is
+                        // only a checksum), and restored invoices may store a
+                        // differently-cased address than the chain client
+                        // reports
+                        ChainType::Polygon => {
+                            inv.invoice
+                                .payment_address
+                                .eq_ignore_ascii_case(address)
+                                && inv
+                                    .invoice
+                                    .asset_id
+                                    .eq_ignore_ascii_case(asset_id)
+                        },
+                        // Base58/SS58 and numeric asset ids are case-sensitive
+                        ChainType::PolkadotAssetHub => {
+                            inv.invoice.payment_address == address
+                                && inv.invoice.asset_id == asset_id
+                        },
+                    }
             })
             .cloned()
     }
@@ -162,6 +180,67 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn test_find_invoice_by_address_is_case_insensitive_for_polygon() {
+        let registry = InvoiceRegistry::new();
+
+        // Restored invoices may store addresses as they were cased in an old
+        // config (e.g. all-lowercase)
+        let polygon_invoice = Invoice {
+            chain: ChainType::Polygon,
+            asset_id: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359".to_string(),
+            payment_address: "0x45f077823c8d036a1a9f7cd28e86bd98191df2b7".to_string(),
+            ..default_invoice()
+        }
+        .with_amount(Decimal::ZERO);
+
+        registry
+            .add_invoice(polygon_invoice.clone())
+            .await;
+
+        // The chain client reports checksummed addresses
+        let found = registry
+            .find_invoice_by_address(
+                "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7",
+                ChainType::Polygon,
+                "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+            )
+            .await;
+        assert_eq!(found, Some(polygon_invoice));
+
+        // Asset Hub addresses are base58 and stay case-sensitive
+        let hub_address = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
+        let hub_invoice = Invoice {
+            chain: ChainType::PolkadotAssetHub,
+            asset_id: "1337".to_string(),
+            payment_address: hub_address.to_string(),
+            ..default_invoice()
+        }
+        .with_amount(Decimal::ZERO);
+
+        registry
+            .add_invoice(hub_invoice.clone())
+            .await;
+
+        let found = registry
+            .find_invoice_by_address(
+                hub_address,
+                ChainType::PolkadotAssetHub,
+                "1337",
+            )
+            .await;
+        assert_eq!(found, Some(hub_invoice));
+
+        let not_found = registry
+            .find_invoice_by_address(
+                hub_address.to_lowercase().as_str(),
+                ChainType::PolkadotAssetHub,
+                "1337",
+            )
+            .await;
+        assert_eq!(not_found, None);
+    }
 
     #[tokio::test]
     async fn test_refresh_invoice_preserves_received_amount() {

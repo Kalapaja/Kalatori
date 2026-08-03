@@ -185,6 +185,22 @@ fn validate_and_extend_configs(
         .validate_recipients(&required_recipients)
         .map_err(|_| Error::Fatal)?;
 
+    // Canonicalize EVM asset addresses before any comparisons/merges: chain
+    // clients report checksummed addresses, and a differently-cased config
+    // entry would never match them
+    payments_config
+        .canonicalize_evm_asset_ids()
+        .map_err(|error| {
+            tracing::error!(%error, "Invalid EVM asset address in payments config");
+            Error::Fatal
+        })?;
+    chains_config
+        .canonicalize_evm_asset_ids()
+        .map_err(|error| {
+            tracing::error!(%error, "Invalid EVM asset address in chains config");
+            Error::Fatal
+        })?;
+
     // Extend chains config with default and restored asset IDs
     chains_config.add_default_asset_ids(&payments_config.default_asset_id);
     chains_config.add_restored_asset_ids(restored_asset_ids);
