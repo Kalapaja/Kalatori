@@ -18,7 +18,10 @@ use crate::types::{
     SwapQuote,
 };
 
-use super::super::RawSwapDetails;
+use super::super::{
+    RawSwapDetails,
+    SwapsClientError,
+};
 use super::{
     ExecutorSwapStatus,
     ZeroExGaslessQuoteDetails,
@@ -74,8 +77,9 @@ impl From<CreateSwapData> for ZeroExGetQuoteRequest {
 pub struct ZeroExTransaction {
     pub to: String,
     pub data: String,
-    #[serde_as(as = "DisplayFromStr")]
-    pub gas: u64,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default)]
+    pub gas: Option<u64>,
     #[serde_as(as = "DisplayFromStr")]
     pub gas_price: u128,
     #[serde_as(as = "DisplayFromStr")]
@@ -94,7 +98,8 @@ pub struct ZeroExPermit2 {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ZeroExGetQuoteResponse {
-    pub allowance_target: String,
+    #[serde(default)]
+    pub allowance_target: Option<String>,
     #[serde_as(as = "DisplayFromStr")]
     pub buy_amount: u128,
     pub buy_token: String,
@@ -108,16 +113,18 @@ pub struct ZeroExGetQuoteResponse {
     pub zid: String,
 }
 
-impl From<ZeroExGetQuoteResponse> for SwapQuote {
-    fn from(value: ZeroExGetQuoteResponse) -> Self {
+impl TryFrom<ZeroExGetQuoteResponse> for SwapQuote {
+    type Error = SwapsClientError;
+
+    fn try_from(value: ZeroExGetQuoteResponse) -> Result<Self, Self::Error> {
         let details = ZeroExQuoteDetails {
             allowance_target: value.allowance_target,
             // permit_hash: value.permit2.hash,
             // permit_data: value.permit2.eip712,
-            raw_transaction: value.transaction.into(),
+            raw_transaction: value.transaction.try_into()?,
         };
 
-        Self {
+        Ok(Self {
             // ZeroEx doesn't have swap id specifically, use request id
             id: value.zid,
             swap_executor: SwapExecutorType::ZeroEx,
@@ -128,7 +135,7 @@ impl From<ZeroExGetQuoteResponse> for SwapQuote {
             estimated_to_amount: Decimal::ZERO,
             valid_till: Utc::now() + TimeDelta::minutes(5),
             quote_details: RawSwapDetails::ZeroEx(details),
-        }
+        })
     }
 }
 
@@ -146,7 +153,8 @@ pub struct ZeroExTrade {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ZeroExGaslessGetQuoteResponse {
-    pub allowance_target: String,
+    #[serde(default)]
+    pub allowance_target: Option<String>,
     #[serde(default)]
     pub approval: Option<ZeroExTrade>,
     #[serde_as(as = "DisplayFromStr")]
@@ -161,14 +169,18 @@ pub struct ZeroExGaslessGetQuoteResponse {
     pub zid: String,
 }
 
-impl From<ZeroExGaslessGetQuoteResponse> for SwapQuote {
-    fn from(value: ZeroExGaslessGetQuoteResponse) -> Self {
+impl TryFrom<ZeroExGaslessGetQuoteResponse> for SwapQuote {
+    type Error = SwapsClientError;
+
+    // Infallible today — the gasless quote carries no gas parameters — but the
+    // trait requires the fallible shape.
+    fn try_from(value: ZeroExGaslessGetQuoteResponse) -> Result<Self, Self::Error> {
         let details = ZeroExGaslessQuoteDetails {
             raw_trade: value.trade,
             approval: value.approval,
         };
 
-        Self {
+        Ok(Self {
             // ZeroEx doesn't have swap id specifically, use request id
             id: value.zid,
             swap_executor: SwapExecutorType::ZeroEx,
@@ -179,7 +191,7 @@ impl From<ZeroExGaslessGetQuoteResponse> for SwapQuote {
             estimated_to_amount: Decimal::ZERO,
             valid_till: Utc::now() + TimeDelta::minutes(5),
             quote_details: RawSwapDetails::ZeroExGasless(details),
-        }
+        })
     }
 }
 
@@ -230,6 +242,7 @@ pub enum ZeroExGaslessTransactionStatus {
     Submitted,
     Succeeded,
     Confirmed,
+    Failed,
 }
 
 impl From<ZeroExGaslessTransactionStatus> for ExecutorSwapStatus {
@@ -241,6 +254,7 @@ impl From<ZeroExGaslessTransactionStatus> for ExecutorSwapStatus {
             Submitted => ExecutorSwapStatus::Pending,
             Succeeded => ExecutorSwapStatus::Pending,
             Confirmed => ExecutorSwapStatus::Executed,
+            Failed => ExecutorSwapStatus::Failed,
         }
     }
 }
@@ -250,6 +264,8 @@ impl From<ZeroExGaslessTransactionStatus> for ExecutorSwapStatus {
 #[serde(rename_all = "camelCase")]
 pub struct GetTransactionStatusResponse {
     pub status: ZeroExGaslessTransactionStatus,
+    #[serde(default)]
+    pub reason: Option<String>,
     pub zid: String,
 }
 
@@ -268,9 +284,41 @@ pub struct ZeroExErrorResponse {
     pub data: ZeroExErrorResponseData,
 }
 
+// Deserializes only the literal `false`. Without this the untagged arm below
+// matches on field *shape* alone, so any successful `liquidityAvailable: true`
+// quote that failed the `Ok` arm for an unrelated reason (a renamed field, a
+// newly-nullable one) lands here and is reported to the customer as "no
+// liquidity" — a plausible-looking business answer in place of a loud parse
+// error. Gating on the value makes the arm self-discriminating.
+fn deserialize_liquidity_unavailable<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    if bool::deserialize(deserializer)? {
+        return Err(serde::de::Error::custom(
+            "liquidityAvailable is true; not a no-liquidity response",
+        ))
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZeroExNoLiquidityResponse {
+    // Never read: it exists so the deserializer above runs and rejects the
+    // arm when the flag is `true`.
+    #[expect(dead_code)]
+    #[serde(deserialize_with = "deserialize_liquidity_unavailable")]
+    pub liquidity_available: (),
+    pub zid: String,
+}
+
+// Order matters: untagged is first-successful-arm-wins in declaration order.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum ZeroExResponse<T> {
     Ok(T),
+    NoLiquidity(ZeroExNoLiquidityResponse),
     Err(ZeroExErrorResponse),
 }

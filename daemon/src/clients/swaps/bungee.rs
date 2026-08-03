@@ -47,7 +47,8 @@ const BUNGEE_CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct BungeeRawTransaction {
     pub quote_id: String,
     pub request_type: String,
-    pub approval_data: ApprovalData,
+    #[serde(default)]
+    pub approval_data: Option<ApprovalData>,
     pub sign_typed_data: SignTypedData,
 }
 
@@ -70,12 +71,12 @@ pub fn default_bungee_raw_transaction() -> BungeeRawTransaction {
     BungeeRawTransaction {
         quote_id: "68b79aeab92d6307".to_string(),
         request_type: "SWAP_REQUEST".to_string(),
-        approval_data: ApprovalData {
+        approval_data: Some(ApprovalData {
             token_address: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f".to_string(),
             spender_address: "0x000000000022D473030F116dDEE9F6B43aC78BA3".to_string(),
             user_address: "0xa4d353bbc130cbef1811f27ac70989f9d568ceab".to_string(),
             amount: "1500000".to_string(),
-        },
+        }),
         sign_typed_data: SignTypedData {
             domain: alloy::sol_types::Eip712Domain {
                 name: Some("Permit2".into()),
@@ -252,6 +253,13 @@ impl<T> From<BungeeApiResponse<T>> for SwapsClientError {
     }
 }
 
+impl QuoteResponse {
+    fn into_auto_route(self) -> Result<QuoteAutoRoute, SwapsClientError> {
+        self.auto_route
+            .ok_or(SwapsClientError::NoRouteAvailable)
+    }
+}
+
 #[derive(Clone)]
 pub struct BungeeClient {
     client: reqwest::Client,
@@ -358,7 +366,7 @@ impl BungeeClient {
 
 impl SwapsClient for BungeeClient {
     type GetQuoteParams = QuoteRequest;
-    type GetQuoteResponse = QuoteResponse;
+    type GetQuoteResponse = QuoteAutoRoute;
     type RawTransactionDetails = BungeeRawTransaction;
     type SwapStatus = BungeeSwapStatus;
 
@@ -406,13 +414,15 @@ impl SwapsClient for BungeeClient {
         &self,
         data: Self::GetQuoteParams,
     ) -> Result<Self::GetQuoteResponse, SwapsClientError> {
-        self.send_request(
-            "/api/v1/bungee/quote",
-            reqwest::Method::GET,
-            data,
-        )
-        .await
-        // TODO: check if `auto_quote` is empty, if so return an error
+        let response: QuoteResponse = self
+            .send_request(
+                "/api/v1/bungee/quote",
+                reqwest::Method::GET,
+                data,
+            )
+            .await?;
+
+        response.into_auto_route()
     }
 
     async fn submit_transaction_internal(
@@ -475,6 +485,128 @@ mod tests {
     };
 
     use super::*;
+
+    const QUOTE_WITHOUT_APPROVAL_DATA: &str = r#"{
+        "success": true,
+        "statusCode": 200,
+        "result": {
+            "autoRoute": {
+                "quoteId": "quote-benign",
+                "requestType": "SWAP_REQUEST",
+                "signTypedData": {
+                    "domain": {
+                        "name": "Permit2",
+                        "chainId": 137,
+                        "verifyingContract": "0x000000000022d473030f116ddee9f6b43ac78ba3"
+                    },
+                    "types": {},
+                    "values": {
+                        "deadline": "1893456000",
+                        "nonce": "1",
+                        "permitted": {
+                            "amount": "1",
+                            "token": "0x1111111111111111111111111111111111111111"
+                        },
+                        "spender": "0x2222222222222222222222222222222222222222",
+                        "witness": {
+                            "affiliateFees": "0x",
+                            "basicReq": {
+                                "bungeeGateway": "0x3333333333333333333333333333333333333333",
+                                "chainId": 137,
+                                "deadline": "1893456000",
+                                "inputAmount": "1",
+                                "inputToken": "0x1111111111111111111111111111111111111111",
+                                "minOutputAmount": "1",
+                                "nonce": "1",
+                                "outputToken": "0x4444444444444444444444444444444444444444",
+                                "receiver": "0x5555555555555555555555555555555555555555",
+                                "sender": "0x6666666666666666666666666666666666666666"
+                            },
+                            "destinationPayload": "0x",
+                            "exclusiveTransmitter": "0x0000000000000000000000000000000000000000",
+                            "metadata": "0x00",
+                            "minDestGas": "0"
+                        }
+                    }
+                }
+            }
+        }
+    }"#;
+
+    #[test]
+    fn test_quote_response_maps_null_or_absent_auto_route_to_no_route_available() {
+        for raw in [
+            r#"{"success":true,"result":{"autoRoute":null}}"#,
+            r#"{"success":true,"result":{}}"#,
+        ] {
+            let response = serde_json::from_str::<BungeeApiResponse<QuoteResponse>>(raw).unwrap();
+            let result = response
+                .result
+                .unwrap()
+                .into_auto_route();
+
+            assert!(matches!(
+                result,
+                Err(SwapsClientError::NoRouteAvailable)
+            ));
+        }
+    }
+
+    #[test]
+    fn test_quote_response_tolerates_absent_or_null_approval_data() {
+        for raw in [
+            QUOTE_WITHOUT_APPROVAL_DATA.to_string(),
+            QUOTE_WITHOUT_APPROVAL_DATA.replace(
+                "\"signTypedData\"",
+                "\"approvalData\": null, \"signTypedData\"",
+            ),
+        ] {
+            let response = serde_json::from_str::<BungeeApiResponse<QuoteResponse>>(&raw).unwrap();
+            let route = response
+                .result
+                .unwrap()
+                .into_auto_route()
+                .unwrap();
+            assert!(route.approval_data.is_none());
+
+            let quote = SwapQuote::try_from(route).unwrap();
+            let RawSwapDetails::Bungee(details) = quote.quote_details else {
+                panic!("expected Bungee quote details");
+            };
+            assert!(details.approval_data.is_none());
+        }
+    }
+
+    #[test]
+    fn test_quote_response_tolerates_null_sign_typed_data() {
+        // Bungee's OpenAPI spec marks `signTypedData` nullable and its own
+        // `onchainExample` returns null for this endpoint: an on-chain auto
+        // route (`userOp: "tx"`) rather than a Permit2 one. This integration
+        // can only execute the Permit2 shape, so this must degrade to a typed
+        // "no route" — not the deserialization failure that produced the blank
+        // 500 in the 0.9.3 incident.
+        //
+        // Note `#[serde(default)]` on `autoRoute` does not cover this: a
+        // default fires only for an absent key, never a present-but-null value.
+        let raw = QUOTE_WITHOUT_APPROVAL_DATA.replace(
+            "\"signTypedData\": {",
+            "\"signTypedData\": null, \"unusedSignTypedData\": {",
+        );
+
+        let response = serde_json::from_str::<BungeeApiResponse<QuoteResponse>>(&raw)
+            .expect("null signTypedData must still deserialize");
+        let route = response
+            .result
+            .unwrap()
+            .into_auto_route()
+            .expect("a route object is present, so this is not a no-route response");
+        assert!(route.sign_typed_data.is_none());
+
+        assert!(matches!(
+            SwapQuote::try_from(route),
+            Err(SwapsClientError::NoRouteAvailable)
+        ));
+    }
 
     #[test]
     fn test_try_from_raw_details() {
@@ -749,12 +881,12 @@ mod tests {
             quote_details: RawSwapDetails::Bungee(BungeeRawTransaction {
                 quote_id: "68b79aeab92d6307".to_string(),
                 request_type: "SWAP_REQUEST".to_string(),
-                approval_data: ApprovalData {
+                approval_data: Some(ApprovalData {
                     token_address: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f".to_string(),
                     spender_address: "0x000000000022D473030F116dDEE9F6B43aC78BA3".to_string(),
                     user_address: "0xa4d353bbc130cbef1811f27ac70989f9d568ceab".to_string(),
                     amount: "1500000".to_string(),
-                },
+                }),
                 sign_typed_data: SignTypedData {
                     domain: alloy::sol_types::Eip712Domain {
                         name: Some("Permit2".into()),

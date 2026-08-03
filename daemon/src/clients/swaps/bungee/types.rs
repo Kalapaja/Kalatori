@@ -18,6 +18,10 @@ use crate::types::{
     SwapExecutorType,
     SwapQuote,
 };
+use crate::utils::logging::{
+    category,
+    operation,
+};
 
 use super::BungeeQuoteDetails;
 
@@ -132,24 +136,57 @@ pub struct ApprovalData {
 pub struct QuoteAutoRoute {
     pub quote_id: String,
     pub request_type: String,
-    pub sign_typed_data: SignTypedData,
-    pub approval_data: ApprovalData,
+    // `nullable: true` in Bungee's OpenAPI spec, and null in its own
+    // `onchainExample` for this endpoint: Bungee returns an on-chain auto route
+    // (`userOp: "tx"`, populated `txData`) instead of a Permit2 one. This
+    // integration can only execute the Permit2 shape, so a null here is "no
+    // usable route", not a parse failure — a required field made it one.
+    //
+    // NB: `#[serde(default)]` on `auto_route` below does not cover this. A
+    // default fires only for an absent key, never for a present-but-null value.
+    #[serde(default)]
+    pub sign_typed_data: Option<SignTypedData>,
+    #[serde(default)]
+    pub approval_data: Option<ApprovalData>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuoteResponse {
-    pub auto_route: QuoteAutoRoute,
+    #[serde(default)]
+    pub auto_route: Option<QuoteAutoRoute>,
 }
 
-impl From<QuoteResponse> for SwapQuote {
-    fn from(value: QuoteResponse) -> Self {
-        let route = value.auto_route;
+impl TryFrom<QuoteAutoRoute> for SwapQuote {
+    type Error = SwapsClientError;
 
-        let valid_till =
-            DateTime::from_timestamp_secs(route.sign_typed_data.values.deadline).unwrap();
-        let estimated_to_amount_units = route
-            .sign_typed_data
+    fn try_from(route: QuoteAutoRoute) -> Result<Self, Self::Error> {
+        let Some(sign_typed_data) = route.sign_typed_data else {
+            tracing::debug!(
+                error.category = category::SWAPS_CLIENT,
+                error.operation = operation::GET_QUOTE,
+                request_type = %route.request_type,
+                "Bungee returned an on-chain auto route with no signTypedData"
+            );
+
+            return Err(SwapsClientError::NoRouteAvailable)
+        };
+
+        // Provider-controlled deadline: any `i64` deserializes, but only a
+        // subset is representable, and `None` here used to panic the daemon.
+        let valid_till = DateTime::from_timestamp_secs(sign_typed_data.values.deadline)
+            .ok_or_else(|| {
+                tracing::warn!(
+                    error.category = category::SWAPS_CLIENT,
+                    error.operation = operation::GET_QUOTE,
+                    deadline = sign_typed_data.values.deadline,
+                    "Bungee quote deadline is not a representable timestamp, rejecting"
+                );
+
+                SwapsClientError::UnusableQuote
+            })?;
+
+        let estimated_to_amount_units = sign_typed_data
             .values
             .witness
             .basic_req
@@ -159,20 +196,19 @@ impl From<QuoteResponse> for SwapQuote {
             quote_id: route.quote_id.clone(),
             request_type: route.request_type,
             approval_data: route.approval_data,
-            sign_typed_data: route.sign_typed_data,
+            sign_typed_data,
         };
 
-        Self {
+        Ok(Self {
             swap_executor: SwapExecutorType::Bungee,
             id: route.quote_id,
             estimated_to_amount_units,
             // TODO: in response there's output token with it's params (decimals), so we can
             // calculate it
             estimated_to_amount: Decimal::ZERO,
-            // TODO: ensure unwrap is safe here?
             valid_till,
             quote_details: RawSwapDetails::Bungee(details),
-        }
+        })
     }
 }
 

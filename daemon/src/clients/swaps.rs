@@ -91,6 +91,16 @@ pub enum SwapsClientError {
     ProviderRejected { message: String },
     #[error("Unknown API error")]
     UnknownApiError,
+    #[error("No route available")]
+    NoRouteAvailable,
+    #[error("No liquidity available")]
+    NoLiquidity,
+    // A quote that parsed but cannot be turned into a transaction the payer can
+    // actually submit — e.g. the provider omitted the gas parameters, or sent a
+    // timestamp outside the representable range. Publishing such a quote hands
+    // the payer a transaction that is guaranteed to fail on-chain.
+    #[error("Provider returned an unusable quote")]
+    UnusableQuote,
     #[error("Operation is not allowed")]
     OperationIsNotAllowed,
     #[error("Failed to sign transaction")]
@@ -113,7 +123,9 @@ pub trait SwapsClient {
     const GASLESS: bool;
 
     type GetQuoteParams: From<CreateSwapData>;
-    type GetQuoteResponse: Into<SwapQuote>;
+    // Fallible: a response can deserialize cleanly and still be unusable as a
+    // quote (missing gas parameters, unrepresentable expiry).
+    type GetQuoteResponse: TryInto<SwapQuote, Error = SwapsClientError>;
     type RawTransactionDetails: TryFrom<RawSwapDetails, Error = SwapsClientError>
         + Serialize
         + DeserializeOwned;
@@ -162,7 +174,7 @@ pub trait SwapsClient {
             .get_quote_internal(data.into())
             .await?;
 
-        Ok(result.into())
+        result.try_into()
     }
 
     fn extract_raw_details(
