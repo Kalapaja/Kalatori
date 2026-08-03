@@ -249,6 +249,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_swap_approval_response_tolerates_null_approval_txns() {
+        // Trimmed from the production response that broke 0.9.3 (2026-08-03):
+        // Across sends "approvalTxns": null — not an absent key — whenever the
+        // payer already holds allowance, which made every ready-to-pay wallet
+        // fail the untagged AcrossApiResponse parse and surface a blank 500.
+        let raw = r#"{
+            "inputAmount": "2010000",
+            "maxInputAmount": "2010000",
+            "expectedOutputAmount": "2003496",
+            "approvalTxns": null,
+            "swapTx": {
+                "simulationSuccess": true,
+                "chainId": 1,
+                "to": "0x5c7BCd6E7De5423a257D81B442095A1a6ced35C5",
+                "data": "0xad5425c6",
+                "value": "0",
+                "gas": "571750",
+                "maxFeePerGas": "1094950",
+                "maxPriorityFeePerGas": "1000000"
+            },
+            "id": "cx44b-1785763721048-522b47d271d9",
+            "quoteExpiryTimestamp": 1785764021
+        }"#;
+
+        let AcrossApiResponse::Ok(parsed) =
+            serde_json::from_str::<AcrossApiResponse<SwapApprovalResponse>>(raw).unwrap()
+        else {
+            panic!("null approvalTxns must parse as the Ok variant, not AcrossApiError");
+        };
+        assert!(parsed.approval_txns.is_none());
+
+        let quote = SwapQuote::from(parsed);
+        let RawSwapDetails::Across(details) = quote.quote_details else {
+            panic!("expected Across quote details");
+        };
+        assert!(details.approval_transactions.is_empty());
+
+        // An absent key must keep working too.
+        let raw_absent = raw.replace("\"approvalTxns\": null,", "");
+        let AcrossApiResponse::Ok(parsed) =
+            serde_json::from_str::<AcrossApiResponse<SwapApprovalResponse>>(&raw_absent).unwrap()
+        else {
+            panic!("absent approvalTxns must parse as the Ok variant");
+        };
+        assert!(parsed.approval_txns.is_none());
+    }
+
+    #[test]
     fn test_try_from_raw_details() {
         let across_details = RawSwapDetails::Across(default_across_raw_transaction());
         let result = AcrossRawTransaction::try_from(across_details);

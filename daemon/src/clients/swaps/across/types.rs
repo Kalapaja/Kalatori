@@ -161,8 +161,11 @@ pub struct SwapApprovalResponse {
     pub max_input_amount: u128,
     #[serde_as(as = "DisplayFromStr")]
     pub expected_output_amount: u128,
+    // Across sends an explicit `"approvalTxns": null` (not an absent key) when
+    // the payer already holds sufficient allowance; a bare `Vec` +
+    // `#[serde(default)]` rejects that null (production incident 2026-08-03).
     #[serde(default)]
-    pub approval_txns: Vec<ApprovalTransaction>,
+    pub approval_txns: Option<Vec<ApprovalTransaction>>,
     pub swap_tx: SwapTransactionInternal,
     pub id: String,
     pub quote_expiry_timestamp: i64,
@@ -172,7 +175,7 @@ impl From<SwapApprovalResponse> for SwapQuote {
     fn from(value: SwapApprovalResponse) -> Self {
         let details = AcrossQuoteDetails {
             transaction: value.swap_tx.into(),
-            approval_transactions: value.approval_txns,
+            approval_transactions: value.approval_txns.unwrap_or_default(),
         };
 
         Self {
