@@ -249,8 +249,16 @@ impl TryFrom<RawSwapDetails> for ZeroExGaslessRawTransaction {
 pub type ZeroExGaslessQuoteDetails = ZeroExGaslessRawTransaction;
 
 impl From<ZeroExErrorResponse> for SwapsClientError {
-    fn from(_value: ZeroExErrorResponse) -> Self {
-        Self::UnknownApiError
+    fn from(value: ZeroExErrorResponse) -> Self {
+        tracing::warn!(
+            name = %value.name,
+            message = %value.message,
+            "0x API returned an error response"
+        );
+
+        Self::ProviderRejected {
+            message: value.message,
+        }
     }
 }
 
@@ -673,5 +681,29 @@ impl SwapsClient for ZeroExGaslessClient {
             .await?;
 
         Ok(response.status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_response_classification() {
+        let error = ZeroExErrorResponse {
+            name: "INSUFFICIENT_LIQUIDITY".to_string(),
+            message: "Insufficient liquidity for this trade".to_string(),
+            data: ZeroExErrorResponseData {
+                zid: "0x1".to_string(),
+                details: None,
+            },
+        };
+
+        assert_eq!(
+            SwapsClientError::from(error),
+            SwapsClientError::ProviderRejected {
+                message: "Insufficient liquidity for this trade".to_string(),
+            }
+        );
     }
 }

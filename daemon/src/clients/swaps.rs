@@ -83,6 +83,12 @@ pub enum SwapsClientError {
     WrongRawTransaction,
     #[error("Transaction hash or other identifier is not set")]
     TransactionHashIsNotSet,
+    /// The provider understood the request but refused to serve it
+    /// (unsupported route, amount below bridge minimum, insufficient
+    /// liquidity, etc.). `message` is the provider's human-readable
+    /// explanation, safe to surface to the payment UI.
+    #[error("Swap provider rejected the request: {message}")]
+    ProviderRejected { message: String },
     #[error("Unknown API error")]
     UnknownApiError,
     #[error("Operation is not allowed")]

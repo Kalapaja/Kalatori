@@ -22,6 +22,10 @@ pub enum SwapsExecutorError {
     // TODO: refactor
     #[error("Failed to request swap quote")]
     QuoteRequestFailed,
+    /// The swap provider refused the request itself (unsupported route,
+    /// amount below bridge minimum, insufficient liquidity, etc.).
+    #[error("Swap provider rejected the request: {message}")]
+    ProviderRejected { message: String },
     #[error("Swap {swap_id} not found")]
     SwapNotFound { swap_id: Uuid },
     #[error("Invoice {invoice_id} not found")]
@@ -31,9 +35,17 @@ pub enum SwapsExecutorError {
 }
 
 impl From<SwapsClientError> for SwapsExecutorError {
-    fn from(_value: SwapsClientError) -> Self {
-        // TODO: refactor
-        SwapsExecutorError::QuoteRequestFailed
+    fn from(value: SwapsClientError) -> Self {
+        match value {
+            SwapsClientError::ProviderRejected {
+                message,
+            } => SwapsExecutorError::ProviderRejected {
+                message,
+            },
+            // Everything else (transport failures, provider 5xx, malformed
+            // responses) is an internal failure from the requester's view
+            _ => SwapsExecutorError::QuoteRequestFailed,
+        }
     }
 }
 

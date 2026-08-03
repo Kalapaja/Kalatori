@@ -261,7 +261,6 @@ pub struct ZeroExErrorResponseData {
     pub details: Option<serde_json::Value>,
 }
 
-#[expect(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ZeroExErrorResponse {
     pub name: String,

@@ -70,8 +70,19 @@ pub fn default_across_raw_transaction() -> AcrossRawTransaction {
 pub type AcrossQuoteDetails = AcrossRawTransaction;
 
 impl From<AcrossApiError> for SwapsClientError {
-    fn from(_value: AcrossApiError) -> Self {
-        Self::UnknownApiError
+    fn from(value: AcrossApiError) -> Self {
+        tracing::warn!(
+            error.source = ?value,
+            "Across API returned an error response"
+        );
+
+        match value.status {
+            // Provider-side failures are not the requester's fault
+            Some(status) if status >= 500 => Self::UnknownApiError,
+            _ => Self::ProviderRejected {
+                message: value.message,
+            },
+        }
     }
 }
 
@@ -695,5 +706,35 @@ mod tests {
             .unwrap();
         assert_eq!(response, expected_response);
         mock.assert();
+    }
+    #[test]
+    fn test_error_response_classification() {
+        let api_error = AcrossApiError {
+            error_type: Some("InvalidParamError".to_string()),
+            error: None,
+            code: Some("AMOUNT_TOO_LOW".to_string()),
+            status: Some(400),
+            message: "Sent amount is too low relative to fees".to_string(),
+            id: None,
+        };
+        assert_eq!(
+            SwapsClientError::from(api_error),
+            SwapsClientError::ProviderRejected {
+                message: "Sent amount is too low relative to fees".to_string(),
+            }
+        );
+
+        let server_error = AcrossApiError {
+            error_type: None,
+            error: None,
+            code: None,
+            status: Some(500),
+            message: "Internal server error".to_string(),
+            id: None,
+        };
+        assert_eq!(
+            SwapsClientError::from(server_error),
+            SwapsClientError::UnknownApiError
+        );
     }
 }
