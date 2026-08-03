@@ -48,7 +48,18 @@ use super::{
 
 use types::*;
 
+const ZERO_EX_CLIENT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 type ChainProvider = FillProvider<JoinedRecommendedFillers, RootProvider>;
+
+// A reqwest client without a timeout hangs an invoice payment indefinitely on
+// a stalled 0x connection; Across and Bungee clients already bound theirs.
+fn zero_ex_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(ZERO_EX_CLIENT_REQUEST_TIMEOUT)
+        .build()
+        .expect("Failed to build 0x HTTP client")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZeroExTransactionStatus {
@@ -291,7 +302,7 @@ impl ZeroExClient {
             .expect("Failed to connect to RPC endpoint for 0x client");
 
         Self {
-            client: reqwest::Client::new(),
+            client: zero_ex_http_client(),
             chain_client,
             fees: config.fees.clone(),
             api_key: config.zero_ex.api_key.clone(),
@@ -448,7 +459,7 @@ pub struct ZeroExGaslessClient {
 impl ZeroExGaslessClient {
     pub fn new(config: &SwapsConfig) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: zero_ex_http_client(),
             fees: config.fees.clone(),
             api_key: config.zero_ex.api_key.clone(),
         }

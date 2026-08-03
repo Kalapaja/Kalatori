@@ -25,6 +25,7 @@ use super::SwapsClients;
 
 const SWAPS_EXECUTOR_API_POLLING_INTERVAL_MILLIS: u64 = 3000;
 const SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS: u64 = 100;
+const SWAPS_EXECUTOR_PENDING_RELOAD_RETRY_MILLIS: u64 = 5000;
 
 struct TrackedSwaps {
     swaps: HashMap<Uuid, Swap>,
@@ -326,15 +327,27 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS,
         ));
 
-        // TODO: First of all need to fetch pending swaps which has left after service
-        // reaload. Need to either handle an error and retry loading or just
-        // panic and restart the daemon, we can't just leave those pending swaps
-        // in this state forever.
-        let pending_swaps = self
-            .dao
-            .get_pending_swaps()
-            .await
-            .unwrap();
+        // Pending swaps left over from a service reload must be reloaded: a
+        // panic here would kill only this spawned task while the daemon keeps
+        // serving, silently abandoning every submitted swap. Retry until the
+        // database answers (or shutdown is requested).
+        let pending_swaps = loop {
+            match self.dao.get_pending_swaps().await {
+                Ok(swaps) => break swaps,
+                Err(e) => {
+                    tracing::warn!(
+                        error.source = ?e,
+                        "Failed to load pending swaps on startup, retrying"
+                    );
+                    tokio::select! {
+                        () = token.cancelled() => return,
+                        () = tokio::time::sleep(Duration::from_millis(
+                            SWAPS_EXECUTOR_PENDING_RELOAD_RETRY_MILLIS,
+                        )) => {}
+                    }
+                },
+            }
+        };
 
         self.store.add_swaps(pending_swaps);
 
