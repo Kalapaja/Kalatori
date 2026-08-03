@@ -285,3 +285,59 @@ mockall::mock! {
         fn clone(&self) -> Self;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::SwapChainType;
+
+    /// The provider's own explanation is the only thing safe to surface to the
+    /// payment UI, so it has to survive the hop to the executor verbatim.
+    #[test]
+    fn provider_rejection_keeps_the_provider_message() {
+        let error = SwapsExecutorError::from(SwapsClientError::ProviderRejected {
+            message: "Amount is below the bridge minimum".to_string(),
+        });
+
+        assert!(matches!(
+            &error,
+            SwapsExecutorError::ProviderRejected { message }
+                if message == "Amount is below the bridge minimum"
+        ));
+    }
+
+    /// Transport failures, provider 5xx and malformed responses all reach this
+    /// conversion as something other than `ProviderRejected`. None of them are
+    /// the requester's fault, so none may surface as a 422 — they have to
+    /// collapse to `QuoteRequestFailed`, which the API renders as a 500.
+    #[test]
+    fn every_other_client_error_stays_an_internal_failure() {
+        let internal = [
+            SwapsClientError::UnknownApiError,
+            SwapsClientError::SignatureIsNotSet,
+            SwapsClientError::WrongRawTransaction,
+            SwapsClientError::TransactionHashIsNotSet,
+            SwapsClientError::OperationIsNotAllowed,
+            SwapsClientError::FailedToSignTransaction,
+            SwapsClientError::ChainIsNotSupported {
+                chain: SwapChainType::Polygon,
+            },
+            SwapsClientError::DirectionIsNotSupported {
+                from_chain: SwapChainType::Polygon,
+                to_chain: SwapChainType::Ethereum,
+            },
+        ];
+
+        for error in internal {
+            let converted = SwapsExecutorError::from(error.clone());
+
+            assert!(
+                matches!(
+                    converted,
+                    SwapsExecutorError::QuoteRequestFailed
+                ),
+                "{error:?} must map to QuoteRequestFailed, got {converted:?}"
+            );
+        }
+    }
+}
