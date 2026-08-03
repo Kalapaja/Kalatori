@@ -89,6 +89,8 @@ pub enum SwapsClientError {
     /// explanation, safe to surface to the payment UI.
     #[error("Swap provider rejected the request: {message}")]
     ProviderRejected { message: String },
+    #[error("Swap executor refused API access: {message}")]
+    ApiAccessError { message: String },
     #[error("Unknown API error")]
     UnknownApiError,
     #[error("No route available")]

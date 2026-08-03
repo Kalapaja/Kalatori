@@ -329,6 +329,21 @@ fn into_zero_ex_result<T>(
             Err(SwapsClientError::NoLiquidity)
         },
         ZeroExResponse::Err(error) => Err(error.into_client_error(status)),
+        ZeroExResponse::GatewayErr(error) => Err(error.into()),
+    }
+}
+
+impl From<ZeroExGatewayError> for SwapsClientError {
+    fn from(value: ZeroExGatewayError) -> Self {
+        tracing::warn!(
+            message = %value.message,
+            request_id = ?value.request_id,
+            "0x gateway refused the request (invalid API key or rate limit)"
+        );
+
+        Self::ApiAccessError {
+            message: value.message,
+        }
     }
 }
 

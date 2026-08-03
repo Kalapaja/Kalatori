@@ -314,11 +314,61 @@ pub struct ZeroExNoLiquidityResponse {
     pub zid: String,
 }
 
+/// Gateway-level errors (HTTP 401 invalid API key, 429 rate limited) don't
+/// follow the business-error shape above — they only carry a message and a
+/// request id.
+#[derive(Debug, Deserialize)]
+pub struct ZeroExGatewayError {
+    pub message: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
 // Order matters: untagged is first-successful-arm-wins in declaration order.
+// `GatewayErr` is last because it is the most permissive shape ({message} plus
+// an optional id): business errors also carry `message` and would otherwise be
+// swallowed by it.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum ZeroExResponse<T> {
     Ok(T),
     NoLiquidity(ZeroExNoLiquidityResponse),
     Err(ZeroExErrorResponse),
+    GatewayErr(ZeroExGatewayError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_response_variants_deserialize_in_order() {
+        // 401/429 gateway shape (live-verified) lands in the dedicated
+        // variant instead of failing to match anything
+        let gateway: ZeroExResponse<GetTransactionStatusResponse> =
+            serde_json::from_str(r#"{"message":"Rate limit exceeded","request_id":"abc-123"}"#)
+                .unwrap();
+        assert!(matches!(
+            gateway,
+            ZeroExResponse::GatewayErr(ref e)
+                if e.message == "Rate limit exceeded"
+                    && e.request_id.as_deref() == Some("abc-123")
+        ));
+
+        // Business errors also contain `message` but must keep matching their
+        // own variant (arm order)
+        let business: ZeroExResponse<GetTransactionStatusResponse> = serde_json::from_str(
+            r#"{"name":"INSUFFICIENT_BALANCE","message":"nope","data":{"zid":"z"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            business,
+            ZeroExResponse::Err(_)
+        ));
+
+        // Success payloads still win
+        let ok: ZeroExResponse<GetTransactionStatusResponse> =
+            serde_json::from_str(r#"{"status":"confirmed","zid":"z1"}"#).unwrap();
+        assert!(matches!(ok, ZeroExResponse::Ok(_)));
+    }
 }
