@@ -297,6 +297,108 @@ mod tests {
     }
 
     #[test]
+    fn test_swap_approval_response_tolerates_null_or_absent_transaction_fees() {
+        for raw in [
+            r#"{
+                "inputAmount": "1",
+                "maxInputAmount": "1",
+                "expectedOutputAmount": "1",
+                "swapTx": {
+                    "simulationSuccess": true,
+                    "chainId": 137,
+                    "to": "0x1111111111111111111111111111111111111111",
+                    "data": "0x1234",
+                    "value": null,
+                    "gas": null,
+                    "maxFeePerGas": null
+                },
+                "id": "quote-benign-null",
+                "quoteExpiryTimestamp": 1893456000
+            }"#,
+            r#"{
+                "inputAmount": "1",
+                "maxInputAmount": "1",
+                "expectedOutputAmount": "1",
+                "swapTx": {
+                    "simulationSuccess": true,
+                    "chainId": 137,
+                    "to": "0x1111111111111111111111111111111111111111",
+                    "data": "0x1234",
+                    "maxPriorityFeePerGas": null
+                },
+                "id": "quote-benign-absent",
+                "quoteExpiryTimestamp": 1893456000
+            }"#,
+        ] {
+            let AcrossApiResponse::Ok(parsed) =
+                serde_json::from_str::<AcrossApiResponse<SwapApprovalResponse>>(raw).unwrap()
+            else {
+                panic!("nullable swap transaction fields must parse as the success arm");
+            };
+            assert!(parsed.swap_tx.value.is_none());
+            assert!(parsed.swap_tx.gas.is_none());
+            assert!(parsed.swap_tx.max_fee_per_gas.is_none());
+            assert!(
+                parsed
+                    .swap_tx
+                    .max_priority_fee_per_gas
+                    .is_none()
+            );
+
+            let quote = SwapQuote::from(parsed);
+            let RawSwapDetails::Across(details) = quote.quote_details else {
+                panic!("expected Across quote details");
+            };
+            assert_eq!(details.transaction.value, 0);
+            assert_eq!(details.transaction.gas, 0);
+            assert_eq!(details.transaction.max_fee_per_gas, 0);
+            assert_eq!(
+                details
+                    .transaction
+                    .max_priority_fee_per_gas,
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn test_across_status_growth_degrades_safely() {
+        for (status, expected) in [
+            ("received", ExecutorSwapStatus::Pending),
+            (
+                "deposit-pending",
+                ExecutorSwapStatus::Pending,
+            ),
+            (
+                "deposit-failed",
+                ExecutorSwapStatus::Failed,
+            ),
+            (
+                "future-provider-status",
+                ExecutorSwapStatus::Pending,
+            ),
+        ] {
+            let raw = format!(
+                r#"{{
+                    "status": "{status}",
+                    "originChainId": 137,
+                    "depositId": "deposit-benign",
+                    "depositTxnRef": "0x1234",
+                    "fillTxnRef": null,
+                    "destinationChainId": 1,
+                    "depositRefundTxnRef": null
+                }}"#,
+            );
+            let response = serde_json::from_str::<SwapStatusResponse>(&raw).unwrap();
+
+            assert_eq!(
+                ExecutorSwapStatus::from(response.status),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn test_try_from_raw_details() {
         let across_details = RawSwapDetails::Across(default_across_raw_transaction());
         let result = AcrossRawTransaction::try_from(across_details);

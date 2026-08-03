@@ -133,19 +133,19 @@ pub struct QuoteAutoRoute {
     pub quote_id: String,
     pub request_type: String,
     pub sign_typed_data: SignTypedData,
-    pub approval_data: ApprovalData,
+    #[serde(default)]
+    pub approval_data: Option<ApprovalData>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuoteResponse {
-    pub auto_route: QuoteAutoRoute,
+    #[serde(default)]
+    pub auto_route: Option<QuoteAutoRoute>,
 }
 
-impl From<QuoteResponse> for SwapQuote {
-    fn from(value: QuoteResponse) -> Self {
-        let route = value.auto_route;
-
+impl From<QuoteAutoRoute> for SwapQuote {
+    fn from(route: QuoteAutoRoute) -> Self {
         let valid_till =
             DateTime::from_timestamp_secs(route.sign_typed_data.values.deadline).unwrap();
         let estimated_to_amount_units = route

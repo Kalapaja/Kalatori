@@ -96,7 +96,9 @@ impl From<ZeroExTransaction> for RawTransactionData {
         Self {
             to: value.to,
             data: value.data,
-            gas: value.gas,
+            // This transaction is returned to the frontend wallet, which
+            // re-estimates gas before submission.
+            gas: value.gas.unwrap_or_default(),
             gas_price: value.gas_price,
             value: value.value,
         }
@@ -105,7 +107,8 @@ impl From<ZeroExTransaction> for RawTransactionData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZeroExRawTransaction {
-    pub allowance_target: String,
+    #[serde(default)]
+    pub allowance_target: Option<String>,
     // pub permit_hash: String,
     // pub permit_data: serde_json::Value,
     pub raw_transaction: RawTransactionData,
@@ -114,7 +117,7 @@ pub struct ZeroExRawTransaction {
 #[cfg(test)]
 pub fn default_zero_ex_raw_transaction() -> ZeroExRawTransaction {
     ZeroExRawTransaction {
-        allowance_target: "0x0000000000001ff3684f28c67538d4d072c22734".to_string(),
+        allowance_target: Some("0x0000000000001ff3684f28c67538d4d072c22734".to_string()),
         raw_transaction: RawTransactionData {
             to: "0x0000000000001ff3684f28c67538d4d072c22734".to_string(),
             data: "0x2213bc0b000000000000000000000000b0873c46937d34e98615e8c868bd3580bc6dcd4700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ea5ed2ad6f9c5fa000000000000000000000000b0873c46937d34e98615e8c868bd3580bc6dcd4700000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000006641fff991f0000000000000000000000005151537093e68f61a48cb98ba56922abcd2bc5e40000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c3359000000000000000000000000000000000000000000000000000000000001821600000000000000000000000000000000000000000000000000000000000000a0f5303154d2e14bb0f960c9410000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000001200000000000000000000000000000000000000000000000000000000000000260000000000000000000000000000000000000000000000000000000000000038000000000000000000000000000000000000000000000000000000000000004400000000000000000000000000000000000000000000000000000000000000044bd01c2260000000000000000000000000000000000000000000000000000000069c2e3d00000000000000000000000000000000000000000000000000ea5ed2ad6f9c5fa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010438c9c147000000000000000000000000eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee00000000000000000000000000000000000000000000000000000000000027100000000000000000000000000d500b1d8e8ef31e21c99d1db9a6444d3adf1270000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000024d0e30db00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e48d68a156000000000000000000000000b0873c46937d34e98615e8c868bd3580bc6dcd4700000000000000000000000000000000000000000000000000000000000027100000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400d500b1d8e8ef31e21c99d1db9a6444d3adf1270000001f400000000000000000000000000000001000276a43c499c542cef5e3811e1192ce70d8cc03d5c335900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008434ee90ca000000000000000000000000f5c4f3dc02c3fb9279495a8fef7b0741da9561570000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c335900000000000000000000000000000000000000000000000000000000000187a1000000000000000000000000000000000000000000000000000000000000271000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000012438c9c1470000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c3359000000000000000000000000000000000000000000000000000000000000000f0000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c3359000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000044a9059cbb000000000000000000000000ad01c20d5886137e056775af56915de824c8fce50000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(), gas: 302525, gas_price: 198773677713, value: 1055510455939352058 }
@@ -285,6 +288,27 @@ impl ZeroExErrorResponse {
     }
 }
 
+// `status` is threaded through because 0x reports the failure kind only via the
+// HTTP status; the error body carries no status field. Note the no-liquidity arm
+// is a documented HTTP 200, so it never reaches the error classification.
+fn into_zero_ex_result<T>(
+    response: ZeroExResponse<T>,
+    status: reqwest::StatusCode,
+) -> Result<T, SwapsClientError> {
+    match response {
+        ZeroExResponse::Ok(response) => Ok(response),
+        ZeroExResponse::NoLiquidity(response) => {
+            tracing::debug!(
+                liquidity_available = response.liquidity_available,
+                zid = %response.zid,
+                "0x quote has no liquidity"
+            );
+            Err(SwapsClientError::NoLiquidity)
+        },
+        ZeroExResponse::Err(error) => Err(error.into_client_error(status)),
+    }
+}
+
 #[derive(Clone)]
 pub struct ZeroExClient {
     client: reqwest::Client,
@@ -381,10 +405,7 @@ impl SwapsClient for ZeroExClient {
             SwapsClientError::UnknownApiError
         })?;
 
-        match result {
-            ZeroExResponse::Ok(resp) => Ok(resp),
-            ZeroExResponse::Err(e) => Err(e.into_client_error(status)),
-        }
+        into_zero_ex_result(result, status)
     }
 
     async fn submit_transaction_internal(
@@ -513,10 +534,7 @@ impl ZeroExGaslessClient {
             SwapsClientError::UnknownApiError
         })?;
 
-        match result {
-            ZeroExResponse::Ok(resp) => Ok(resp),
-            ZeroExResponse::Err(e) => Err(e.into_client_error(status)),
-        }
+        into_zero_ex_result(result, status)
     }
 
     async fn sign_hash(
@@ -713,6 +731,8 @@ impl SwapsClient for ZeroExGaslessClient {
 
 #[cfg(test)]
 mod tests {
+    use crate::types::SwapQuote;
+
     use super::*;
 
     #[test]
@@ -747,6 +767,122 @@ mod tests {
         assert_eq!(
             server_error.into_client_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
             SwapsClientError::UnknownApiError
+        );
+    }
+
+    const FULL_QUOTE_WITH_NULLABLE_FIELDS: &str = r#"{
+        "liquidityAvailable": true,
+        "allowanceTarget": null,
+        "buyAmount": "100",
+        "buyToken": "0x1111111111111111111111111111111111111111",
+        "minBuyAmount": "99",
+        "sellAmount": "100",
+        "sellToken": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "transaction": {
+            "to": "0x2222222222222222222222222222222222222222",
+            "data": "0x1234",
+            "gas": null,
+            "gasPrice": "1",
+            "value": "100"
+        },
+        "zid": "quote-benign"
+    }"#;
+
+    const GASLESS_QUOTE_WITH_NULL_ALLOWANCE_TARGET: &str = r#"{
+        "liquidityAvailable": true,
+        "allowanceTarget": null,
+        "buyAmount": "100",
+        "buyToken": "0x1111111111111111111111111111111111111111",
+        "minBuyAmount": "99",
+        "sellAmount": "100",
+        "sellToken": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "trade": {
+            "type": "settler_metatransaction",
+            "hash": "0x1234",
+            "eip712": {}
+        },
+        "zid": "gasless-quote-benign"
+    }"#;
+
+    #[test]
+    fn test_full_quote_tolerates_null_or_absent_allowance_target_and_gas() {
+        for raw in [
+            FULL_QUOTE_WITH_NULLABLE_FIELDS.to_string(),
+            FULL_QUOTE_WITH_NULLABLE_FIELDS.replace("\"gas\": null,", ""),
+            FULL_QUOTE_WITH_NULLABLE_FIELDS.replace("\"allowanceTarget\": null,", ""),
+            FULL_QUOTE_WITH_NULLABLE_FIELDS
+                .replace("\"gas\": null,", "")
+                .replace("\"allowanceTarget\": null,", ""),
+        ] {
+            let response =
+                serde_json::from_str::<ZeroExResponse<ZeroExGetQuoteResponse>>(&raw).unwrap();
+            let ZeroExResponse::Ok(response) = response else {
+                panic!("a full liquid quote must parse as the success arm");
+            };
+            assert!(response.allowance_target.is_none());
+            assert!(response.transaction.gas.is_none());
+
+            let quote = SwapQuote::from(response);
+            let RawSwapDetails::ZeroEx(details) = quote.quote_details else {
+                panic!("expected 0x quote details");
+            };
+            assert!(details.allowance_target.is_none());
+            assert_eq!(details.raw_transaction.gas, 0);
+        }
+    }
+
+    #[test]
+    fn test_gasless_quote_tolerates_null_or_absent_allowance_target() {
+        for raw in [
+            GASLESS_QUOTE_WITH_NULL_ALLOWANCE_TARGET.to_string(),
+            GASLESS_QUOTE_WITH_NULL_ALLOWANCE_TARGET.replace("\"allowanceTarget\": null,", ""),
+        ] {
+            let response =
+                serde_json::from_str::<ZeroExResponse<ZeroExGaslessGetQuoteResponse>>(&raw)
+                    .unwrap();
+            let ZeroExResponse::Ok(response) = response else {
+                panic!("a full gasless quote must parse as the success arm");
+            };
+            assert!(response.allowance_target.is_none());
+        }
+    }
+
+    #[test]
+    fn test_no_liquidity_response_maps_to_typed_error_for_both_quote_paths() {
+        let raw = r#"{"liquidityAvailable":false,"zid":"x"}"#;
+
+        // 0x documents the no-liquidity body as an HTTP 200, so that is the
+        // status this arm is reached with.
+        let normal = serde_json::from_str::<ZeroExResponse<ZeroExGetQuoteResponse>>(raw).unwrap();
+        assert!(matches!(
+            into_zero_ex_result(normal, reqwest::StatusCode::OK),
+            Err(SwapsClientError::NoLiquidity)
+        ));
+
+        let gasless =
+            serde_json::from_str::<ZeroExResponse<ZeroExGaslessGetQuoteResponse>>(raw).unwrap();
+        assert!(matches!(
+            into_zero_ex_result(gasless, reqwest::StatusCode::OK),
+            Err(SwapsClientError::NoLiquidity)
+        ));
+    }
+
+    #[test]
+    fn test_failed_gasless_status_maps_to_failed() {
+        let raw = r#"{
+            "status": "failed",
+            "reason": "order_expired",
+            "zid": "status-benign"
+        }"#;
+        let response = serde_json::from_str::<GetTransactionStatusResponse>(raw).unwrap();
+
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("order_expired")
+        );
+        assert_eq!(
+            ExecutorSwapStatus::from(response.status),
+            ExecutorSwapStatus::Failed
         );
     }
 }

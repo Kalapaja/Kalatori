@@ -36,6 +36,9 @@ pub enum AcrossSwapStatus {
     // and the recipient should have received funds. A FilledRelay event
     // was emitted on the destination chain SpokePool.
     Filled,
+    Received,
+    #[serde(rename = "deposit-pending")]
+    DepositPending,
     // Deposit has not been filled yet.
     Pending,
     // Deposit has expired and will not be filled. Expired deposits will be
@@ -45,15 +48,23 @@ pub enum AcrossSwapStatus {
     // Deposit has expired and the depositor has been successfully refunded
     // on the originChain.
     Refunded,
+    #[serde(rename = "deposit-failed")]
+    DepositFailed,
+    #[serde(other)]
+    Unknown,
 }
 
 impl From<AcrossSwapStatus> for ExecutorSwapStatus {
     fn from(value: AcrossSwapStatus) -> Self {
         match value {
             AcrossSwapStatus::Filled => Self::Executed,
+            AcrossSwapStatus::Received => Self::Pending,
+            AcrossSwapStatus::DepositPending => Self::Pending,
             AcrossSwapStatus::Pending => Self::Pending,
             AcrossSwapStatus::Expired => Self::Failed,
             AcrossSwapStatus::Refunded => Self::Failed,
+            AcrossSwapStatus::DepositFailed => Self::Failed,
+            AcrossSwapStatus::Unknown => Self::Pending,
         }
     }
 }
@@ -104,19 +115,19 @@ pub struct SwapTransactionInternal {
     pub chain_id: u64,
     pub to: String,
     pub data: String,
+    #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
-    #[serde_as(as = "DisplayFromStr")]
-    pub value: u128,
+    pub value: Option<u128>,
     // Not presented in Solana transactions
+    #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
-    #[serde_as(as = "DisplayFromStr")]
-    pub gas: u128,
+    pub gas: Option<u128>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
-    #[serde_as(as = "DisplayFromStr")]
-    pub max_fee_per_gas: u128,
+    pub max_fee_per_gas: Option<u128>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default)]
-    #[serde_as(as = "DisplayFromStr")]
-    pub max_priority_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: Option<u128>,
 }
 
 #[serde_as]
@@ -142,10 +153,14 @@ impl From<SwapTransactionInternal> for SwapTransaction {
             chain_id: value.chain_id,
             contract_address: value.to,
             data: value.data,
-            value: value.value,
-            gas: value.gas,
-            max_fee_per_gas: value.max_fee_per_gas,
-            max_priority_fee_per_gas: value.max_priority_fee_per_gas,
+            value: value.value.unwrap_or_default(),
+            gas: value.gas.unwrap_or_default(),
+            max_fee_per_gas: value
+                .max_fee_per_gas
+                .unwrap_or_default(),
+            max_priority_fee_per_gas: value
+                .max_priority_fee_per_gas
+                .unwrap_or_default(),
         }
     }
 }

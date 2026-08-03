@@ -74,8 +74,9 @@ impl From<CreateSwapData> for ZeroExGetQuoteRequest {
 pub struct ZeroExTransaction {
     pub to: String,
     pub data: String,
-    #[serde_as(as = "DisplayFromStr")]
-    pub gas: u64,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default)]
+    pub gas: Option<u64>,
     #[serde_as(as = "DisplayFromStr")]
     pub gas_price: u128,
     #[serde_as(as = "DisplayFromStr")]
@@ -94,7 +95,8 @@ pub struct ZeroExPermit2 {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ZeroExGetQuoteResponse {
-    pub allowance_target: String,
+    #[serde(default)]
+    pub allowance_target: Option<String>,
     #[serde_as(as = "DisplayFromStr")]
     pub buy_amount: u128,
     pub buy_token: String,
@@ -146,7 +148,8 @@ pub struct ZeroExTrade {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ZeroExGaslessGetQuoteResponse {
-    pub allowance_target: String,
+    #[serde(default)]
+    pub allowance_target: Option<String>,
     #[serde(default)]
     pub approval: Option<ZeroExTrade>,
     #[serde_as(as = "DisplayFromStr")]
@@ -230,6 +233,7 @@ pub enum ZeroExGaslessTransactionStatus {
     Submitted,
     Succeeded,
     Confirmed,
+    Failed,
 }
 
 impl From<ZeroExGaslessTransactionStatus> for ExecutorSwapStatus {
@@ -241,6 +245,7 @@ impl From<ZeroExGaslessTransactionStatus> for ExecutorSwapStatus {
             Submitted => ExecutorSwapStatus::Pending,
             Succeeded => ExecutorSwapStatus::Pending,
             Confirmed => ExecutorSwapStatus::Executed,
+            Failed => ExecutorSwapStatus::Failed,
         }
     }
 }
@@ -250,6 +255,8 @@ impl From<ZeroExGaslessTransactionStatus> for ExecutorSwapStatus {
 #[serde(rename_all = "camelCase")]
 pub struct GetTransactionStatusResponse {
     pub status: ZeroExGaslessTransactionStatus,
+    #[serde(default)]
+    pub reason: Option<String>,
     pub zid: String,
 }
 
@@ -269,8 +276,16 @@ pub struct ZeroExErrorResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZeroExNoLiquidityResponse {
+    pub liquidity_available: bool,
+    pub zid: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum ZeroExResponse<T> {
     Ok(T),
+    NoLiquidity(ZeroExNoLiquidityResponse),
     Err(ZeroExErrorResponse),
 }

@@ -91,6 +91,10 @@ pub enum SwapsClientError {
     ProviderRejected { message: String },
     #[error("Unknown API error")]
     UnknownApiError,
+    #[error("No route available")]
+    NoRouteAvailable,
+    #[error("No liquidity available")]
+    NoLiquidity,
     #[error("Operation is not allowed")]
     OperationIsNotAllowed,
     #[error("Failed to sign transaction")]
