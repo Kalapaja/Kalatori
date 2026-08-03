@@ -83,16 +83,37 @@ pub struct EtherscanTransaction {
 }
 
 impl EtherscanTransaction {
-    #[expect(clippy::cast_possible_truncation)]
+    /// Returns `None` (with an error log) when the reported value or token
+    /// decimals don't fit into `Decimal`: recording a wrapped amount would
+    /// corrupt the invoice, while skipping keeps the balance mismatch
+    /// visible to the balance checker.
     pub fn into_incoming_transaction(
         self,
         invoice_id: Uuid,
-    ) -> IncomingTransaction {
+    ) -> Option<IncomingTransaction> {
+        let Ok(value) = i64::try_from(self.value) else {
+            tracing::error!(
+                tx_hash = %self.hash,
+                value = self.value,
+                "Transfer value exceeds the supported range, skipping transaction"
+            );
+            return None;
+        };
+
+        let Ok(amount) = Decimal::try_new(value, self.token_decimal) else {
+            tracing::error!(
+                tx_hash = %self.hash,
+                token_decimal = self.token_decimal,
+                "Token decimals exceed the supported range, skipping transaction"
+            );
+            return None;
+        };
+
         let transfer_info = TransferInfo {
             chain: ChainType::Polygon,
             asset_id: self.contract_address,
             asset_name: self.token_symbol,
-            amount: Decimal::new(self.value as i64, self.token_decimal),
+            amount,
             source_address: self.from,
             destination_address: self.to,
         };
@@ -103,11 +124,73 @@ impl EtherscanTransaction {
             tx_hash: Some(self.hash),
         };
 
-        IncomingTransaction {
+        Some(IncomingTransaction {
             id: Uuid::new_v4(),
             invoice_id,
             transfer_info,
             transaction_id,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transaction(
+        value: u128,
+        token_decimal: u32,
+    ) -> EtherscanTransaction {
+        EtherscanTransaction {
+            block_number: 100,
+            hash: "0xdead".to_string(),
+            from: "0xfrom".to_string(),
+            contract_address: "0xtoken".to_string(),
+            to: "0xto".to_string(),
+            value,
+            token_symbol: "USDC".to_string(),
+            token_decimal,
+            transaction_index: 2,
         }
+    }
+
+    #[test]
+    fn test_into_incoming_transaction() {
+        let invoice_id = Uuid::new_v4();
+        let result = transaction(1_500_000, 6)
+            .into_incoming_transaction(invoice_id)
+            .unwrap();
+
+        assert_eq!(
+            result.transfer_info.amount,
+            Decimal::new(15, 1)
+        );
+        assert_eq!(result.invoice_id, invoice_id);
+        assert_eq!(
+            result.transaction_id.tx_hash,
+            Some("0xdead".to_string())
+        );
+    }
+
+    #[test]
+    fn test_into_incoming_transaction_rejects_oversized_value() {
+        // Above i64::MAX base units: the old `as i64` cast silently wrapped
+        let oversized = u128::try_from(i64::MAX).unwrap() + 1;
+        assert!(
+            transaction(oversized, 6)
+                .into_incoming_transaction(Uuid::new_v4())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_into_incoming_transaction_rejects_oversized_decimals() {
+        // Decimal supports at most 28 decimal places; the old Decimal::new
+        // panicked here
+        assert!(
+            transaction(1_000_000, 77)
+                .into_incoming_transaction(Uuid::new_v4())
+                .is_none()
+        );
     }
 }
