@@ -275,10 +275,82 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         Ok(())
     }
 
+    /// Re-read a tracked swap that has no transaction hash yet and refresh the
+    /// stored copy.
+    ///
+    /// The database poll picks swaps up every 100 ms, which can be well before
+    /// `submit_with_signature` has attached the hash of a submission it is
+    /// still waiting on. Without this refresh the tracked clone stays hashless
+    /// for the lifetime of the process and every poll below fails with
+    /// `TransactionHashIsNotSet`.
+    ///
+    /// Returns `None` when the swap still can't be polled this round.
+    async fn refresh_hashless_swap(
+        &mut self,
+        swap: &Swap,
+    ) -> Option<Swap> {
+        let reloaded = match self.dao.get_swap_by_id(swap.id).await {
+            Ok(Some(reloaded)) => reloaded,
+            Ok(None) => {
+                tracing::warn!(
+                    swap_id = %swap.id,
+                    invoice_id = %swap.request.invoice_id,
+                    "Tracked swap has disappeared from the database, dropping it from the tracker"
+                );
+                self.store.remove_swap(swap.id);
+                return None;
+            },
+            Err(e) => {
+                tracing::warn!(
+                    swap_id = %swap.id,
+                    invoice_id = %swap.request.invoice_id,
+                    error = ?e,
+                    "Failed to re-read a swap with no transaction hash, will retry next round"
+                );
+                return None;
+            },
+        };
+
+        if reloaded
+            .swap_details
+            .transaction_hash
+            .is_none()
+        {
+            // Loud on purpose: the swap was marked `Submitted` before the
+            // external call, so funds may be in flight with nothing recorded
+            // to track them by.
+            tracing::warn!(
+                swap_id = %swap.id,
+                invoice_id = %swap.request.invoice_id,
+                swap_status = %reloaded.status,
+                "Tracked swap still has no transaction hash and cannot be polled — if this persists, its submission needs manual reconciliation"
+            );
+            return None;
+        }
+
+        self.store
+            .add_swaps(vec![reloaded.clone()]);
+
+        Some(reloaded)
+    }
+
     async fn check_swaps(&mut self) {
         let swaps = self.store.get_all_swaps();
 
         for swap in swaps {
+            let swap = if swap
+                .swap_details
+                .transaction_hash
+                .is_none()
+            {
+                match self.refresh_hashless_swap(&swap).await {
+                    Some(refreshed) => refreshed,
+                    None => continue,
+                }
+            } else {
+                swap
+            };
+
             let result = self.check_swap(&swap).await;
 
             if let Err(e) = result {

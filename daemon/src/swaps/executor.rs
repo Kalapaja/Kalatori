@@ -170,7 +170,8 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
         // external executor: if the daemon crashes or the later updates fail,
         // the swap is already `Submitted` and visible to the tracker instead
         // of silently staying `Created` while funds are in flight.
-        self.update_swap_submitted_internally(swap_signature.swap_id)
+        let submitted_swap = self
+            .update_swap_submitted_internally(swap_signature.swap_id)
             .await?;
 
         // TODO: In case of error need to check an error thoroughly.
@@ -232,11 +233,15 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
                 // the caller (a retry could double-submit). The swap stays
                 // Submitted/Pending without a hash and needs manual
                 // reconciliation, which this error record points at.
+                //
+                // Return the post-`Submitted` row, never the pre-submission
+                // `swap`: that one still reads `Created`, which would tell the
+                // caller nothing was sent while funds are already in flight.
                 tracing::error!(
                     error = ?e,
                     "Swap was submitted but recording its transaction hash failed, manual reconciliation required"
                 );
-                Ok(swap)
+                Ok(submitted_swap)
             },
         }
     }

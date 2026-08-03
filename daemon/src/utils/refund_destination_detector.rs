@@ -127,6 +127,25 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
 
         self.filter_out_swap_transactions(&mut transactions, &swaps);
 
+        // Synthetic reconciliation records carry a placeholder sender, so they
+        // can never be a refund destination — sending there would burn the
+        // funds. Drop them before picking a destination; if that leaves
+        // nothing, `NoAvailableDestination` correctly routes the refund to
+        // manual handling.
+        transactions.retain(|trans| {
+            let is_onchain = trans.transaction_id.is_onchain();
+
+            if !is_onchain {
+                tracing::warn!(
+                    transaction_id = %trans.id,
+                    invoice_id = %refund.invoice_id,
+                    "Skipping a reconciliation record while detecting a refund destination: it has no on-chain sender"
+                );
+            }
+
+            is_onchain
+        });
+
         // TODO: now we just get the first one, later we'll have to also check them
         // using arkhm API
         if let Some(trans) = transactions.first() {
@@ -269,6 +288,7 @@ mod tests {
     };
     use crate::types::{
         ChainType,
+        GeneralTransactionId,
         SwapChainType,
         default_refund,
         default_swap,
@@ -490,6 +510,98 @@ mod tests {
                 .once()
                 .with(eq(invoice_id))
                 .returning(move |_| Ok(vec![]));
+
+            let result = detector
+                .find_refund_destination(&refund)
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                result,
+                RefundDestinationDetectorError::NoAvailableDestination
+            );
+        }
+
+        // Test case 3.1:
+        // - Successful flow
+        // - A synthetic reconciliation record precedes a real transfer
+        // Expectations:
+        // - The reconciliation record is skipped despite being first
+        // - The real transfer's sender is returned
+        {
+            let mut reconciliation = default_transaction(invoice_id);
+            reconciliation.transaction_id = GeneralTransactionId::empty();
+            reconciliation
+                .transfer_info
+                .source_address = "unknown".to_string();
+
+            let mut real_transfer = default_transaction(invoice_id);
+            real_transfer.transfer_info.chain = ChainType::Polygon;
+
+            let expected_destination_params = TransferDestinationParams {
+                destination_address: real_transfer
+                    .transfer_info
+                    .source_address
+                    .clone(),
+                destination_chain: real_transfer.transfer_info.chain.into(),
+                destination_asset_id: real_transfer
+                    .transfer_info
+                    .asset_id
+                    .clone(),
+            };
+
+            detector
+                .dao
+                .expect_get_completed_incoming_swaps_by_invoice()
+                .once()
+                .with(eq(invoice_id))
+                .returning(move |_| Ok(vec![]));
+
+            detector
+                .dao
+                .expect_get_completed_transactions_by_invoice()
+                .once()
+                .with(eq(invoice_id))
+                .returning(move |_| {
+                    Ok(vec![
+                        reconciliation.clone(),
+                        real_transfer.clone(),
+                    ])
+                });
+
+            let result = detector
+                .find_refund_destination(&refund)
+                .await
+                .unwrap();
+
+            assert_eq!(result, expected_destination_params);
+        }
+
+        // Test case 3.2:
+        // - Unsuccessful flow
+        // - The only completed transaction is a reconciliation record
+        // Expectations:
+        // - No destination is invented from its placeholder sender
+        {
+            let mut reconciliation = default_transaction(invoice_id);
+            reconciliation.transaction_id = GeneralTransactionId::empty();
+            reconciliation
+                .transfer_info
+                .source_address = "unknown".to_string();
+
+            detector
+                .dao
+                .expect_get_completed_incoming_swaps_by_invoice()
+                .once()
+                .with(eq(invoice_id))
+                .returning(move |_| Ok(vec![]));
+
+            detector
+                .dao
+                .expect_get_completed_transactions_by_invoice()
+                .once()
+                .with(eq(invoice_id))
+                .returning(move |_| Ok(vec![reconciliation.clone()]));
 
             let result = detector
                 .find_refund_destination(&refund)

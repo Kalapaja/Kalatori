@@ -48,7 +48,6 @@ pub enum QueryError {
     #[error("Storage query returned no data: {query_type}")]
     NotFound { query_type: String },
 
-    #[expect(dead_code)]
     /// Data decoding failed (SCALE or other format)
     #[error("Data decoding failed: {data_type}")]
     DecodeFailed { data_type: String },

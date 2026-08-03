@@ -340,12 +340,18 @@ impl AssetHubClient {
             let event = match event {
                 Ok(event) => event,
                 Err(e) => {
-                    warn!(
+                    // subxt's event iterator is NOT resumable: on a decode
+                    // error it advances the cursor to the end, so every
+                    // subsequent `next()` yields `None`. Skipping this entry
+                    // would therefore silently discard the whole remainder of
+                    // the block, so stop and say so instead.
+                    tracing::error!(
                         block_number,
+                        decoded_transfers = transfers.len(),
                         error = ?e,
-                        "Failed to decode an event, an incoming transfer may have been missed; the balance checker will recover it"
+                        "Failed to decode an event; the rest of the block cannot be read and any further incoming transfers in it are missed — the balance checker must reconcile them"
                     );
-                    continue;
+                    break;
                 },
             };
 
@@ -377,7 +383,10 @@ impl AssetHubClient {
                 continue;
             };
 
-            let Ok(amount_units) = i64::try_from(transferred.amount) else {
+            // Convert through `i128`, not `i64`: `Decimal` holds a 96-bit
+            // mantissa, so an `i64` intermediate would needlessly reject
+            // amounts that are perfectly representable.
+            let Ok(amount_units) = i128::try_from(transferred.amount) else {
                 tracing::error!(
                     block_number,
                     asset_id = transferred.asset_id,
@@ -387,12 +396,15 @@ impl AssetHubClient {
                 continue;
             };
 
-            let Ok(amount) = Decimal::try_new(amount_units, asset_info.decimals.into()) else {
+            let Ok(amount) =
+                Decimal::try_from_i128_with_scale(amount_units, asset_info.decimals.into())
+            else {
                 tracing::error!(
                     block_number,
                     asset_id = transferred.asset_id,
+                    amount = transferred.amount,
                     decimals = asset_info.decimals,
-                    "Asset decimals exceed the supported range, skipping transfer"
+                    "Transfer amount or asset decimals exceed the range representable by Decimal, skipping transfer"
                 );
                 continue;
             };
@@ -578,11 +590,34 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
                 );
             })
             .map_err(|_e| QueryError::RpcRequestFailed)?
-            .map_or(Decimal::ZERO, |acc| {
-                // TODO: check acc.balance? Cast is quite unsafe
-                #[expect(clippy::cast_possible_truncation)]
-                Decimal::new(acc.balance as i64, decimals.into())
-            });
+            .map(|acc| {
+                // This balance drives the balance checker's reconciliation
+                // delta, so a wrapping cast here would fabricate a credit for
+                // the difference. Convert through `i128` — `Decimal` holds a
+                // 96-bit mantissa — and fail loudly if it still doesn't fit.
+                i128::try_from(acc.balance)
+                    .ok()
+                    .and_then(|balance| {
+                        Decimal::try_from_i128_with_scale(balance, decimals.into()).ok()
+                    })
+                    .ok_or_else(|| {
+                        tracing::error!(
+                            error.category = crate::utils::logging::category::CHAIN_CLIENT,
+                            error.operation = crate::utils::logging::operation::FETCH_BALANCE,
+                            asset_id = %asset_id,
+                            account = %account_id,
+                            balance = acc.balance,
+                            decimals,
+                            "On-chain balance is not representable as a Decimal"
+                        );
+
+                        QueryError::DecodeFailed {
+                            data_type: format!("balance of asset {asset_id}"),
+                        }
+                    })
+            })
+            .transpose()?
+            .unwrap_or(Decimal::ZERO);
 
         Ok(amount)
     }

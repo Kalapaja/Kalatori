@@ -91,7 +91,10 @@ impl EtherscanTransaction {
         self,
         invoice_id: Uuid,
     ) -> Option<IncomingTransaction> {
-        let Ok(value) = i64::try_from(self.value) else {
+        // Convert through `i128`, not `i64`: `Decimal` holds a 96-bit mantissa,
+        // so an `i64` intermediate would cap an 18-decimal token at ~9.22
+        // tokens and silently skip everything above it.
+        let Ok(value) = i128::try_from(self.value) else {
             tracing::error!(
                 tx_hash = %self.hash,
                 value = self.value,
@@ -100,11 +103,12 @@ impl EtherscanTransaction {
             return None;
         };
 
-        let Ok(amount) = Decimal::try_new(value, self.token_decimal) else {
+        let Ok(amount) = Decimal::try_from_i128_with_scale(value, self.token_decimal) else {
             tracing::error!(
                 tx_hash = %self.hash,
+                value = self.value,
                 token_decimal = self.token_decimal,
-                "Token decimals exceed the supported range, skipping transaction"
+                "Transfer value or token decimals exceed the range representable by Decimal, skipping transaction"
             );
             return None;
         };
@@ -173,9 +177,28 @@ mod tests {
     }
 
     #[test]
+    fn test_into_incoming_transaction_accepts_large_18_decimal_transfer() {
+        // 10 tokens of an 18-decimal asset is 1e19 base units — above
+        // `i64::MAX`, so an `i64` intermediate would drop it, but well within
+        // Decimal's 96-bit mantissa
+        let ten_tokens = 10_000_000_000_000_000_000_u128;
+        assert!(ten_tokens > u128::try_from(i64::MAX).unwrap());
+
+        let result = transaction(ten_tokens, 18)
+            .into_incoming_transaction(Uuid::new_v4())
+            .expect("an 18-decimal transfer above i64::MAX must still be recorded");
+
+        assert_eq!(
+            result.transfer_info.amount,
+            Decimal::from(10)
+        );
+    }
+
+    #[test]
     fn test_into_incoming_transaction_rejects_oversized_value() {
-        // Above i64::MAX base units: the old `as i64` cast silently wrapped
-        let oversized = u128::try_from(i64::MAX).unwrap() + 1;
+        // Decimal's mantissa is 96 bits; anything above 2^96-1 base units is
+        // genuinely unrepresentable and must be skipped rather than wrapped
+        let oversized = (1_u128 << 96) + 1;
         assert!(
             transaction(oversized, 6)
                 .into_incoming_transaction(Uuid::new_v4())

@@ -41,6 +41,16 @@ impl GeneralTransactionId {
             tx_hash: None,
         }
     }
+
+    /// `true` when this record points at an actual on-chain event.
+    ///
+    /// Records without any coordinate are synthetic — currently the balance
+    /// checker's reconciliation adjustments, which stand in for transfers we
+    /// never observed. Their `source_address` is a placeholder, so they are
+    /// evidence that funds arrived, never evidence of who sent them.
+    pub fn is_onchain(&self) -> bool {
+        self.block_number.is_some() || self.position_in_block.is_some() || self.tx_hash.is_some()
+    }
 }
 
 /// Origin field for transactions (what triggered this transaction)
