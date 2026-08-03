@@ -37,6 +37,8 @@ pub enum SwapRequestError {
     ProviderRejected { message: String },
     #[error("Failed to get quotes for swap")]
     QuoteRequestFailed,
+    #[error("Asset metadata unavailable for asset {asset_id}")]
+    AssetMetadataUnavailable { asset_id: String },
     #[error("Database error")]
     DatabaseError,
 }
@@ -84,7 +86,10 @@ impl ApiErrorExt for SwapRequestError {
                 ..
             }
             | SwapRequestError::QuoteRequestFailed => "SWAP_ERROR",
-            SwapRequestError::DatabaseError => "INTERNAL_SERVER_ERROR",
+            SwapRequestError::AssetMetadataUnavailable {
+                ..
+            }
+            | SwapRequestError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
 
@@ -106,7 +111,10 @@ impl ApiErrorExt for SwapRequestError {
                 ..
             } => "SWAP_PROVIDER_REJECTED",
             SwapRequestError::QuoteRequestFailed => "QUOTE_REQUEST_FAILED",
-            SwapRequestError::DatabaseError => "INTERNAL_SERVER_ERROR",
+            SwapRequestError::AssetMetadataUnavailable {
+                ..
+            }
+            | SwapRequestError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
 
@@ -127,9 +135,11 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::ProviderRejected {
                 ..
             } => reqwest::StatusCode::UNPROCESSABLE_ENTITY,
-            SwapRequestError::QuoteRequestFailed | SwapRequestError::DatabaseError => {
-                reqwest::StatusCode::INTERNAL_SERVER_ERROR
-            },
+            SwapRequestError::QuoteRequestFailed
+            | SwapRequestError::AssetMetadataUnavailable {
+                ..
+            }
+            | SwapRequestError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -151,6 +161,11 @@ impl ApiErrorExt for SwapRequestError {
                 message,
             } => message,
             SwapRequestError::QuoteRequestFailed => "Failed to get a quote from the swap provider.",
+            // The asset id is deliberately not surfaced: it's our own
+            // configuration/chain-metadata state, not something the caller can act on.
+            SwapRequestError::AssetMetadataUnavailable {
+                ..
+            } => "The swap could not be prepared: asset metadata is unavailable.",
             SwapRequestError::DatabaseError => "A database error occurred.",
         }
     }
@@ -213,8 +228,38 @@ impl<D: DaoInterface> AppState<D> {
         let expected_to_amount_units = if let Some(units) = params.expected_to_amount_units {
             units
         } else {
-            // TODO: get real decimals for the asset
-            (invoice.unfilled_amount() / Decimal::new(1, 6))
+            // Convert the unfilled amount into the destination token's
+            // smallest units using its real on-chain decimals; assuming 6
+            // underpays or overpays for any other precision.
+            let decimals = self
+                .asset_decimals_map
+                .get(&default_chain)
+                .and_then(|assets| assets.get(&to_token_address))
+                .copied()
+                .ok_or_else(|| {
+                    tracing::error!(
+                        chain = %default_chain,
+                        asset_id = %to_token_address,
+                        "Destination asset decimals are not known, can't calculate swap target amount"
+                    );
+                    SwapRequestError::AssetMetadataUnavailable {
+                        asset_id: to_token_address.clone(),
+                    }
+                })?;
+
+            let one_unit = Decimal::try_new(1, decimals.into()).map_err(|_| {
+                tracing::error!(
+                    chain = %default_chain,
+                    asset_id = %to_token_address,
+                    decimals,
+                    "Destination asset decimals exceed the supported range"
+                );
+                SwapRequestError::AssetMetadataUnavailable {
+                    asset_id: to_token_address.clone(),
+                }
+            })?;
+
+            (invoice.unfilled_amount() / one_unit)
                 .to_u128()
                 // TODO: change error
                 .ok_or(SwapRequestError::DatabaseError)?
@@ -298,6 +343,26 @@ impl<D: DaoInterface> AppState<D> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use secrecy::SecretString;
+
+    use crate::chain::InvoiceRegistry;
+    use crate::chain_client::KeyringClient;
+    use crate::configs::{
+        PaymentsConfig,
+        ShopConfig,
+        ShopMetaConfig,
+    };
+    use crate::dao::MockDaoInterface;
+    use crate::swaps::SwapsExecutor;
+    use crate::types::{
+        ChainType,
+        DetectedShopPlatform,
+        default_invoice,
+        default_swap,
+    };
+
     use super::*;
 
     #[test]
@@ -383,5 +448,128 @@ mod tests {
             error.http_status_code(),
             reqwest::StatusCode::BAD_REQUEST
         );
+    }
+
+    const POLYGON_USDC: &str = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
+
+    fn app_state_with_decimals(
+        asset_decimals_map: HashMap<ChainType, HashMap<String, u8>>
+    ) -> AppState<MockDaoInterface> {
+        let payments_config = PaymentsConfig {
+            default_chain: ChainType::Polygon,
+            default_asset_id: HashMap::from([(
+                ChainType::Polygon,
+                POLYGON_USDC.to_string(),
+            )]),
+            invoice_lifetime_millis: 600_000,
+            recipient: HashMap::from([(
+                ChainType::Polygon,
+                "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7".to_string(),
+            )]),
+            payment_url_base: "https://payments.example.com".to_string(),
+            slippage_params: HashMap::new(),
+        };
+
+        let shop_config = ShopConfig {
+            invoices_webhook_url: None,
+            signature_max_age_secs: 300,
+            private_api_base_url: None,
+            meta: ShopMetaConfig {
+                shop_name: "Mega shop".to_string(),
+                shop_url: "mega.shop".to_string(),
+                logo_url: None,
+                reown_project_id: "test".to_string(),
+                ankr_api_token: None,
+            },
+            shop_platform: DetectedShopPlatform::Unknown,
+        };
+
+        AppState::new(
+            KeyringClient::default(),
+            MockDaoInterface::default(),
+            InvoiceRegistry::new(),
+            SwapsExecutor::default(),
+            HashMap::new(),
+            asset_decimals_map,
+            payments_config,
+            shop_config,
+            SecretString::from("secret"),
+        )
+    }
+
+    fn create_swap_params(invoice_id: Uuid) -> CreateSwapParams {
+        CreateSwapParams {
+            invoice_id,
+            // Base
+            from_chain_id: 8453,
+            from_asset_id: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".to_string(),
+            from_address: "0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9".to_string(),
+            from_amount_units: 10_000_000,
+            expected_to_amount_units: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_swap_converts_amount_with_destination_decimals() {
+        // Give the destination asset 2 decimals to make the conversion
+        // visible: 100.00 unfilled → 10_000 smallest units (the old
+        // hardcoded 6 would produce 100_000_000)
+        let mut app_state = app_state_with_decimals(HashMap::from([(
+            ChainType::Polygon,
+            HashMap::from([(POLYGON_USDC.to_string(), 2)]),
+        )]));
+
+        let invoice = default_invoice();
+        let invoice_id = invoice.id;
+
+        app_state
+            .dao
+            .expect_get_invoice_with_received_amount_by_id()
+            .returning(move |_| {
+                Ok(Some(
+                    invoice
+                        .clone()
+                        .with_amount(Decimal::ZERO),
+                ))
+            });
+
+        app_state
+            .swaps_executor
+            .expect_create_swap()
+            .withf(|data| data.expected_to_amount_units == 10_000)
+            .returning(move |_| Ok(default_swap(invoice_id)));
+
+        app_state
+            .create_swap(create_swap_params(invoice_id))
+            .await
+            .expect("swap should be created with converted target amount");
+    }
+
+    #[tokio::test]
+    async fn test_create_swap_rejects_unknown_destination_decimals() {
+        let mut app_state = app_state_with_decimals(HashMap::new());
+
+        let invoice = default_invoice();
+        let invoice_id = invoice.id;
+
+        app_state
+            .dao
+            .expect_get_invoice_with_received_amount_by_id()
+            .returning(move |_| {
+                Ok(Some(
+                    invoice
+                        .clone()
+                        .with_amount(Decimal::ZERO),
+                ))
+            });
+
+        let result = app_state
+            .create_swap(create_swap_params(invoice_id))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SwapRequestError::AssetMetadataUnavailable { .. })
+        ));
     }
 }

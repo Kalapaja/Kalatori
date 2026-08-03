@@ -218,6 +218,15 @@ impl<T: ChainConfig> AssetInfoStore<T> {
             .map(|(id, info)| (id.to_string(), info.name.clone()))
             .collect()
     }
+
+    pub async fn asset_decimals_map(&self) -> HashMap<String, u8> {
+        let assets = self.assets.read().await;
+
+        assets
+            .iter()
+            .map(|(id, info)| (id.to_string(), info.decimals))
+            .collect()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

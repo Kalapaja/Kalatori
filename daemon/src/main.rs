@@ -315,6 +315,25 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
             .await,
     );
 
+    // Collect asset decimals per chain (used to convert invoice amounts to
+    // smallest units for swaps)
+    let asset_decimals_map = HashMap::from([
+        (
+            ChainType::PolkadotAssetHub,
+            asset_hub_client
+                .asset_info_store()
+                .asset_decimals_map()
+                .await,
+        ),
+        (
+            ChainType::Polygon,
+            polygon_client
+                .asset_info_store()
+                .asset_decimals_map()
+                .await,
+        ),
+    ]);
+
     let keyring = Keyring::new(secrets_config.seed);
     // Please don't keep keyring_client in this scope, it must be moved in order to
     // keep graceful shutdown working.
@@ -411,6 +430,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         invoice_registry,
         swaps_executor,
         asset_names_map,
+        asset_decimals_map,
         payments_config,
         shop_config,
         secrets_config.api_secret_key,
