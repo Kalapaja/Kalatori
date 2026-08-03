@@ -33,6 +33,7 @@ use super::consts::{
     DEFAULT_LOG_DIRECTIVES,
     DEFAULT_OVERPAYMENT_TOLERANCE,
     DEFAULT_POLKADOT_ASSET_HUB_ENDPOINTS,
+    DEFAULT_POLYGON_CONFIRMATIONS,
     DEFAULT_POLYGON_ENDPOINTS,
     DEFAULT_POLYGON_USDC_ADDRESS,
     DEFAULT_PORT,
@@ -69,8 +70,12 @@ pub enum ChainEndpoint {
     },
 }
 
+fn default_confirmations() -> u64 {
+    DEFAULT_POLYGON_CONFIRMATIONS
+}
+
 // TODO: add some docs for fields, their purpose might be not obvious
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct ChainConfig {
     /// RPC endpoints for the chain node. Can be left empty to use defaults.
     #[serde(default)]
@@ -85,6 +90,23 @@ pub struct ChainConfig {
     /// Allow endpoints which starts from `http://` and `ws://` instead of `https://` and `wss://`
     #[serde(default = "default_allow_insecure_endpoints")]
     pub allow_insecure_endpoints: bool,
+    /// How many blocks an incoming transfer must stay on-chain before it's
+    /// treated as received. Only used for chains with probabilistic finality
+    /// (Polygon); Asset Hub tracks finalized blocks and ignores this. Set to 0
+    /// to act on transfers as soon as the next block arrives.
+    #[serde(default = "default_confirmations")]
+    pub confirmations: u64,
+}
+
+impl Default for ChainConfig {
+    fn default() -> Self {
+        Self {
+            endpoints: Vec::new(),
+            assets: Vec::new(),
+            allow_insecure_endpoints: DEFAULT_ALLOW_INSECURE_ENDPOINTS,
+            confirmations: DEFAULT_POLYGON_CONFIRMATIONS,
+        }
+    }
 }
 
 impl ChainConfig {

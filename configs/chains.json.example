@@ -10,7 +10,8 @@
       "endpoints": [
         "wss://polygon-bor-rpc.publicnode.com"
       ],
-      "allow_insecure_endpoints": true
+      "allow_insecure_endpoints": true,
+      "confirmations": 12
     }
   }
 }

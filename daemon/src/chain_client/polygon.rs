@@ -86,6 +86,81 @@ use pimlico_client::{
 
 const WS_MESSAGES_TIMEOUT_DURATION: Duration = Duration::from_secs(10);
 
+/// A decoded Transfer event waiting to become `confirmations` blocks deep.
+struct PendingTransfer {
+    transaction_hash: TxHash,
+    log_index: u64,
+    transfer: ChainTransfer<PolygonChainConfig>,
+}
+
+/// Buffers Transfer events until they are buried under enough blocks, dropping
+/// entries whose logs are reorged away (`removed: true`) in the meantime.
+#[derive(Default)]
+struct ConfirmationBuffer {
+    pending: std::collections::BTreeMap<u64, Vec<PendingTransfer>>,
+}
+
+impl ConfirmationBuffer {
+    fn insert(
+        &mut self,
+        block_number: u64,
+        transaction_hash: TxHash,
+        log_index: u64,
+        transfer: ChainTransfer<PolygonChainConfig>,
+    ) {
+        self.pending
+            .entry(block_number)
+            .or_default()
+            .push(PendingTransfer {
+                transaction_hash,
+                log_index,
+                transfer,
+            });
+    }
+
+    /// Drops a reorged-away log from the buffer. Returns `false` if no matching
+    /// entry was pending — either it was never seen or it has already been
+    /// released past the confirmation depth.
+    fn remove(
+        &mut self,
+        transaction_hash: TxHash,
+        log_index: u64,
+    ) -> bool {
+        let mut removed = false;
+
+        self.pending.retain(|_, transfers| {
+            let len_before = transfers.len();
+            transfers.retain(|pending| {
+                !(pending.transaction_hash == transaction_hash && pending.log_index == log_index)
+            });
+            removed |= transfers.len() != len_before;
+            !transfers.is_empty()
+        });
+
+        removed
+    }
+
+    /// Releases every transfer that is at least `confirmations` blocks below
+    /// `latest_block`, in block order.
+    fn take_confirmed(
+        &mut self,
+        latest_block: u64,
+        confirmations: u64,
+    ) -> Vec<ChainTransfer<PolygonChainConfig>> {
+        let cutoff = latest_block.saturating_sub(confirmations);
+        let still_pending = self
+            .pending
+            .split_off(&cutoff.saturating_add(1));
+        let confirmed = std::mem::replace(&mut self.pending, still_pending);
+
+        confirmed
+            .into_values()
+            .flatten()
+            .map(|pending| pending.transfer)
+            .collect()
+    }
+}
+
 // ============================================================================
 // ERC-20 Interface Definition
 // ============================================================================
@@ -817,6 +892,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             .event_signature(IERC20::Transfer::SIGNATURE_HASH);
 
         let client = self.clone();
+        let confirmations = self.config.confirmations;
 
         // Subscribe to logs
         let subscription = client
@@ -833,13 +909,34 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             })
             .map_err(|_| SubscriptionError::SubscriptionFailed)?;
 
+        // Subscribe to new heads to know how deep pending transfers are buried
+        let blocks_subscription = client
+            .subscription_provider
+            .subscribe_blocks()
+            .await
+            .inspect_err(|e| {
+                tracing::debug!(
+                    error.category = CHAIN_CLIENT,
+                    error.operation = "subscribe_transfers",
+                    error.source = ?e,
+                    "Failed to subscribe to new heads"
+                );
+            })
+            .map_err(|_| SubscriptionError::SubscriptionFailed)?;
+
         tracing::info!(
             asset_count = asset_ids.len(),
+            confirmations,
             "Subscribed to ERC-20 Transfer events"
         );
 
         let stream = async_stream::try_stream! {
             let mut sub = subscription.into_stream();
+            let mut heads = blocks_subscription.into_stream();
+            // NOTE: pending (not yet confirmed) transfers are lost when the
+            // subscription is recreated; the balance checker is the safety net
+            // for transfers missed between subscriptions.
+            let mut buffer = ConfirmationBuffer::default();
 
             loop {
                 tokio::select! {
@@ -848,6 +945,35 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                             tracing::warn!("Polygon subscription task received None, probably ws connection has been closed");
                             break
                         };
+
+                        let (Some(block_number), Some(transaction_hash), Some(log_index)) =
+                            (log.block_number, log.transaction_hash, log.log_index)
+                        else {
+                            tracing::warn!(
+                                ?log,
+                                "Transfer log without block number, transaction hash or log index, skipping"
+                            );
+                            continue
+                        };
+
+                        if log.removed {
+                            if buffer.remove(transaction_hash, log_index) {
+                                tracing::warn!(
+                                    %transaction_hash,
+                                    log_index,
+                                    block_number,
+                                    "Transfer log has been reorged away before reaching confirmation depth, dropped"
+                                );
+                            } else {
+                                tracing::error!(
+                                    %transaction_hash,
+                                    log_index,
+                                    block_number,
+                                    "Reorged Transfer log wasn't pending — a transfer released past the configured confirmation depth may have been reverted, manual reconciliation required"
+                                );
+                            }
+                            continue
+                        }
 
                         // Decode Transfer event from log
                         match log.log_decode::<IERC20::Transfer>() {
@@ -860,9 +986,10 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                                             to = %transfer.recipient,
                                             amount = %transfer.amount,
                                             asset = %transfer.asset_name,
-                                            "Detected ERC-20 transfer"
+                                            block_number,
+                                            "Detected ERC-20 transfer, waiting for confirmations"
                                         );
-                                        yield vec![transfer];
+                                        buffer.insert(block_number, transaction_hash, log_index, transfer);
                                     },
                                     Err(e) => {
                                         tracing::warn!(
@@ -880,6 +1007,23 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                                 );
                                 break
                             },
+                        }
+                    },
+                    head = heads.next() => {
+                        let Some(head) = head else {
+                            tracing::warn!("Polygon heads subscription received None, probably ws connection has been closed");
+                            break
+                        };
+
+                        let confirmed = buffer.take_confirmed(head.number, confirmations);
+
+                        if !confirmed.is_empty() {
+                            tracing::trace!(
+                                latest_block = head.number,
+                                transfers = confirmed.len(),
+                                "Releasing confirmed ERC-20 transfers"
+                            );
+                            yield confirmed;
                         }
                     },
                     () = tokio::time::sleep(WS_MESSAGES_TIMEOUT_DURATION) => {
@@ -1299,5 +1443,111 @@ mod tests {
         // Convert back
         let back = decimal_to_u256(decimal, 6);
         assert_eq!(back, value);
+    }
+
+    fn test_transfer(amount: u64) -> ChainTransfer<PolygonChainConfig> {
+        use alloy::primitives::address;
+
+        ChainTransfer {
+            asset_id: address!("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"),
+            asset_name: "USDC".to_string(),
+            amount: Decimal::new(amount.try_into().unwrap(), 6),
+            sender: address!("0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"),
+            recipient: address!("0x0E3Ca7fD040144900AdaA5f9B8917f3933A4F5e9"),
+            transaction_id: "0xdead".to_string(),
+            timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn confirmation_buffer_releases_only_deep_enough_blocks() {
+        let mut buffer = ConfirmationBuffer::default();
+        let tx_a = TxHash::with_last_byte(1);
+        let tx_b = TxHash::with_last_byte(2);
+
+        buffer.insert(100, tx_a, 0, test_transfer(1));
+        buffer.insert(105, tx_b, 3, test_transfer(2));
+
+        // Head 111 with 12 confirmations: nothing is deep enough yet
+        assert!(
+            buffer
+                .take_confirmed(111, 12)
+                .is_empty()
+        );
+
+        // Head 112: block 100 is exactly 12 blocks deep
+        let released = buffer.take_confirmed(112, 12);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].amount, Decimal::new(1, 6));
+
+        // Head 117: block 105 becomes deep enough
+        let released = buffer.take_confirmed(117, 12);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].amount, Decimal::new(2, 6));
+
+        // Nothing left
+        assert!(
+            buffer
+                .take_confirmed(1000, 12)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn confirmation_buffer_zero_confirmations_releases_on_next_head() {
+        let mut buffer = ConfirmationBuffer::default();
+
+        buffer.insert(
+            100,
+            TxHash::with_last_byte(1),
+            0,
+            test_transfer(1),
+        );
+
+        let released = buffer.take_confirmed(100, 0);
+        assert_eq!(released.len(), 1);
+    }
+
+    #[test]
+    fn confirmation_buffer_removes_reorged_logs() {
+        let mut buffer = ConfirmationBuffer::default();
+        let tx_a = TxHash::with_last_byte(1);
+        let tx_b = TxHash::with_last_byte(2);
+
+        buffer.insert(100, tx_a, 0, test_transfer(1));
+        buffer.insert(100, tx_b, 1, test_transfer(2));
+
+        // Reorged log is dropped and never released
+        assert!(buffer.remove(tx_a, 0));
+        let released = buffer.take_confirmed(200, 12);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].amount, Decimal::new(2, 6));
+
+        // Removing an unknown (or already released) log reports false
+        assert!(!buffer.remove(tx_a, 0));
+        assert!(!buffer.remove(tx_b, 1));
+    }
+
+    #[test]
+    fn confirmation_buffer_releases_blocks_in_order() {
+        let mut buffer = ConfirmationBuffer::default();
+
+        buffer.insert(
+            105,
+            TxHash::with_last_byte(2),
+            0,
+            test_transfer(2),
+        );
+        buffer.insert(
+            100,
+            TxHash::with_last_byte(1),
+            0,
+            test_transfer(1),
+        );
+
+        let released = buffer.take_confirmed(200, 12);
+        assert_eq!(released.len(), 2);
+        assert_eq!(released[0].amount, Decimal::new(1, 6));
+        assert_eq!(released[1].amount, Decimal::new(2, 6));
     }
 }
