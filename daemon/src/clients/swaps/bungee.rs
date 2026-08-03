@@ -201,7 +201,9 @@ pub fn default_bungee_raw_transaction() -> BungeeRawTransaction {
                     affiliate_fees: "0x".to_string(),
                     basic_req: BasicRequest {
                         bungee_gateway: "0x6dde7cf4e6a6f53f058bf5d2b4a54afbba11ee54".to_string(),
-                        chain_id: 137,
+                        chains: BungeeRequestChains::SingleChain {
+                            chain_id: 137,
+                        },
                         deadline: 1774897293,
                         input_amount: 1500000,
                         input_token: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f".to_string(),
@@ -1012,7 +1014,9 @@ mod tests {
                             basic_req: BasicRequest {
                                 bungee_gateway: "0x6dde7cf4e6a6f53f058bf5d2b4a54afbba11ee54"
                                     .to_string(),
-                                chain_id: 137,
+                                chains: BungeeRequestChains::SingleChain {
+                                    chain_id: 137,
+                                },
                                 deadline: 1774897293,
                                 input_amount: 1500000,
                                 input_token: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f"
