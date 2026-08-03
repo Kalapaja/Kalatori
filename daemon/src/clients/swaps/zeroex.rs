@@ -311,8 +311,8 @@ impl ZeroExErrorResponse {
 }
 
 // `status` is threaded through because 0x reports the failure kind only via the
-// HTTP status; the error body carries no status field. Note the no-liquidity arm
-// is a documented HTTP 200, so it never reaches the error classification.
+// HTTP status; the error body carries no status field. Note the no-liquidity
+// arm is a documented HTTP 200, so it never reaches the error classification.
 fn into_zero_ex_result<T>(
     response: ZeroExResponse<T>,
     status: reqwest::StatusCode,

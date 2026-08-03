@@ -42,6 +42,22 @@ impl From<SwapsClientError> for SwapsExecutorError {
             } => SwapsExecutorError::ProviderRejected {
                 message,
             },
+            // The provider answered successfully and told us it will not serve
+            // this trade. That is the same class as an explicit rejection — the
+            // requester can act on it (different amount, different token) — so
+            // it must not be reported as an internal failure. These arms carry
+            // no provider text, so supply our own; it is surfaced to the
+            // payment UI verbatim.
+            SwapsClientError::NoRouteAvailable => SwapsExecutorError::ProviderRejected {
+                message: "No swap route is available for this pair right now.".to_string(),
+            },
+            SwapsClientError::NoLiquidity => SwapsExecutorError::ProviderRejected {
+                message: "There is not enough liquidity for this trade right now.".to_string(),
+            },
+            // `UnusableQuote` deliberately stays internal: the provider gave us
+            // a quote we cannot publish (missing gas parameters, unrepresentable
+            // expiry). Nothing the requester does differently would fix it.
+            //
             // Everything else (transport failures, provider 5xx, malformed
             // responses) is an internal failure from the requester's view
             _ => SwapsExecutorError::QuoteRequestFailed,
@@ -306,6 +322,32 @@ mod tests {
         ));
     }
 
+    /// A provider that answers successfully and declines to serve the trade is
+    /// making a rejection, not failing. These arms carry no provider text of
+    /// their own, so the conversion supplies a message that is safe to show the
+    /// payer — the point is that they reach the API as a 422 and not a 500.
+    #[test]
+    fn quote_unavailable_is_a_rejection_not_an_internal_failure() {
+        for error in [
+            SwapsClientError::NoRouteAvailable,
+            SwapsClientError::NoLiquidity,
+        ] {
+            let converted = SwapsExecutorError::from(error.clone());
+
+            let SwapsExecutorError::ProviderRejected {
+                message,
+            } = converted
+            else {
+                panic!("{error:?} must map to ProviderRejected, got {converted:?}")
+            };
+
+            assert!(
+                !message.is_empty(),
+                "{error:?} must carry a message for the payment UI"
+            );
+        }
+    }
+
     /// Transport failures, provider 5xx and malformed responses all reach this
     /// conversion as something other than `ProviderRejected`. None of them are
     /// the requester's fault, so none may surface as a 422 — they have to
@@ -326,6 +368,9 @@ mod tests {
                 from_chain: SwapChainType::Polygon,
                 to_chain: SwapChainType::Ethereum,
             },
+            // The provider answered, but with a quote we cannot publish. The
+            // requester cannot act on that, so it is internal.
+            SwapsClientError::UnusableQuote,
         ];
 
         for error in internal {
