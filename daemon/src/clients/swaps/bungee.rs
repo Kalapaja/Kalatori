@@ -569,12 +569,43 @@ mod tests {
                 .unwrap();
             assert!(route.approval_data.is_none());
 
-            let quote = SwapQuote::from(route);
+            let quote = SwapQuote::try_from(route).unwrap();
             let RawSwapDetails::Bungee(details) = quote.quote_details else {
                 panic!("expected Bungee quote details");
             };
             assert!(details.approval_data.is_none());
         }
+    }
+
+    #[test]
+    fn test_quote_response_tolerates_null_sign_typed_data() {
+        // Bungee's OpenAPI spec marks `signTypedData` nullable and its own
+        // `onchainExample` returns null for this endpoint: an on-chain auto
+        // route (`userOp: "tx"`) rather than a Permit2 one. This integration
+        // can only execute the Permit2 shape, so this must degrade to a typed
+        // "no route" — not the deserialization failure that produced the blank
+        // 500 in the 0.9.3 incident.
+        //
+        // Note `#[serde(default)]` on `autoRoute` does not cover this: a
+        // default fires only for an absent key, never a present-but-null value.
+        let raw = QUOTE_WITHOUT_APPROVAL_DATA.replace(
+            "\"signTypedData\": {",
+            "\"signTypedData\": null, \"unusedSignTypedData\": {",
+        );
+
+        let response = serde_json::from_str::<BungeeApiResponse<QuoteResponse>>(&raw)
+            .expect("null signTypedData must still deserialize");
+        let route = response
+            .result
+            .unwrap()
+            .into_auto_route()
+            .expect("a route object is present, so this is not a no-route response");
+        assert!(route.sign_typed_data.is_none());
+
+        assert!(matches!(
+            SwapQuote::try_from(route),
+            Err(SwapsClientError::NoRouteAvailable)
+        ));
     }
 
     #[test]

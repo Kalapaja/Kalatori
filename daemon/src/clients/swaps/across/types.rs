@@ -14,10 +14,15 @@ use crate::types::{
     SwapExecutorType,
     SwapQuote,
 };
+use crate::utils::logging::{
+    category,
+    operation,
+};
 
 use super::super::{
     ExecutorSwapStatus,
     RawSwapDetails,
+    SwapsClientError,
 };
 use super::AcrossQuoteDetails;
 
@@ -147,21 +152,48 @@ pub struct SwapTransaction {
     pub max_priority_fee_per_gas: u128,
 }
 
-impl From<SwapTransactionInternal> for SwapTransaction {
-    fn from(value: SwapTransactionInternal) -> Self {
-        Self {
+impl TryFrom<SwapTransactionInternal> for SwapTransaction {
+    type Error = SwapsClientError;
+
+    fn try_from(value: SwapTransactionInternal) -> Result<Self, Self::Error> {
+        // `value` genuinely defaults to zero — Across omits the key for
+        // zero-value (ERC-20) transfers and documents `value ? BigInt(v) : 0n`
+        // as the caller's handling.
+        //
+        // The gas parameters do not: Across documents them as omit-and-estimate
+        // (`gas ? BigInt(gas) : undefined`), and Kassette submits them
+        // unguarded via `BigInt(swapTx.gas)`. Substituting `0` would publish a
+        // transaction with a zero gas limit and zero fee caps, which cannot be
+        // mined; omitting the field would throw in the payer's browser. Reject
+        // the quote instead of handing over either. Once Kassette accepts
+        // absent gas (Kalapaja/Kassette#49) these can be passed through as
+        // optional instead of rejected.
+        let (Some(gas), Some(max_fee_per_gas), Some(max_priority_fee_per_gas)) = (
+            value.gas,
+            value.max_fee_per_gas,
+            value.max_priority_fee_per_gas,
+        ) else {
+            tracing::warn!(
+                error.category = category::SWAPS_CLIENT,
+                error.operation = operation::GET_QUOTE,
+                gas = ?value.gas,
+                max_fee_per_gas = ?value.max_fee_per_gas,
+                max_priority_fee_per_gas = ?value.max_priority_fee_per_gas,
+                "Across quote is missing gas parameters, rejecting"
+            );
+
+            return Err(SwapsClientError::UnusableQuote)
+        };
+
+        Ok(Self {
             chain_id: value.chain_id,
             contract_address: value.to,
             data: value.data,
             value: value.value.unwrap_or_default(),
-            gas: value.gas.unwrap_or_default(),
-            max_fee_per_gas: value
-                .max_fee_per_gas
-                .unwrap_or_default(),
-            max_priority_fee_per_gas: value
-                .max_priority_fee_per_gas
-                .unwrap_or_default(),
-        }
+            gas,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        })
     }
 }
 
@@ -176,9 +208,10 @@ pub struct SwapApprovalResponse {
     pub max_input_amount: u128,
     #[serde_as(as = "DisplayFromStr")]
     pub expected_output_amount: u128,
-    // Across sends an explicit `"approvalTxns": null` (not an absent key) when
-    // the payer already holds sufficient allowance; a bare `Vec` +
-    // `#[serde(default)]` rejects that null (production incident 2026-08-03).
+    // Across's docs describe the no-approval-needed case as an empty array and
+    // its own examples omit the key, but production responses on 2026-08-03
+    // carried an explicit `"approvalTxns": null`, which a bare `Vec` +
+    // `#[serde(default)]` rejects. Accept all three shapes.
     #[serde(default)]
     pub approval_txns: Option<Vec<ApprovalTransaction>>,
     pub swap_tx: SwapTransactionInternal,
@@ -186,24 +219,39 @@ pub struct SwapApprovalResponse {
     pub quote_expiry_timestamp: i64,
 }
 
-impl From<SwapApprovalResponse> for SwapQuote {
-    fn from(value: SwapApprovalResponse) -> Self {
+impl TryFrom<SwapApprovalResponse> for SwapQuote {
+    type Error = SwapsClientError;
+
+    fn try_from(value: SwapApprovalResponse) -> Result<Self, Self::Error> {
         let details = AcrossQuoteDetails {
-            transaction: value.swap_tx.into(),
+            transaction: value.swap_tx.try_into()?,
             approval_transactions: value.approval_txns.unwrap_or_default(),
         };
 
-        Self {
+        // Provider-controlled timestamp: any `i64` deserializes, but only a
+        // subset is representable, and `None` here used to panic the daemon.
+        let valid_till =
+            DateTime::from_timestamp_secs(value.quote_expiry_timestamp).ok_or_else(|| {
+                tracing::warn!(
+                    error.category = category::SWAPS_CLIENT,
+                    error.operation = operation::GET_QUOTE,
+                    quote_expiry_timestamp = value.quote_expiry_timestamp,
+                    "Across quote expiry is not a representable timestamp, rejecting"
+                );
+
+                SwapsClientError::UnusableQuote
+            })?;
+
+        Ok(Self {
             swap_executor: SwapExecutorType::Across,
             id: value.id,
             estimated_to_amount_units: value.expected_output_amount,
             // TODO: in response there's output token with it's params (decimals), so we can
             // calculate it
             estimated_to_amount: Decimal::ZERO,
-            // TODO: ensure unwrap is safe here?
-            valid_till: DateTime::from_timestamp_secs(value.quote_expiry_timestamp).unwrap(),
+            valid_till,
             quote_details: RawSwapDetails::Across(details),
-        }
+        })
     }
 }
 
@@ -215,19 +263,31 @@ pub struct SwapStatusRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+// Only `status` is read. Every other field is optional on purpose: Across's own
+// `/deposit` example returns `"depositId": null` for non-intent deposit types
+// (CCTP `DepositForBurn`, OFT `OFTSent`) — and Across routes USDC over CCTP —
+// while the early `received` / `deposit-pending` states have no proven contract
+// for the identifiers at all. A required field here breaks status polling for
+// the swap permanently, so nothing that is never read may be required.
 pub struct SwapStatusResponse {
     pub status: AcrossSwapStatus,
     #[expect(dead_code)]
-    pub origin_chain_id: u64,
+    #[serde(default)]
+    pub origin_chain_id: Option<u64>,
     #[expect(dead_code)]
-    pub deposit_id: String,
+    #[serde(default)]
+    pub deposit_id: Option<String>,
     #[expect(dead_code)]
-    pub deposit_txn_ref: String,
+    #[serde(default)]
+    pub deposit_txn_ref: Option<String>,
     #[expect(dead_code)]
+    #[serde(default)]
     pub fill_txn_ref: Option<String>,
     #[expect(dead_code)]
-    pub destination_chain_id: u64,
+    #[serde(default)]
+    pub destination_chain_id: Option<u64>,
     #[expect(dead_code)]
+    #[serde(default)]
     pub deposit_refund_txn_ref: Option<String>,
 }
 

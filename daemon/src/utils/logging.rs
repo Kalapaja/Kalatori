@@ -7,6 +7,8 @@
 pub mod category {
     pub const AUTH: &str = "auth";
     pub const CHAIN_CLIENT: &str = "chain_client";
+    pub const SWAPS_CLIENT: &str = "swaps_client";
+    pub const SWAPS_TRACKER: &str = "swaps_tracker";
 }
 
 /// Log operation constants for identifying specific operations within
@@ -27,4 +29,8 @@ pub mod operation {
     pub const WATCH_TRANSACTION: &str = "watch_transaction";
     pub const BUILD_TRANSFER: &str = "build_transfer";
     pub const SUBSCRIBE_TRANSFERS: &str = "subscribe_transfers";
+
+    // Swaps operations
+    pub const GET_QUOTE: &str = "get_quote";
+    pub const RELOAD_PENDING_SWAPS: &str = "reload_pending_swaps";
 }

@@ -38,6 +38,10 @@ use crate::types::{
     SwapDetails,
     SwapExecutorType,
 };
+use crate::utils::logging::{
+    category,
+    operation,
+};
 
 use super::{
     ExecutorSwapStatus,
@@ -91,17 +95,35 @@ pub struct RawTransactionData {
     value: u128,
 }
 
-impl From<ZeroExTransaction> for RawTransactionData {
-    fn from(value: ZeroExTransaction) -> Self {
-        Self {
+impl TryFrom<ZeroExTransaction> for RawTransactionData {
+    type Error = SwapsClientError;
+
+    fn try_from(value: ZeroExTransaction) -> Result<Self, Self::Error> {
+        // 0x documents `transaction.gas` as nullable when it cannot estimate at
+        // quote time. It is not safe to substitute `0`: this transaction is
+        // handed to the payer's wallet, and Kassette submits it unguarded via
+        // `BigInt(rawTx.gas)`, so `0` becomes a zero-gas-limit transaction that
+        // cannot be mined. Omitting the key instead throws in the browser.
+        // Neither is publishable, so reject the quote. Once Kassette accepts
+        // absent gas (Kalapaja/Kassette#49) this can be passed through as
+        // optional instead of rejected.
+        let Some(gas) = value.gas else {
+            tracing::warn!(
+                error.category = category::SWAPS_CLIENT,
+                error.operation = operation::GET_QUOTE,
+                "0x quote has no gas estimate, rejecting"
+            );
+
+            return Err(SwapsClientError::UnusableQuote)
+        };
+
+        Ok(Self {
             to: value.to,
             data: value.data,
-            // This transaction is returned to the frontend wallet, which
-            // re-estimates gas before submission.
-            gas: value.gas.unwrap_or_default(),
+            gas,
             gas_price: value.gas_price,
             value: value.value,
-        }
+        })
     }
 }
 
@@ -299,7 +321,8 @@ fn into_zero_ex_result<T>(
         ZeroExResponse::Ok(response) => Ok(response),
         ZeroExResponse::NoLiquidity(response) => {
             tracing::debug!(
-                liquidity_available = response.liquidity_available,
+                error.category = category::SWAPS_CLIENT,
+                error.operation = operation::GET_QUOTE,
                 zid = %response.zid,
                 "0x quote has no liquidity"
             );
@@ -805,13 +828,14 @@ mod tests {
     }"#;
 
     #[test]
-    fn test_full_quote_tolerates_null_or_absent_allowance_target_and_gas() {
+    fn test_full_quote_tolerates_null_or_absent_allowance_target() {
+        // 0x documents `allowanceTarget` as nullable for native-asset sells —
+        // every native-POL payment — and the daemon maps native to the
+        // 0xEeee… sentinel, so this arm is reached in production.
         for raw in [
-            FULL_QUOTE_WITH_NULLABLE_FIELDS.to_string(),
-            FULL_QUOTE_WITH_NULLABLE_FIELDS.replace("\"gas\": null,", ""),
-            FULL_QUOTE_WITH_NULLABLE_FIELDS.replace("\"allowanceTarget\": null,", ""),
+            FULL_QUOTE_WITH_NULLABLE_FIELDS.replace("\"gas\": null,", "\"gas\": \"210000\","),
             FULL_QUOTE_WITH_NULLABLE_FIELDS
-                .replace("\"gas\": null,", "")
+                .replace("\"gas\": null,", "\"gas\": \"210000\",")
                 .replace("\"allowanceTarget\": null,", ""),
         ] {
             let response =
@@ -820,15 +844,59 @@ mod tests {
                 panic!("a full liquid quote must parse as the success arm");
             };
             assert!(response.allowance_target.is_none());
-            assert!(response.transaction.gas.is_none());
 
-            let quote = SwapQuote::from(response);
+            let quote = SwapQuote::try_from(response).unwrap();
             let RawSwapDetails::ZeroEx(details) = quote.quote_details else {
                 panic!("expected 0x quote details");
             };
             assert!(details.allowance_target.is_none());
-            assert_eq!(details.raw_transaction.gas, 0);
+            assert_eq!(details.raw_transaction.gas, 210_000);
         }
+    }
+
+    #[test]
+    fn test_full_quote_parses_but_rejects_missing_gas() {
+        // `transaction.gas` is nullable when 0x cannot estimate at quote time.
+        // The response must still parse, but the quote must not be published:
+        // Kassette submits `BigInt(rawTx.gas)` unguarded, so a substituted 0
+        // becomes a zero-gas-limit transaction that cannot be mined.
+        for raw in [
+            FULL_QUOTE_WITH_NULLABLE_FIELDS.to_string(),
+            FULL_QUOTE_WITH_NULLABLE_FIELDS.replace("\"gas\": null,", ""),
+        ] {
+            let response =
+                serde_json::from_str::<ZeroExResponse<ZeroExGetQuoteResponse>>(&raw).unwrap();
+            let ZeroExResponse::Ok(response) = response else {
+                panic!("a liquid quote must parse as the success arm even without gas");
+            };
+            assert!(response.transaction.gas.is_none());
+
+            assert!(matches!(
+                SwapQuote::try_from(response),
+                Err(SwapsClientError::UnusableQuote)
+            ));
+        }
+    }
+
+    #[test]
+    fn test_liquid_quote_never_falls_through_to_the_no_liquidity_arm() {
+        // Untagged matching is first-successful-arm-wins over field *shape*, so
+        // without a value check on `liquidityAvailable` any successful quote
+        // that failed the `Ok` arm for an unrelated reason (here: a nullable
+        // field 0x does not currently document as nullable) would be reported
+        // to the customer as "no liquidity" — a plausible-looking business
+        // answer standing in for a loud parse error.
+        let raw = FULL_QUOTE_WITH_NULLABLE_FIELDS.replace(
+            "\"gasPrice\": \"1\",",
+            "\"gasPrice\": null,",
+        );
+
+        let response = serde_json::from_str::<ZeroExResponse<ZeroExGetQuoteResponse>>(&raw);
+
+        assert!(
+            response.is_err(),
+            "a liquidityAvailable:true payload must not match the NoLiquidity arm"
+        );
     }
 
     #[test]

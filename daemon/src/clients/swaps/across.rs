@@ -280,7 +280,7 @@ mod tests {
         };
         assert!(parsed.approval_txns.is_none());
 
-        let quote = SwapQuote::from(parsed);
+        let quote = SwapQuote::try_from(parsed).unwrap();
         let RawSwapDetails::Across(details) = quote.quote_details else {
             panic!("expected Across quote details");
         };
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_approval_response_tolerates_null_or_absent_transaction_fees() {
+    fn test_swap_approval_response_parses_but_rejects_missing_gas_parameters() {
         for raw in [
             r#"{
                 "inputAmount": "1",
@@ -345,36 +345,41 @@ mod tests {
                     .is_none()
             );
 
-            let quote = SwapQuote::from(parsed);
-            let RawSwapDetails::Across(details) = quote.quote_details else {
-                panic!("expected Across quote details");
-            };
-            assert_eq!(details.transaction.value, 0);
-            assert_eq!(details.transaction.gas, 0);
-            assert_eq!(details.transaction.max_fee_per_gas, 0);
-            assert_eq!(
-                details
-                    .transaction
-                    .max_priority_fee_per_gas,
-                0
-            );
+            // Parsing must survive the nulls — but a quote with no gas
+            // parameters is not executable, and substituting 0 would publish a
+            // transaction that cannot be mined, so the conversion rejects it.
+            assert!(matches!(
+                SwapQuote::try_from(parsed),
+                Err(SwapsClientError::UnusableQuote)
+            ));
         }
     }
 
     #[test]
     fn test_across_status_growth_degrades_safely() {
-        for (status, expected) in [
-            ("received", ExecutorSwapStatus::Pending),
+        // The variant is asserted alongside the mapping on purpose: asserting
+        // only the `ExecutorSwapStatus` would stay green if the explicit
+        // `Received`/`DepositPending` variants were deleted, because
+        // `#[serde(other)] Unknown` also maps to `Pending`.
+        for (status, expected_variant, expected) in [
+            (
+                "received",
+                AcrossSwapStatus::Received,
+                ExecutorSwapStatus::Pending,
+            ),
             (
                 "deposit-pending",
+                AcrossSwapStatus::DepositPending,
                 ExecutorSwapStatus::Pending,
             ),
             (
                 "deposit-failed",
+                AcrossSwapStatus::DepositFailed,
                 ExecutorSwapStatus::Failed,
             ),
             (
                 "future-provider-status",
+                AcrossSwapStatus::Unknown,
                 ExecutorSwapStatus::Pending,
             ),
         ] {
@@ -391,11 +396,42 @@ mod tests {
             );
             let response = serde_json::from_str::<SwapStatusResponse>(&raw).unwrap();
 
+            assert_eq!(response.status, expected_variant);
             assert_eq!(
                 ExecutorSwapStatus::from(response.status),
                 expected
             );
         }
+    }
+
+    #[test]
+    fn test_status_response_tolerates_null_identifiers() {
+        // Across returns `"depositId": null` for CCTP/OFT deposits (it routes
+        // USDC over CCTP), and the early states have no proven contract for the
+        // other identifiers. A required field here would break status polling
+        // for that swap permanently.
+        let raw = r#"{
+            "status": "pending",
+            "originChainId": null,
+            "depositId": null,
+            "depositTxnRef": null,
+            "fillTxnRef": null,
+            "destinationChainId": null,
+            "depositRefundTxnRef": null
+        }"#;
+        let response = serde_json::from_str::<SwapStatusResponse>(raw).unwrap();
+        assert_eq!(
+            response.status,
+            AcrossSwapStatus::Pending
+        );
+
+        // Absent keys must work too.
+        let response =
+            serde_json::from_str::<SwapStatusResponse>(r#"{"status":"filled"}"#).unwrap();
+        assert_eq!(
+            response.status,
+            AcrossSwapStatus::Filled
+        );
     }
 
     #[test]

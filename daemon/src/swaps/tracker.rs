@@ -20,12 +20,17 @@ use crate::types::{
     Swap,
     TransactionOriginVariant,
 };
+use crate::utils::logging::{
+    category,
+    operation,
+};
 
 use super::SwapsClients;
 
 const SWAPS_EXECUTOR_API_POLLING_INTERVAL_MILLIS: u64 = 3000;
 const SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS: u64 = 100;
 const SWAPS_EXECUTOR_PENDING_RELOAD_RETRY_MILLIS: u64 = 5000;
+const SWAPS_EXECUTOR_PENDING_RELOAD_MAX_ATTEMPTS: u32 = 12;
 
 struct TrackedSwaps {
     swaps: HashMap<Uuid, Swap>,
@@ -319,26 +324,42 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
     ) {
         tracing::info!("Starting swaps tracker");
 
-        let mut api_polling_interval = interval(Duration::from_millis(
-            SWAPS_EXECUTOR_API_POLLING_INTERVAL_MILLIS,
-        ));
+        // Pending swaps left over from a service reload must be reloaded before
+        // anything else: without them the daemon accepts new swaps while
+        // silently never monitoring the ones already submitted.
+        //
+        // A transient database error should not take the daemon down, so retry.
+        // But the retry must be bounded: the previous `unwrap()` here reached
+        // the global panic hook installed in `main`, which cancels the shutdown
+        // token and stops the daemon, so an unbounded retry would *weaken* the
+        // failure handling — a permanently undecodable row would leave the API
+        // serving forever with no tracker and no operator signal. On exhaustion,
+        // fall back to that same shutdown path.
+        let mut pending_swaps = None;
 
-        let mut database_polling_interval = interval(Duration::from_millis(
-            SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS,
-        ));
+        for attempt in 1..=SWAPS_EXECUTOR_PENDING_RELOAD_MAX_ATTEMPTS {
+            // Race the query itself, not just the backoff: a shutdown requested
+            // while the call is stalled on a connection must not wait it out.
+            let result = tokio::select! {
+                result = self.dao.get_pending_swaps() => result,
+                () = token.cancelled() => return,
+            };
 
-        // Pending swaps left over from a service reload must be reloaded: a
-        // panic here would kill only this spawned task while the daemon keeps
-        // serving, silently abandoning every submitted swap. Retry until the
-        // database answers (or shutdown is requested).
-        let pending_swaps = loop {
-            match self.dao.get_pending_swaps().await {
-                Ok(swaps) => break swaps,
+            match result {
+                Ok(swaps) => {
+                    pending_swaps = Some(swaps);
+                    break
+                },
                 Err(e) => {
                     tracing::warn!(
+                        error.category = category::SWAPS_TRACKER,
+                        error.operation = operation::RELOAD_PENDING_SWAPS,
                         error.source = ?e,
+                        %attempt,
+                        max_attempts = SWAPS_EXECUTOR_PENDING_RELOAD_MAX_ATTEMPTS,
                         "Failed to load pending swaps on startup, retrying"
                     );
+
                     tokio::select! {
                         () = token.cancelled() => return,
                         () = tokio::time::sleep(Duration::from_millis(
@@ -347,9 +368,35 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                     }
                 },
             }
+        }
+
+        let Some(pending_swaps) = pending_swaps else {
+            tracing::error!(
+                error.category = category::SWAPS_TRACKER,
+                error.operation = operation::RELOAD_PENDING_SWAPS,
+                max_attempts = SWAPS_EXECUTOR_PENDING_RELOAD_MAX_ATTEMPTS,
+                "Could not load pending swaps, shutting down rather than \
+                 serving without a swaps tracker"
+            );
+
+            token.cancel();
+
+            return
         };
 
         self.store.add_swaps(pending_swaps);
+
+        // Created after the reload on purpose: tokio's default missed-tick
+        // behaviour is `Burst`, so intervals built before a slow retry would
+        // fire their accumulated backlog back-to-back and hammer both SQLite
+        // and the provider APIs on the way out of startup.
+        let mut api_polling_interval = interval(Duration::from_millis(
+            SWAPS_EXECUTOR_API_POLLING_INTERVAL_MILLIS,
+        ));
+
+        let mut database_polling_interval = interval(Duration::from_millis(
+            SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS,
+        ));
 
         loop {
             tokio::select! {
