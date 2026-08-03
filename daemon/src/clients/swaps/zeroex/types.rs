@@ -265,7 +265,6 @@ pub struct ZeroExErrorResponseData {
 pub struct ZeroExErrorResponse {
     pub name: String,
     pub message: String,
-    #[expect(dead_code)]
     pub data: ZeroExErrorResponseData,
 }
 
