@@ -8,6 +8,10 @@ use governor::{
     Quota,
     RateLimiter,
 };
+use secrecy::{
+    ExposeSecret,
+    SecretString,
+};
 use uuid::Uuid;
 
 use crate::configs::EtherscanClientConfig;
@@ -50,7 +54,7 @@ impl From<reqwest::Error> for EtherscanClientError {
 #[derive(Clone)]
 pub struct EtherscanClient {
     client: reqwest::Client,
-    api_key: String,
+    api_key: SecretString,
     rate_limiter: Arc<DefaultDirectRateLimiter>,
 }
 
@@ -82,7 +86,7 @@ impl EtherscanClient {
             chain_id,
             contract_address,
             address,
-            api_key: &self.api_key,
+            api_key: self.api_key.expose_secret(),
         };
 
         let raw_response = self
