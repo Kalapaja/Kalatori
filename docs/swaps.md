@@ -102,7 +102,9 @@ This supersedes the earlier decision (same day) to reject such quotes with
 converted the fields unguarded via `BigInt(swapTx.gas)`, which threw in the
 payer's browser when a field was absent. Kassette#50 fixed that half; this is
 the other half. **The relaxed daemon must not ship ahead of a Kassette build
-containing #50** — an older Kassette still throws on an omitted key.
+containing #50** — an older Kassette still throws on an omitted key. Satisfied
+as of 0.9.4, which pins front-end 0.1.0 (`front-end.mk`); do not lower that pin
+below 0.1.0 while the daemon omits gas keys.
 
 `UnusableQuote` itself remains, for quote expiry timestamps outside the
 representable range (`daemon/src/clients/swaps/across/types.rs`,
