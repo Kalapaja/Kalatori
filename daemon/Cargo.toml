@@ -67,7 +67,7 @@ subxt = "0.44"
 subxt-signer = "0.44"
 
 # Polygon chain
-alloy = { version = "1.8", features = [
+alloy = { version = "2.0", features = [
     "provider-ws",
     "rpc-types-eth",
     "contract",
