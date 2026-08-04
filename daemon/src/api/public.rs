@@ -28,7 +28,11 @@ use crate::types::{
     SwapSignatureParams,
 };
 
-use super::ApiState;
+use std::sync::Arc;
+
+use crate::dao::DaoInterface;
+use crate::state::AppState;
+
 use super::utils::{
     ApiResult,
     AppJson,
@@ -40,7 +44,9 @@ struct Params {
     invoice_id: Uuid,
 }
 
-async fn index(ExtractState(state): ExtractState<ApiState>) -> Html<String> {
+async fn index<D: DaoInterface + 'static>(
+    ExtractState(state): ExtractState<Arc<AppState<D>>>
+) -> Html<String> {
     let raw_html = include_str!("../../../static/index.html");
     let shop_meta = state.get_shop_meta();
 
@@ -74,8 +80,8 @@ async fn index(ExtractState(state): ExtractState<ApiState>) -> Html<String> {
     Html(html)
 }
 
-async fn invoice(
-    ExtractState(state): ExtractState<ApiState>,
+async fn invoice<D: DaoInterface + 'static>(
+    ExtractState(state): ExtractState<Arc<AppState<D>>>,
     Query(payload): Query<Params>,
 ) -> Response {
     let invoice = state
@@ -107,12 +113,14 @@ async fn invoice(
     }
 }
 
-async fn shop_meta(ExtractState(state): ExtractState<ApiState>) -> SuccessWrapper<ShopMetaConfig> {
+async fn shop_meta<D: DaoInterface + 'static>(
+    ExtractState(state): ExtractState<Arc<AppState<D>>>
+) -> SuccessWrapper<ShopMetaConfig> {
     state.get_shop_meta().into()
 }
 
-async fn create_front_end_swap(
-    ExtractState(state): ExtractState<ApiState>,
+async fn create_front_end_swap<D: DaoInterface + 'static>(
+    ExtractState(state): ExtractState<Arc<AppState<D>>>,
     AppJson(data): AppJson<CreateFrontEndSwapParams>,
 ) -> ApiResult<CreateFrontEndSwapParams, DaoSwapError> {
     let result = state
@@ -130,8 +138,8 @@ async fn create_front_end_swap(
     Ok(response.into())
 }
 
-async fn create_swap(
-    ExtractState(state): ExtractState<ApiState>,
+async fn create_swap<D: DaoInterface + 'static>(
+    ExtractState(state): ExtractState<Arc<AppState<D>>>,
     AppJson(data): AppJson<CreateSwapParams>,
 ) -> ApiResult<PublicSwap, SwapRequestError> {
     let result = state
@@ -142,8 +150,8 @@ async fn create_swap(
     Ok(result.into())
 }
 
-async fn update_swap_submitted(
-    ExtractState(state): ExtractState<ApiState>,
+async fn update_swap_submitted<D: DaoInterface + 'static>(
+    ExtractState(state): ExtractState<Arc<AppState<D>>>,
     AppJson(data): AppJson<SubmittedSwapParams>,
 ) -> ApiResult<PublicSwap, SwapRequestError> {
     let result = state
@@ -154,8 +162,8 @@ async fn update_swap_submitted(
     Ok(result.into())
 }
 
-async fn submit_with_signature(
-    ExtractState(state): ExtractState<ApiState>,
+async fn submit_with_signature<D: DaoInterface + 'static>(
+    ExtractState(state): ExtractState<Arc<AppState<D>>>,
     AppJson(data): AppJson<SwapSignatureParams>,
 ) -> ApiResult<PublicSwap, SwapRequestError> {
     let result = state
@@ -166,7 +174,7 @@ async fn submit_with_signature(
     Ok(result.into())
 }
 
-pub fn routes() -> axum::Router<ApiState> {
+pub fn routes<D: DaoInterface + 'static>() -> axum::Router<Arc<AppState<D>>> {
     axum::Router::new()
         .route("/", axum::routing::get(index))
         .route("/invoice", axum::routing::get(invoice))
@@ -191,4 +199,176 @@ pub fn routes() -> axum::Router<ApiState> {
             "/assets",
             ServeDir::new("static/assets"),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use axum::body::Body;
+    use axum::http::{
+        Request,
+        StatusCode,
+    };
+    use secrecy::SecretString;
+    use tower::ServiceExt as _;
+
+    use crate::chain::InvoiceRegistry;
+    use crate::chain_client::KeyringClient;
+    use crate::configs::{
+        PaymentsConfig,
+        ShopConfig,
+        ShopMetaConfig,
+    };
+    use crate::dao::MockDaoInterface;
+    use crate::swaps::{
+        SwapsExecutor,
+        SwapsExecutorError,
+    };
+    use crate::types::{
+        ChainType,
+        DetectedShopPlatform,
+    };
+
+    use super::*;
+
+    const POLYGON_USDC: &str = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
+
+    fn app_state(
+        swaps_executor: SwapsExecutor<MockDaoInterface>
+    ) -> Arc<AppState<MockDaoInterface>> {
+        let payments_config = PaymentsConfig {
+            default_chain: ChainType::Polygon,
+            default_asset_id: HashMap::from([(
+                ChainType::Polygon,
+                POLYGON_USDC.to_string(),
+            )]),
+            invoice_lifetime_millis: 600_000,
+            recipient: HashMap::from([(
+                ChainType::Polygon,
+                "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7".to_string(),
+            )]),
+            payment_url_base: "https://payments.example.com".to_string(),
+            slippage_params: HashMap::new(),
+        };
+
+        let shop_config = ShopConfig {
+            invoices_webhook_url: None,
+            signature_max_age_secs: 300,
+            private_api_base_url: None,
+            meta: ShopMetaConfig {
+                shop_name: "Mega shop".to_string(),
+                shop_url: "mega.shop".to_string(),
+                logo_url: None,
+                reown_project_id: "test".to_string(),
+                ankr_api_token: None,
+            },
+            shop_platform: DetectedShopPlatform::Unknown,
+        };
+
+        Arc::new(AppState::new(
+            KeyringClient::default(),
+            MockDaoInterface::default(),
+            InvoiceRegistry::new(),
+            swaps_executor,
+            HashMap::new(),
+            HashMap::new(),
+            payments_config,
+            shop_config,
+            SecretString::from("secret"),
+        ))
+    }
+
+    /// Drives the real unauthenticated route, not just the layer beneath it.
+    ///
+    /// [#349](https://github.com/Kalapaja/Kalatori/issues/349) was a payer-supplied
+    /// signature reaching `split_once("|").unwrap()` on this endpoint, which
+    /// the panic hook turns into a daemon shutdown. The response has to be
+    /// a 4xx carrying a code the caller can act on — and getting *any*
+    /// response at all is the property under test, since the failure mode
+    /// was no response ever again, from any endpoint.
+    #[tokio::test]
+    async fn a_malformed_signature_gets_a_4xx_from_the_public_route() {
+        let mut swaps_executor = SwapsExecutor::default();
+        swaps_executor
+            .expect_submit_with_signature()
+            .once()
+            .returning(|_| Err(SwapsExecutorError::InvalidSignature));
+
+        let response = routes()
+            .with_state(app_state(swaps_executor))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/swap/signature")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "swap_id": "550e8400-e29b-41d4-a716-446655440000",
+                            "swap_executor": "ZeroExGasless",
+                            // One signature for a quote that needs two: the
+                            // exact payload from the report.
+                            "signature": "0xdeadbeef",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request builds from static parts"),
+            )
+            .await
+            .expect("the router always answers");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("the error body is JSON");
+
+        assert_eq!(
+            json["error"]["code"], "INVALID_SWAP_SIGNATURE",
+            "the caller needs a code it can act on, got {json}"
+        );
+    }
+
+    /// The loser of a concurrent submission gets a 409, not a 400: it is not
+    /// the caller's payload that is wrong, the swap is simply already in
+    /// flight.
+    #[tokio::test]
+    async fn an_already_claimed_swap_gets_a_409_from_the_public_route() {
+        let mut swaps_executor = SwapsExecutor::default();
+        swaps_executor
+            .expect_submit_with_signature()
+            .once()
+            .returning(|_| {
+                Err(SwapsExecutorError::SwapAlreadyClaimed {
+                    current_status: crate::types::SwapStatus::Submitted,
+                })
+            });
+
+        let response = routes()
+            .with_state(app_state(swaps_executor))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/swap/signature")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "swap_id": "550e8400-e29b-41d4-a716-446655440000",
+                            "swap_executor": "ZeroExGasless",
+                            "signature": "0xdead|0xbeef",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request builds from static parts"),
+            )
+            .await
+            .expect("the router always answers");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
 }

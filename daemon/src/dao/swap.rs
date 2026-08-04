@@ -180,10 +180,14 @@ impl crate::api::ApiErrorExt for DaoSwapError {
             DaoSwapError::NotFound {
                 ..
             } => "ENTITY_NOT_FOUND",
+            // A lost claim race and a violated status-machine invariant are
+            // both conflicts, but only the second is a bug. Keeping them
+            // distinguishable matters for logs and metrics: a double submit is
+            // routine, an invariant violation is not.
             DaoSwapError::AlreadyClaimed {
                 ..
-            }
-            | DaoSwapError::StatusConstraintViolation {
+            } => "CONFLICT",
+            DaoSwapError::StatusConstraintViolation {
                 ..
             } => "STATUS_CONSTRAINT_VIOLATION",
         }
@@ -199,8 +203,8 @@ impl crate::api::ApiErrorExt for DaoSwapError {
             } => "RELATED_INVOICE_NOT_FOUND",
             DaoSwapError::AlreadyClaimed {
                 ..
-            }
-            | DaoSwapError::StatusConstraintViolation {
+            } => "SWAP_ALREADY_SUBMITTED",
+            DaoSwapError::StatusConstraintViolation {
                 ..
             } => "SWAP_STATUS_CONSTRAINT_VIOLATION",
             DaoSwapError::DatabaseError => "INTERNAL_SERVER_ERROR",
@@ -217,8 +221,8 @@ impl crate::api::ApiErrorExt for DaoSwapError {
             } => "The related invoice id was not found.",
             DaoSwapError::AlreadyClaimed {
                 ..
-            }
-            | DaoSwapError::StatusConstraintViolation {
+            } => "The swap has already been submitted.",
+            DaoSwapError::StatusConstraintViolation {
                 ..
             } => "The requested status transition is not allowed.",
             DaoSwapError::DatabaseError => "A database error occurred.",

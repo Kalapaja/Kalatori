@@ -101,10 +101,12 @@ impl<D: DaoInterface + 'static> WebhookSender<D> {
         }
     }
 
-    /// Returns `None` if the request cannot be built. This can only happen for
-    /// an invalid webhook URL — which is not validated at startup — or a
-    /// serialization failure, and neither may take the daemon down: the event
-    /// stays undelivered and is retried instead.
+    /// Returns `None` if the request cannot be built or signed. Three causes:
+    /// an invalid webhook URL (not validated at startup), a serialization
+    /// failure, or HMAC signing failing in `add_headers_to_reqwest`. None of
+    /// them may take the daemon down, and an unsigned webhook is worse than a
+    /// late one — the receiver would reject it and the event would be recorded
+    /// as delivered. So the event stays undelivered and is retried instead.
     fn build_request(
         &self,
         url: &str,
