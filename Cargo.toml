@@ -30,6 +30,25 @@ allow_attributes = "deny"
 cargo_common_metadata = "warn"
 cast_possible_truncation = "warn"
 ignored_unit_patterns = "warn"
+
+# --- Panic gate ---
+#
+# The daemon serves unauthenticated `/public` routes, and `set_panic_hook`
+# (daemon/src/utils/shutdown.rs) cancels the shutdown token on *any* panic, in
+# any thread. The hook runs before unwinding, so nothing downstream can contain
+# it: one reachable panic is a remote kill switch for the payment gateway.
+#
+# These lints turn the panic-capable constructs *in our own code* into compile
+# errors. They are not a complete guarantee — see docs/conventions.md ("Panic
+# Gate") for what is and is not covered, and for how to satisfy them.
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
 # Having multiple module layout styles in a project can be confusing. Moreover, `mod.rs` files don't
 # really harmonize with Git as they can be renamed back to self-named modules and Git fundamentally
 # prone to poorly handle the file renaming that can result in their history erasure.

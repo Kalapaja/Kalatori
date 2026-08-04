@@ -5,6 +5,7 @@ use crate::dao::{
 use crate::types::{
     Refund,
     Swap,
+    SwapChainType,
     Transaction,
     TransferDestinationParams,
 };
@@ -15,12 +16,18 @@ pub enum RefundDestinationDetectorError {
     DatabaseError,
     #[error("No available destination found")]
     NoAvailableDestination,
+    /// The sender's chain has no payout-destination representation. Unlike
+    /// `NoAvailableDestination` this is our own modelling gap, not a statement
+    /// about the refund, so it must not become terminal.
+    #[error("No payout destination can be expressed for the sender's chain")]
+    DestinationUnrepresentable,
 }
 
 impl RefundDestinationDetectorError {
     fn is_retriable(&self) -> bool {
         match self {
-            RefundDestinationDetectorError::DatabaseError => true,
+            RefundDestinationDetectorError::DatabaseError
+            | RefundDestinationDetectorError::DestinationUnrepresentable => true,
             RefundDestinationDetectorError::NoAvailableDestination => false,
         }
     }
@@ -149,13 +156,30 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
         // TODO: now we just get the first one, later we'll have to also check them
         // using arkhm API
         if let Some(trans) = transactions.first() {
+            // Asset Hub is a supported settlement chain that simply has no
+            // `SwapChainType` equivalent yet. `NoAvailableDestination` is
+            // non-retriable and would make the refund terminally `Failed`, so
+            // report it as retriable instead: the destination becomes
+            // expressible once Asset Hub payouts are modelled, and until then
+            // an operator can act on the row.
+            let destination_chain =
+                SwapChainType::try_from(trans.transfer_info.chain).map_err(|chain| {
+                    tracing::error!(
+                        %chain,
+                        transaction_id = %trans.id,
+                        "Refund sender is on a chain with no payout destination, leaving the refund for retry"
+                    );
+
+                    RefundDestinationDetectorError::DestinationUnrepresentable
+                })?;
+
             let params = TransferDestinationParams {
                 destination_asset_id: trans.transfer_info.asset_id.clone(),
                 destination_address: trans
                     .transfer_info
                     .source_address
                     .clone(),
-                destination_chain: trans.transfer_info.chain.into(),
+                destination_chain,
             };
 
             return Ok(params)
@@ -460,7 +484,8 @@ mod tests {
                     .transfer_info
                     .source_address
                     .clone(),
-                destination_chain: transaction.transfer_info.chain.into(),
+                destination_chain: SwapChainType::try_from(transaction.transfer_info.chain)
+                    .expect("Polygon is a swap chain"),
                 destination_asset_id: transaction
                     .transfer_info
                     .asset_id
@@ -543,7 +568,8 @@ mod tests {
                     .transfer_info
                     .source_address
                     .clone(),
-                destination_chain: real_transfer.transfer_info.chain.into(),
+                destination_chain: SwapChainType::try_from(real_transfer.transfer_info.chain)
+                    .expect("Polygon is a swap chain"),
                 destination_asset_id: real_transfer
                     .transfer_info
                     .asset_id

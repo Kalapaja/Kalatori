@@ -67,6 +67,10 @@ impl KalatoriClient {
         // unwraps `build()` internally): the timeouts are constant and valid, so
         // this only fails if the TLS backend/resolver can't initialise — a
         // startup-time environment fault, not a money-path condition.
+        #[expect(
+            clippy::expect_used,
+            reason = "construction-time TLS/resolver init; the timeouts are constants, and `new` has no error channel"
+        )]
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
@@ -118,7 +122,12 @@ impl KalatoriClient {
                 .build()?,
         };
 
-        add_headers_to_reqwest(&self.config, &mut request);
+        // `KalatoriHttpMethod` has only GET and POST, and both header values are
+        // ASCII by construction, so signing cannot fail on this path — there is
+        // no error channel here to report it through anyway. Third-party callers
+        // of `add_headers_to_reqwest`, which accepts any `reqwest::Request`, do
+        // need to check the return value.
+        let _signed = add_headers_to_reqwest(&self.config, &mut request);
 
         Ok(request)
     }

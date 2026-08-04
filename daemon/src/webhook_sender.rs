@@ -101,32 +101,42 @@ impl<D: DaoInterface + 'static> WebhookSender<D> {
         }
     }
 
+    /// Returns `None` if the request cannot be built or signed. Three causes:
+    /// an invalid webhook URL (not validated at startup), a serialization
+    /// failure, or HMAC signing failing in `add_headers_to_reqwest`. None of
+    /// them may take the daemon down, and an unsigned webhook is worse than a
+    /// late one — the receiver would reject it and the event would be recorded
+    /// as delivered. So the event stays undelivered and is retried instead.
     fn build_request(
         &self,
         url: &str,
         event: WebhookEvent,
-    ) -> reqwest::Request {
+    ) -> Option<reqwest::Request> {
         let mut request = self
             .client
             .post(url)
             .json(&event.payload)
             .timeout(WEBHOOK_SENDER_REQUEST_TIMEOUT)
             .build()
-            // This can fail only if we have invalid URL or serialization fails.
-            // So we need to check URL on startup. Don't expect serialization failures.
             .inspect_err(|e| {
                 tracing::error!(
                     error.source = ?e,
+                    %url,
                     "Error while building webhook event request"
                 )
             })
-            // TODO: Normally this shouldn't fail at all, but we don't check URL validity on startup
-            // for now
-            .unwrap();
+            .ok()?;
 
-        add_headers_to_reqwest(&self.hmac_config, &mut request);
+        if !add_headers_to_reqwest(&self.hmac_config, &mut request) {
+            tracing::error!(
+                %url,
+                "Could not sign the webhook request, leaving the event undelivered"
+            );
 
-        request
+            return None
+        }
+
+        Some(request)
     }
 
     fn build_future(
@@ -136,7 +146,15 @@ impl<D: DaoInterface + 'static> WebhookSender<D> {
         let event_id = event.id;
 
         if let Some(url) = self.webhook_url.as_ref() {
-            let request = self.build_request(url, event);
+            let Some(request) = self.build_request(url, event) else {
+                // Leave the event undelivered so the next pass retries it.
+                return Box::pin(async move {
+                    SendWebhookResult {
+                        event_id,
+                        is_ok: false,
+                    }
+                })
+            };
 
             Box::pin(send_webhook(
                 self.client.clone(),
@@ -452,7 +470,9 @@ mod tests {
 
         let expected_body_string = event.payload.to_string();
 
-        let result = sender.build_request("http://webhook.example.com", event);
+        let result = sender
+            .build_request("http://webhook.example.com", event)
+            .expect("a valid URL and a serializable payload must build a request");
         assert!(matches!(
             *result.method(),
             reqwest::Method::POST

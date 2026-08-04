@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::dao::error_parsing::parse_update_not_allowed_error;
 use crate::types::{
+    ChainType,
     CreateInvoiceData,
     Invoice,
     InvoiceRow,
@@ -64,6 +65,12 @@ pub enum DaoInvoiceError {
     /// Database operation failed
     #[error("Database error during invoice operation")]
     DatabaseError,
+
+    /// The invoice settled on a chain that has no swap-side equivalent, so a
+    /// payout destination cannot be expressed for it. This is a configuration
+    /// or deployment-history problem, not a database failure.
+    #[error("Chain {chain} cannot be a payout destination")]
+    UnsupportedPayoutChain { chain: ChainType },
 }
 
 impl crate::api::ApiErrorExt for DaoInvoiceError {
@@ -82,7 +89,10 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => "DUPLICATE_ENTITY",
-            DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
+            DaoInvoiceError::UnsupportedPayoutChain {
+                ..
+            }
+            | DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
 
@@ -100,7 +110,10 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => "INVOICE_DUPLICATE_ORDER_ID",
-            DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
+            DaoInvoiceError::UnsupportedPayoutChain {
+                ..
+            }
+            | DaoInvoiceError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
 
@@ -118,6 +131,11 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => "An invoice with the specified order ID already exists.",
+            // The chain is our own configuration state, not something the
+            // caller can act on.
+            DaoInvoiceError::UnsupportedPayoutChain {
+                ..
+            } => "The payout could not be prepared for this invoice's chain.",
             DaoInvoiceError::DatabaseError => "A database error occurred.",
         }
     }
@@ -136,7 +154,10 @@ impl crate::api::ApiErrorExt for DaoInvoiceError {
             DaoInvoiceError::DuplicateOrderId {
                 ..
             } => reqwest::StatusCode::CONFLICT,
-            DaoInvoiceError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            DaoInvoiceError::UnsupportedPayoutChain {
+                ..
+            }
+            | DaoInvoiceError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }

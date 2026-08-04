@@ -47,6 +47,10 @@ fn calculate_hmac(
     query_or_body: &[u8],
     timestamp: &str,
 ) -> Hmac<Sha256> {
+    #[expect(
+        clippy::expect_used,
+        reason = "HMAC accepts a key of any length; `new_from_slice` is infallible for SHA-256"
+    )]
     let mut mac = HmacSha256::new_from_slice(secret_key.expose_secret())
         .expect("HMAC can take key of any size");
 
@@ -107,6 +111,10 @@ pub(crate) fn hmac_from_request_parts(
     ))
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "only fails on a host clock set before 1970 — an operator misconfiguration, not reachable from any request"
+)]
 pub(crate) fn timestamp_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -145,13 +153,19 @@ pub fn compute_webhook_signature(
     const_hex::encode(mac.finalize().into_bytes())
 }
 
+/// Signs `request` in place, returning whether it was actually signed.
+///
+/// Requests with a method other than GET or POST are left unsigned. **Check the
+/// return value** — sending an unsigned request is not a safe default, it just
+/// fails authentication at the far end, and silently doing so would turn a
+/// signing bug into an unexplained 401. Callers should skip or retry instead.
 pub fn add_headers_to_reqwest(
     config: &HmacConfig,
     request: &mut reqwest::Request,
-) {
+) -> bool {
     let timestamp = timestamp_secs().to_string();
 
-    let signature = hmac_from_request_parts(
+    let Some(signature) = hmac_from_request_parts(
         config,
         request.method(),
         request.url().path(),
@@ -161,19 +175,25 @@ pub fn add_headers_to_reqwest(
             .and_then(|b| b.as_bytes())
             .unwrap_or(&[]),
         &timestamp,
-    )
-    .unwrap();
+    ) else {
+        return false
+    };
 
     let encoded_signature = const_hex::encode(signature.finalize().into_bytes());
 
+    let (Ok(timestamp_value), Ok(signature_value)) = (
+        HeaderValue::from_str(&timestamp),
+        HeaderValue::from_str(&encoded_signature),
+    ) else {
+        // Both are ASCII digits / hex by construction, so this is unreachable
+        // in practice; reporting it beats asserting it with a panic.
+        return false
+    };
+
     let headers = request.headers_mut();
 
-    headers.insert(
-        TIMESTAMP_HEADER,
-        HeaderValue::from_str(&timestamp).unwrap(),
-    );
-    headers.insert(
-        SIGNATURE_HEADER,
-        HeaderValue::from_str(&encoded_signature).unwrap(),
-    );
+    headers.insert(TIMESTAMP_HEADER, timestamp_value);
+    headers.insert(SIGNATURE_HEADER, signature_value);
+
+    true
 }

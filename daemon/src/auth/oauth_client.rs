@@ -80,6 +80,10 @@ impl OAuthClient {
                 )
             });
 
+        #[expect(
+            clippy::expect_used,
+            reason = "startup: constant timeout, so this only fails if the TLS backend cannot initialise"
+        )]
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -107,6 +111,10 @@ impl OAuthClient {
 
         let redirect_uri = self.redirect_uri();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "`auth_server_url` is parsed and normalised by `normalize_url` at config load, so appending a path segment still parses"
+        )]
         let mut url = url::Url::parse(&format!(
             "{}/oauth/authorize",
             self.config.auth_server_url
