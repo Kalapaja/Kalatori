@@ -58,9 +58,9 @@ Client interface: `KeyringClient` (mockable via `mockall_double`).
 
 ### `daemon/src/chain/` — Chain Monitoring & Execution
 - **`transfer_tracker.rs`** (`TransfersTracker`): Subscribes to finalized blocks per chain, detects incoming transfers, and notifies `TransactionsRecorder`. Failed subscriptions and streams that end before delivering an event use a cancellation-aware exponential retry delay (1–60 seconds). Retry state resets only after a stream delivers an event; degradation is reported on entry and at most once per minute, with recovery reported separately.
-- **`transactions_recorder.rs`** (`TransactionsRecorder`): Records detected transactions to DB, updates `InvoiceRegistry`
+- **`transactions_recorder.rs`** (`TransactionsRecorder`): Records detected transactions to DB, updates `InvoiceRegistry`. Its transaction-scoped recording path lets Asset Hub balance reconciliation read the persisted received total and write a synthetic adjustment in one SQLite transaction; payout/refund/webhook/status side effects use that same path and the registry changes only after commit.
 - **`executor.rs`** (`TransfersExecutor`): Builds and submits payout transactions for both chains. Single executor instance handles Asset Hub + Polygon.
-- **`invoice_registry.rs`** (`InvoiceRegistry`): In-memory tracking of active invoices and their expected amounts. Thread-safe (internal `RwLock`).
+- **`invoice_registry.rs`** (`InvoiceRegistry`): In-memory tracking of active invoices and their expected amounts. Thread-safe (internal `RwLock`). Invoice-data refreshes update only records that are still present, preserving the received amount; they never reinsert an invoice removed concurrently after reaching a terminal status.
 
 ### `daemon/src/expiration_detector.rs` — ExpirationDetector
 Periodic background task. Checks for expired invoices, handles cleanup and status transitions.
@@ -111,6 +111,7 @@ Both are deterministic: same seed + same invoice params = same payment account.
 1. **Invoice created** via API → AppState derives payment address via Keyring → saves to DB → adds to InvoiceRegistry
 2. **Customer pays** to payment address on-chain
 3. **TransfersTracker** detects incoming transfer in finalized block → TransactionsRecorder saves transaction to DB, updates invoice status in InvoiceRegistry
+   - Asset Hub balance recovery re-reads the transaction sum inside the same transaction that writes its coordinate-less adjustment. A transfer committed after the chain balance fetch is therefore included before the delta is calculated, while a genuine positive shortfall is still recorded.
 4. **TransfersExecutor** picks up payouts from DB → builds transaction → signs via Keyring → submits to chain → records result
 5. **ExpirationDetector** periodically checks for expired invoices → updates status
 6. **WebhookSender** periodically sends unsent webhook events to configured URLs

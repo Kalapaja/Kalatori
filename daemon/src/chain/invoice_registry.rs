@@ -116,20 +116,22 @@ impl InvoiceRegistry {
             .cloned()
     }
 
-    /// Replace the stored invoice data (amount, cart, expiry, ...) while
-    /// preserving the received amount tracked so far. Inserts the record as-is
-    /// when the invoice isn't tracked yet.
+    /// Replace the data of a still-tracked invoice (amount, cart, expiry, ...)
+    /// while preserving the received amount tracked so far.
+    ///
+    /// An absent record is deliberately not inserted: payment processing
+    /// removes final invoices, and a post-commit update refresh must not
+    /// resurrect one from its stale pre-payment snapshot.
     pub async fn refresh_invoice(
         &self,
         mut record: InvoiceWithReceivedAmount,
     ) {
         let mut invoices = self.invoices.write().await;
 
-        if let Some(existing) = invoices.get(&record.invoice.id) {
+        if let Some(existing) = invoices.get_mut(&record.invoice.id) {
             record.total_received_amount = existing.total_received_amount;
+            *existing = record;
         }
-
-        invoices.insert(record.invoice.id, record);
     }
 
     pub async fn update_filled_amount(
@@ -287,7 +289,9 @@ mod tests {
             Decimal::TEN
         );
 
-        // Refreshing an untracked invoice inserts it as-is
+        // Deterministic update/payment interleaving: payment processing removes
+        // a final invoice before the post-commit update refresh reaches the
+        // registry. The stale update must not resurrect that absent invoice.
         let other_id = Uuid::new_v4();
         let other = Invoice {
             id: other_id,
@@ -297,14 +301,9 @@ mod tests {
             .refresh_invoice(other.clone().with_amount(Decimal::ONE))
             .await;
 
-        let stored = registry
-            .get_invoice(&other_id)
-            .await
-            .unwrap();
-        assert_eq!(stored.invoice, other);
         assert_eq!(
-            stored.total_received_amount,
-            Decimal::ONE
+            registry.get_invoice(&other_id).await,
+            None
         );
     }
 

@@ -132,7 +132,10 @@ going back. Consequences:
   arrive are still detected by the chain transfer subscription.
 - A rejected submission marks the swap `Failed` with the executor's error
   message. If the rejection was spurious (e.g. a timeout after acceptance),
-  incoming funds are again caught by the transfer subscription.
+  incoming funds are again caught by the transfer subscription. When the
+  tracker reloads this terminal hashless row, it emits the manual-reconciliation
+  warning once and drops the row from its in-memory store. Hashless non-terminal
+  rows and database read errors remain tracked for the next polling round.
 - If the hash write fails after a successful submission, the caller still gets
   `Ok` — a retry could double-submit — but it receives the post-`Submitted` row,
   never the pre-submission one, so the reported status matches what was
