@@ -406,6 +406,141 @@ mod tests {
     }
 
     #[test]
+    fn test_across_zero_gas_and_fee_cap_are_omitted() {
+        // Trimmed from the production shape returned when an ERC-20 approval
+        // is still missing: Across uses `"0"` as the gas sentinel even though
+        // the fee caps and value are normally absent in this response.
+        let raw = r#"{
+            "inputAmount": "1",
+            "maxInputAmount": "1",
+            "expectedOutputAmount": "1",
+            "swapTx": {
+                "simulationSuccess": false,
+                "chainId": 137,
+                "to": "0x1111111111111111111111111111111111111111",
+                "data": "0x1234",
+                "value": "0",
+                "gas": "0",
+                "maxFeePerGas": "0",
+                "maxPriorityFeePerGas": "1500000000"
+            },
+            "id": "quote-zero-sentinels",
+            "quoteExpiryTimestamp": 1893456000
+        }"#;
+
+        let AcrossApiResponse::Ok(parsed) =
+            serde_json::from_str::<AcrossApiResponse<SwapApprovalResponse>>(raw).unwrap()
+        else {
+            panic!("zero gas sentinels must parse as the success arm");
+        };
+        assert_eq!(parsed.swap_tx.gas, Some(0));
+        assert_eq!(parsed.swap_tx.max_fee_per_gas, Some(0));
+        assert_eq!(
+            parsed.swap_tx.max_priority_fee_per_gas,
+            Some(1_500_000_000)
+        );
+        assert_eq!(parsed.swap_tx.value, Some(0));
+
+        let quote = SwapQuote::try_from(parsed).unwrap();
+        let RawSwapDetails::Across(details) = quote.quote_details else {
+            panic!("expected Across quote details");
+        };
+        assert!(details.transaction.gas.is_none());
+        assert!(
+            details
+                .transaction
+                .max_fee_per_gas
+                .is_none()
+        );
+        assert!(
+            details
+                .transaction
+                .max_priority_fee_per_gas
+                .is_none()
+        );
+        assert_eq!(details.transaction.value, 0);
+
+        let serialized = serde_json::to_value(&details.transaction).unwrap();
+        assert!(serialized.get("gas").is_none());
+        assert!(
+            serialized
+                .get("max_fee_per_gas")
+                .is_none()
+        );
+        assert!(
+            serialized
+                .get("max_priority_fee_per_gas")
+                .is_none()
+        );
+        assert_eq!(
+            serialized.get("value"),
+            Some(&serde_json::json!("0"))
+        );
+    }
+
+    #[test]
+    fn test_across_preserves_non_zero_gas_and_zero_priority_fee() {
+        let raw = r#"{
+            "inputAmount": "1",
+            "maxInputAmount": "1",
+            "expectedOutputAmount": "1",
+            "swapTx": {
+                "simulationSuccess": true,
+                "chainId": 137,
+                "to": "0x1111111111111111111111111111111111111111",
+                "data": "0x1234",
+                "gas": "21000",
+                "maxFeePerGas": "30000000000",
+                "maxPriorityFeePerGas": "0"
+            },
+            "id": "quote-valid-zero-priority",
+            "quoteExpiryTimestamp": 1893456000
+        }"#;
+
+        let AcrossApiResponse::Ok(parsed) =
+            serde_json::from_str::<AcrossApiResponse<SwapApprovalResponse>>(raw).unwrap()
+        else {
+            panic!("valid gas parameters must parse as the success arm");
+        };
+        let quote = SwapQuote::try_from(parsed).unwrap();
+        let RawSwapDetails::Across(details) = quote.quote_details else {
+            panic!("expected Across quote details");
+        };
+
+        assert_eq!(details.transaction.gas, Some(21_000));
+        assert_eq!(
+            details.transaction.max_fee_per_gas,
+            Some(30_000_000_000)
+        );
+        assert_eq!(
+            details
+                .transaction
+                .max_priority_fee_per_gas,
+            Some(0)
+        );
+        // The same zero value results from an omitted provider field.
+        assert_eq!(details.transaction.value, 0);
+
+        let serialized = serde_json::to_value(&details.transaction).unwrap();
+        assert_eq!(
+            serialized.get("gas"),
+            Some(&serde_json::json!("21000"))
+        );
+        assert_eq!(
+            serialized.get("max_fee_per_gas"),
+            Some(&serde_json::json!("30000000000"))
+        );
+        assert_eq!(
+            serialized.get("max_priority_fee_per_gas"),
+            Some(&serde_json::json!("0"))
+        );
+        assert_eq!(
+            serialized.get("value"),
+            Some(&serde_json::json!("0"))
+        );
+    }
+
+    #[test]
     fn test_across_status_growth_degrades_safely() {
         // The variant is asserted alongside the mapping on purpose: asserting
         // only the `ExecutorSwapStatus` would stay green if the explicit

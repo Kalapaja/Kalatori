@@ -56,14 +56,22 @@ The shape of the payload is now checked before it is written:
   → **400 `INVALID_SWAP_SIGNATURE`**. It is the submitter's to fix by
   re-signing, so it must not be reported as an internal failure.
 
-## Absent gas parameters are forwarded as absent (2026-08-04)
+## Unusable gas parameters are forwarded as absent (2026-08-04)
 
-When a provider returns a quote without gas parameters — Across with a failed
-simulation, 0x with no gas estimate — the daemon publishes the quote with those
-keys **omitted from the JSON**. Absent means "estimate it yourself": Kassette
-converts with `!= null ? BigInt(…) : undefined` since Kalapaja/Kassette#50, and
-viem drops undefined gas fields from `eth_sendTransaction` so the payer's wallet
-estimates them.
+Across does not omit `gas` when its simulation fails. A production
+`/api/swap/approval` response with `simulationSuccess: false` instead carried
+`gas: "0"`; the fee caps and `value` were genuinely omitted. The daemon treats
+an Across gas limit of zero exactly like an absent one. It does the same for a
+zero `maxFeePerGas` and drops `maxPriorityFeePerGas` whenever the cap is absent
+or normalized away. A zero priority fee remains valid and is preserved when
+the max fee cap is non-zero. 0x remains separate: its nullable `gas` is omitted
+only when absent, and a supplied limit — including zero — passes through
+verbatim.
+
+The daemon publishes unusable or absent fields with their keys **omitted from
+the JSON**. Absent means "estimate it yourself": Kassette passes `undefined`,
+and viem drops undefined gas fields from `eth_sendTransaction` so the payer's
+wallet estimates them.
 
 Omission is load-bearing in both directions. Sending `0` would publish a
 transaction with a zero gas limit or zero fee caps, which cannot be mined.
