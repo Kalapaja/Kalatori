@@ -69,19 +69,34 @@ pub fn default_across_raw_transaction() -> AcrossRawTransaction {
 
 pub type AcrossQuoteDetails = AcrossRawTransaction;
 
-impl From<AcrossApiError> for SwapsClientError {
-    fn from(value: AcrossApiError) -> Self {
+impl AcrossApiError {
+    /// Across usually embeds the status in the error body, but a gateway
+    /// failure (502/503) answers with a bare `{"message": …}` and no `status`.
+    /// Falling back to the transport status keeps those from reaching the payer
+    /// as a rejection they could act on. Mirrors the 0x client, which threads
+    /// the HTTP status in for the same reason.
+    fn into_client_error(
+        self,
+        status: reqwest::StatusCode,
+    ) -> SwapsClientError {
         tracing::warn!(
-            error.source = ?value,
+            %status,
+            error.source = ?self,
             "Across API returned an error response"
         );
 
-        match value.status {
-            // Provider-side failures are not the requester's fault
-            Some(status) if status >= 500 => Self::UnknownApiError,
-            _ => Self::ProviderRejected {
-                message: value.message,
-            },
+        let is_server_error = self.status.map_or_else(
+            || status.is_server_error(),
+            |embedded| embedded >= 500,
+        );
+
+        // Provider-side failures are not the requester's fault
+        if is_server_error {
+            return SwapsClientError::UnknownApiError;
+        }
+
+        SwapsClientError::ProviderRejected {
+            message: self.message,
         }
     }
 }
@@ -115,7 +130,7 @@ impl AcrossClient {
     {
         let full_url = format!("{}{}", self.base_url, url);
 
-        let raw_response = self
+        let response = self
             .client
             .get(full_url)
             .query(&params)
@@ -127,9 +142,13 @@ impl AcrossClient {
                     error.source = ?e,
                     "Across request failed"
                 )
-            })?
-            .text()
-            .await?;
+            })?;
+
+        // Captured before the body is consumed: an Across gateway failure omits
+        // the embedded `status`, leaving the transport status the only signal
+        // that this was their outage rather than a bad request.
+        let http_status = response.status();
+        let raw_response = response.text().await?;
 
         tracing::trace!(
             text = %raw_response,
@@ -153,7 +172,7 @@ impl AcrossClient {
 
         match response {
             AcrossApiResponse::Ok(data) => Ok(data),
-            AcrossApiResponse::Err(e) => Err(e.into()),
+            AcrossApiResponse::Err(e) => Err(e.into_client_error(http_status)),
         }
     }
 }
@@ -924,9 +943,23 @@ mod tests {
         assert_eq!(response, expected_response);
         mock.assert();
     }
+    fn api_error(
+        status: Option<u32>,
+        message: &str,
+    ) -> AcrossApiError {
+        AcrossApiError {
+            error_type: None,
+            error: None,
+            code: None,
+            status,
+            message: message.to_string(),
+            id: None,
+        }
+    }
+
     #[test]
     fn test_error_response_classification() {
-        let api_error = AcrossApiError {
+        let rejection = AcrossApiError {
             error_type: Some("InvalidParamError".to_string()),
             error: None,
             code: Some("AMOUNT_TOO_LOW".to_string()),
@@ -935,23 +968,65 @@ mod tests {
             id: None,
         };
         assert_eq!(
-            SwapsClientError::from(api_error),
+            rejection.into_client_error(reqwest::StatusCode::BAD_REQUEST),
             SwapsClientError::ProviderRejected {
                 message: "Sent amount is too low relative to fees".to_string(),
             }
         );
 
-        let server_error = AcrossApiError {
-            error_type: None,
-            error: None,
-            code: None,
-            status: Some(500),
-            message: "Internal server error".to_string(),
-            id: None,
-        };
         assert_eq!(
-            SwapsClientError::from(server_error),
+            api_error(Some(500), "Internal server error")
+                .into_client_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
             SwapsClientError::UnknownApiError
+        );
+    }
+
+    /// A gateway failure answers with a bare `{"message": …}` and no embedded
+    /// status. Before the transport status was threaded through, this was
+    /// classified as a rejection and surfaced to the payer as a 422 they could
+    /// do nothing about.
+    #[test]
+    fn server_error_without_embedded_status_is_not_a_rejection() {
+        assert_eq!(
+            api_error(None, "Bad gateway").into_client_error(reqwest::StatusCode::BAD_GATEWAY),
+            SwapsClientError::UnknownApiError
+        );
+        assert_eq!(
+            api_error(None, "Service unavailable")
+                .into_client_error(reqwest::StatusCode::SERVICE_UNAVAILABLE),
+            SwapsClientError::UnknownApiError
+        );
+    }
+
+    /// The body stays authoritative when it does carry a status: a 400-shaped
+    /// rejection delivered over an unexpected transport status is still the
+    /// requester's problem to fix.
+    #[test]
+    fn embedded_status_wins_over_transport_status() {
+        assert_eq!(
+            api_error(Some(400), "Amount too low")
+                .into_client_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            SwapsClientError::ProviderRejected {
+                message: "Amount too low".to_string(),
+            }
+        );
+        assert_eq!(
+            api_error(Some(503), "Upstream unavailable").into_client_error(reqwest::StatusCode::OK),
+            SwapsClientError::UnknownApiError
+        );
+    }
+
+    /// A genuine client-side rejection with no embedded status must stay a
+    /// rejection — the fallback must not sweep every statusless body into
+    /// "our fault".
+    #[test]
+    fn client_error_without_embedded_status_stays_a_rejection() {
+        assert_eq!(
+            api_error(None, "Unsupported route")
+                .into_client_error(reqwest::StatusCode::BAD_REQUEST),
+            SwapsClientError::ProviderRejected {
+                message: "Unsupported route".to_string(),
+            }
         );
     }
 }
