@@ -311,7 +311,7 @@ pub trait DaoInterface: Send + Sync + 'static {
 
     async fn get_outdated_swaps(&self) -> Result<Vec<Swap>, DaoSwapError>;
 
-    async fn update_swap_set_signature(
+    async fn claim_swap_for_submission(
         &self,
         swap_id: Uuid,
         signature: String,
@@ -594,7 +594,7 @@ pub trait DaoTransactionInterface {
 
     async fn get_outdated_swaps(&self) -> Result<Vec<Swap>, DaoSwapError>;
 
-    async fn update_swap_set_signature(
+    async fn claim_swap_for_submission(
         &self,
         swap_id: Uuid,
         signature: String,
@@ -961,12 +961,12 @@ impl DaoInterface for DAO {
         DaoSwapMethods::get_outdated_swaps(self).await
     }
 
-    async fn update_swap_set_signature(
+    async fn claim_swap_for_submission(
         &self,
         swap_id: Uuid,
         signature: String,
     ) -> Result<Swap, DaoSwapError> {
-        DaoSwapMethods::update_swap_set_signature(self, swap_id, signature).await
+        DaoSwapMethods::claim_swap_for_submission(self, swap_id, signature).await
     }
 
     async fn update_swap_submitted(
@@ -1347,12 +1347,12 @@ impl DaoTransactionInterface for DaoTransaction {
         DaoSwapMethods::get_outdated_swaps(self).await
     }
 
-    async fn update_swap_set_signature(
+    async fn claim_swap_for_submission(
         &self,
         swap_id: Uuid,
         signature: String,
     ) -> Result<Swap, DaoSwapError> {
-        DaoSwapMethods::update_swap_set_signature(self, swap_id, signature).await
+        DaoSwapMethods::claim_swap_for_submission(self, swap_id, signature).await
     }
 
     async fn update_swap_submitted(

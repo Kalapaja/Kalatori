@@ -4,15 +4,7 @@ Decision records and behavioral notes for the swaps subsystem
 (`daemon/src/swaps/`, `daemon/src/clients/swaps/`). Not yet a full subsystem
 overview — see [architecture.md](architecture.md) for the component map.
 
-## Payer signatures are validated against the stored quote (2026-08-04)
-
-> **Known gap:** submission is not atomic. Two concurrent requests for the same
-> swap can both read `Created`, both persist a signature, both transition to
-> `Submitted` (the status trigger permits `Submitted → Submitted`), and both
-> call the provider — risking duplicate external execution and a row whose
-> signature, hash and error come from different requests. The fix is a
-> conditional `UPDATE ... WHERE id = ? AND status = 'Created' RETURNING` so only
-> one request may submit. Not addressed here.
+## Payer signatures are validated and claimed atomically (2026-08-04)
 
 A gasless 0x quote can require two signatures — the trade and a token approval
 — and the payer submits them as one `"<trade>|<approval>"` string through the
@@ -27,10 +19,15 @@ The shape of the payload is now checked before it is written:
   accept-anything. Only `ZeroExGaslessClient` overrides it, because it is the
   only executor whose signature payload has internal structure.
 - `SwapsExecutor::submit_with_signature` loads the swap and validates against
-  the **stored** quote before `update_swap_set_signature`. The executor named
+  the **stored** quote before `claim_swap_for_submission`. The executor named
   in the request body is not trusted for this — the stored one is what drives
   submission, so validating against anything else would let a caller pick an
   executor that validates nothing.
+- Signature persistence and the `Created → Submitted` transition happen in one
+  conditional `UPDATE ... WHERE id = ? AND status = 'Created' RETURNING *`.
+  Exactly one caller can claim the row and reach the provider. A replay or race
+  loser reads the row's current status and returns **409
+  `SWAP_ALREADY_SUBMITTED`**; a missing row still returns not found.
 - Validation and submission share `split_gasless_signature`, so a payload
   accepted at the door cannot fail to split later. The submission path still
   returns the error rather than unwrapping, because rows written before this
@@ -104,9 +101,10 @@ quote. Across's own SDK ignores the flag and re-simulates locally.
 
 ## Submission-attempt protocol for backend-submitted swaps (2026-08-03)
 
-`SwapsExecutor::submit_with_signature` persists `Submitted` (without a
-transaction hash) **before** calling the external executor, then attaches the
-hash afterwards via `update_swap_transaction_hash`, which never changes status:
+`SwapsExecutor::submit_with_signature` atomically persists the payer signature
+and `Submitted` (without a transaction hash) **before** calling the external
+executor, then attaches the hash afterwards via `update_swap_transaction_hash`,
+which never changes status:
 the swaps tracker polls the database on a 100 ms interval and may already have
 moved the swap `Submitted → Pending`, and the SQLite status trigger forbids
 going back. Consequences:

@@ -932,7 +932,7 @@ mod tests {
     }
 
     /// This is the gate that keeps a bad payload out of the database: the
-    /// executor calls it before `update_swap_set_signature`.
+    /// executor calls it before `claim_swap_for_submission`.
     #[test]
     fn validate_signature_rejects_a_separatorless_payload() {
         let details = gasless_details_with_approval(None);

@@ -110,6 +110,11 @@ struct SwapRow {
     error_message: Option<String>,
 }
 
+#[derive(sqlx::FromRow)]
+struct SwapStatusRow {
+    status: SwapStatus,
+}
+
 impl From<SwapRow> for Swap {
     fn from(value: SwapRow) -> Self {
         Self {
@@ -131,6 +136,9 @@ impl From<SwapRow> for Swap {
 pub enum DaoSwapError {
     #[error("Swap not found: {swap_id}")]
     NotFound { swap_id: Uuid },
+
+    #[error("Swap submission was already claimed while in status {current_status}")]
+    AlreadyClaimed { current_status: SwapStatus },
 
     #[error("Cannot transition from {current_status} to {attempted_status}")]
     StatusConstraintViolation {
@@ -172,7 +180,10 @@ impl crate::api::ApiErrorExt for DaoSwapError {
             DaoSwapError::NotFound {
                 ..
             } => "ENTITY_NOT_FOUND",
-            DaoSwapError::StatusConstraintViolation {
+            DaoSwapError::AlreadyClaimed {
+                ..
+            }
+            | DaoSwapError::StatusConstraintViolation {
                 ..
             } => "STATUS_CONSTRAINT_VIOLATION",
         }
@@ -186,7 +197,10 @@ impl crate::api::ApiErrorExt for DaoSwapError {
             DaoSwapError::InvoiceNotFound {
                 ..
             } => "RELATED_INVOICE_NOT_FOUND",
-            DaoSwapError::StatusConstraintViolation {
+            DaoSwapError::AlreadyClaimed {
+                ..
+            }
+            | DaoSwapError::StatusConstraintViolation {
                 ..
             } => "SWAP_STATUS_CONSTRAINT_VIOLATION",
             DaoSwapError::DatabaseError => "INTERNAL_SERVER_ERROR",
@@ -201,7 +215,10 @@ impl crate::api::ApiErrorExt for DaoSwapError {
             DaoSwapError::InvoiceNotFound {
                 ..
             } => "The related invoice id was not found.",
-            DaoSwapError::StatusConstraintViolation {
+            DaoSwapError::AlreadyClaimed {
+                ..
+            }
+            | DaoSwapError::StatusConstraintViolation {
                 ..
             } => "The requested status transition is not allowed.",
             DaoSwapError::DatabaseError => "A database error occurred.",
@@ -216,7 +233,10 @@ impl crate::api::ApiErrorExt for DaoSwapError {
             DaoSwapError::InvoiceNotFound {
                 ..
             } => reqwest::StatusCode::BAD_REQUEST,
-            DaoSwapError::StatusConstraintViolation {
+            DaoSwapError::AlreadyClaimed {
+                ..
+            }
+            | DaoSwapError::StatusConstraintViolation {
                 ..
             } => reqwest::StatusCode::CONFLICT,
             DaoSwapError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
@@ -490,45 +510,78 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
             })
     }
 
-    async fn update_swap_set_signature(
+    async fn claim_swap_for_submission(
         &self,
         swap_id: Uuid,
         signature: String,
     ) -> Result<Swap, DaoSwapError> {
         let query = sqlx::query_as::<_, SwapRow>(
             "UPDATE swaps
-            SET swap_details = json_set(
-                    swap_details,
-                    '$.signature', ?
-                )
-            WHERE id = ?
+            SET swap_details = json_set(swap_details, '$.signature', ?),
+                status = 'Submitted',
+                submitted_at = datetime('now')
+            WHERE id = ? AND status = 'Created'
             RETURNING *",
         )
         .bind(signature)
         .bind(swap_id);
 
-        self.fetch_one(query)
-            .await
-            .map_err(|e| {
+        match self.fetch_one(query).await {
+            Ok(swap) => Ok(swap),
+            Err(e) => {
                 tracing::debug!(
                     error.category = "dao.swap",
-                    error.operation = "update_swap_set_signature",
+                    error.operation = "claim_swap_for_submission",
                     %swap_id,
                     error.source = ?e,
-                    "Failed to update swap signature"
+                    "Failed to claim swap for submission"
                 );
 
                 if let Some(error) = SwapStatus::from_sqlx_error(&e) {
-                    return error;
+                    return Err(error)
                 }
 
                 match e {
-                    sqlx::Error::RowNotFound => DaoSwapError::NotFound {
-                        swap_id,
+                    sqlx::Error::RowNotFound => {
+                        let status_query = sqlx::query_as::<_, SwapStatusRow>(
+                            "SELECT status
+                            FROM swaps
+                            WHERE id = ?",
+                        )
+                        .bind(swap_id);
+
+                        let current: Option<SwapStatusRow> = self
+                            .fetch_optional(status_query)
+                            .await
+                            .map_err(|e| {
+                                tracing::debug!(
+                                    error.category = "dao.swap",
+                                    error.operation = "claim_swap_for_submission",
+                                    %swap_id,
+                                    error.source = ?e,
+                                    "Failed to get swap status after submission claim failed"
+                                );
+
+                                DaoSwapError::DatabaseError
+                            })?;
+
+                        current.map_or_else(
+                            || {
+                                Err(DaoSwapError::NotFound {
+                                    swap_id,
+                                })
+                            },
+                            |row| {
+                                Err(DaoSwapError::AlreadyClaimed {
+                                    current_status: row.status,
+                                })
+                            },
+                        )
                     },
-                    _ => DaoSwapError::DatabaseError,
+                    _ => Err(DaoSwapError::DatabaseError),
                 }
-            })
+            },
+        }
     }
 
     async fn update_swap_submitted_with_hash(
@@ -827,6 +880,57 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn claiming_swap_for_submission_is_atomic() {
+        let dao = create_test_dao().await;
+
+        let invoice = default_create_invoice_data();
+        let invoice_id = invoice.id;
+        dao.create_invoice(invoice)
+            .await
+            .unwrap();
+
+        let swap = default_swap(invoice_id);
+        let swap_id = swap.id;
+        dao.create_swap(swap).await.unwrap();
+
+        let first_signature = "first-signature".to_string();
+        let claimed = dao
+            .claim_swap_for_submission(swap_id, first_signature.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(claimed.status, SwapStatus::Submitted);
+        assert_eq!(
+            claimed
+                .swap_details
+                .signature
+                .as_deref(),
+            Some(first_signature.as_str())
+        );
+
+        let second_claim = dao
+            .claim_swap_for_submission(swap_id, "second-signature".to_string())
+            .await;
+        assert_eq!(
+            second_claim,
+            Err(DaoSwapError::AlreadyClaimed {
+                current_status: SwapStatus::Submitted,
+            })
+        );
+
+        let stored = dao
+            .get_swap_by_id(swap_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, SwapStatus::Submitted);
+        assert_eq!(
+            stored.swap_details.signature.as_deref(),
+            Some(first_signature.as_str())
+        );
+    }
 
     #[tokio::test]
     async fn test_swap_dao() {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use crate::chain_client::KeyringClient;
@@ -13,9 +15,76 @@ use crate::types::{
     Swap,
     SwapExecutorType,
     SwapSignatureParams,
+    SwapStatus,
 };
 
 use super::SwapsClients;
+
+#[cfg_attr(test, mockall::automock)]
+#[trait_variant::make(Send)]
+pub trait SwapsClientsInterface: Send + Sync + 'static {
+    async fn get_quote(
+        &self,
+        executor: SwapExecutorType,
+        data: CreateSwapData,
+    ) -> Result<crate::types::SwapQuote, SwapsClientError>;
+
+    async fn sign_transaction(
+        &self,
+        keyring_client: &KeyringClient,
+        swap: &Swap,
+    ) -> Result<String, SwapsClientError>;
+
+    fn validate_signature(
+        &self,
+        executor: SwapExecutorType,
+        details: &crate::types::SwapDetails,
+        signature: &str,
+    ) -> Result<(), SwapsClientError>;
+
+    async fn submit_transaction(
+        &self,
+        executor: SwapExecutorType,
+        data: &crate::types::SwapDetails,
+    ) -> Result<String, SwapsClientError>;
+}
+
+impl SwapsClientsInterface for SwapsClients {
+    async fn get_quote(
+        &self,
+        executor: SwapExecutorType,
+        data: CreateSwapData,
+    ) -> Result<crate::types::SwapQuote, SwapsClientError> {
+        self.get_quote(executor, data).await
+    }
+
+    async fn sign_transaction(
+        &self,
+        keyring_client: &KeyringClient,
+        swap: &Swap,
+    ) -> Result<String, SwapsClientError> {
+        self.sign_transaction(keyring_client, swap)
+            .await
+    }
+
+    fn validate_signature(
+        &self,
+        executor: SwapExecutorType,
+        details: &crate::types::SwapDetails,
+        signature: &str,
+    ) -> Result<(), SwapsClientError> {
+        self.validate_signature(executor, details, signature)
+    }
+
+    async fn submit_transaction(
+        &self,
+        executor: SwapExecutorType,
+        data: &crate::types::SwapDetails,
+    ) -> Result<String, SwapsClientError> {
+        self.submit_transaction(executor, data)
+            .await
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SwapsExecutorError {
@@ -28,6 +97,8 @@ pub enum SwapsExecutorError {
     ProviderRejected { message: String },
     #[error("Swap {swap_id} not found")]
     SwapNotFound { swap_id: Uuid },
+    #[error("Swap submission was already claimed while in status {current_status}")]
+    SwapAlreadyClaimed { current_status: SwapStatus },
     #[error("Invoice {invoice_id} not found")]
     InvoiceNotFound { invoice_id: Uuid },
     /// The submitted signature does not match the shape the stored quote
@@ -75,20 +146,20 @@ impl From<SwapsClientError> for SwapsExecutorError {
 }
 
 #[derive(Clone)]
-pub struct SwapsExecutor<D: DaoInterface + 'static = DAO> {
+pub struct SwapsExecutor<D: DaoInterface + 'static = DAO, C: SwapsClientsInterface = SwapsClients> {
     dao: D,
-    clients: SwapsClients,
+    clients: Arc<C>,
 }
 
 #[cfg_attr(test, expect(dead_code))]
-impl<D: DaoInterface + 'static> SwapsExecutor<D> {
+impl<D: DaoInterface + 'static, C: SwapsClientsInterface> SwapsExecutor<D, C> {
     pub fn new(
         dao: D,
-        clients: SwapsClients,
+        clients: C,
     ) -> Self {
         Self {
             dao,
-            clients,
+            clients: Arc::new(clients),
         }
     }
 
@@ -184,9 +255,15 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
             &swap_signature.signature,
         )?;
 
-        let swap = self
+        // Atomically persist the signature and the submission attempt BEFORE
+        // handing the swap to the external executor. Only the request that
+        // advances `Created` to `Submitted` may reach the provider; if the
+        // daemon crashes or a later update fails, the attempt is already
+        // visible to the tracker instead of silently staying `Created` while
+        // funds are in flight.
+        let submitted_swap = self
             .dao
-            .update_swap_set_signature(
+            .claim_swap_for_submission(
                 swap_signature.swap_id,
                 swap_signature.signature,
             )
@@ -197,16 +274,13 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
                 } => SwapsExecutorError::SwapNotFound {
                     swap_id,
                 },
+                DaoSwapError::AlreadyClaimed {
+                    current_status,
+                } => SwapsExecutorError::SwapAlreadyClaimed {
+                    current_status,
+                },
                 _ => SwapsExecutorError::DatabaseError,
             })?;
-
-        // Persist the submission attempt BEFORE handing the swap to the
-        // external executor: if the daemon crashes or the later updates fail,
-        // the swap is already `Submitted` and visible to the tracker instead
-        // of silently staying `Created` while funds are in flight.
-        let submitted_swap = self
-            .update_swap_submitted_internally(swap_signature.swap_id)
-            .await?;
 
         // TODO: In case of error need to check an error thoroughly.
         // If it's problem with signature, we can mark it as failed.
@@ -217,8 +291,8 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
         let transaction_hash = match self
             .clients
             .submit_transaction(
-                swap.request.swap_executor,
-                &swap.swap_details,
+                submitted_swap.request.swap_executor,
+                &submitted_swap.swap_details,
             )
             .await
         {
@@ -280,32 +354,9 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
         }
     }
 
-    /// Mark swap as `Submitted` in database. Use this method for swaps which
-    /// has been executed inside this service by either sending some API
-    /// requests to executor or sent to blockhain directly. For swaps which has
-    /// been sent on front-end use `update_swap_submitted_on_front_end`
-    /// method.
-    async fn update_swap_submitted_internally(
-        &self,
-        swap_id: Uuid,
-    ) -> Result<Swap, SwapsExecutorError> {
-        self.dao
-            .update_swap_submitted(swap_id)
-            .await
-            .map_err(|e| match e {
-                DaoSwapError::NotFound {
-                    swap_id,
-                } => SwapsExecutorError::SwapNotFound {
-                    swap_id,
-                },
-                _ => SwapsExecutorError::DatabaseError,
-            })
-    }
-
     /// Mark swap as `Submitted` in database and update it's related transaction
     /// hash. Use this method for swaps which has been executed on
-    /// front-end. For swaps which has been executed inside this service use
-    /// `update_swap_submitted_internally` method.
+    /// front-end. Backend-submitted swaps use `claim_swap_for_submission`.
     pub async fn update_swap_submitted_on_front_end(
         &self,
         submitted_swap: SubmittedSwapParams,
@@ -388,10 +439,6 @@ mod tests {
     use crate::clients::{
         RawSwapDetails,
         default_zero_ex_gasless_raw_transaction,
-    };
-    use crate::configs::{
-        SwapsConfig,
-        ZeroExApiConfig,
     };
     use crate::dao::MockDaoInterface;
     use crate::types::{
@@ -489,17 +536,12 @@ mod tests {
         ));
     }
 
-    /// `ZeroExClient::new` only builds an RPC client; it performs no I/O for an
-    /// `http://` endpoint, so the address never has to answer.
-    async fn offline_swaps_clients() -> SwapsClients {
-        SwapsClients::new(SwapsConfig {
-            zero_ex: ZeroExApiConfig {
-                api_key: "".into(),
-                rpc_url: "http://127.0.0.1:1".to_string(),
-            },
-            ..SwapsConfig::default()
-        })
-        .await
+    fn validating_swaps_clients() -> MockSwapsClientsInterface {
+        let mut clients = MockSwapsClientsInterface::new();
+        clients
+            .expect_validate_signature()
+            .returning(|_, _, _| Ok(()));
+        clients
     }
 
     fn gasless_swap_needing_two_signatures() -> Swap {
@@ -511,6 +553,110 @@ mod tests {
         swap.swap_details.raw_transaction = RawSwapDetails::ZeroExGasless(raw_transaction);
 
         swap
+    }
+
+    #[tokio::test]
+    async fn an_already_claimed_swap_never_reaches_the_provider() {
+        let swap = gasless_swap_needing_two_signatures();
+        let swap_id = swap.id;
+
+        let mut dao = MockDaoInterface::new();
+        dao.expect_get_swap_by_id()
+            .once()
+            .returning(move |_| Ok(Some(swap.clone())));
+        dao.expect_claim_swap_for_submission()
+            .once()
+            .returning(|_, _| {
+                Err(DaoSwapError::AlreadyClaimed {
+                    current_status: SwapStatus::Submitted,
+                })
+            });
+        dao.expect_update_swap_submitted()
+            .never();
+
+        let mut clients = validating_swaps_clients();
+        clients
+            .expect_submit_transaction()
+            .never();
+
+        let executor = SwapsExecutor::new(dao, clients);
+        let result = executor
+            .submit_with_signature(SwapSignatureParams {
+                swap_id,
+                swap_executor: SwapExecutorType::ZeroExGasless,
+                signature: "0xdeadbeef|0xcafebabe".to_string(),
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SwapsExecutorError::SwapAlreadyClaimed {
+                current_status: SwapStatus::Submitted,
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_valid_submission_claims_once_before_calling_the_provider() {
+        let swap = gasless_swap_needing_two_signatures();
+        let swap_id = swap.id;
+        let signature = "0xdeadbeef|0xcafebabe".to_string();
+
+        let mut claimed = swap.clone();
+        claimed.status = SwapStatus::Submitted;
+        claimed.swap_details.signature = Some(signature.clone());
+
+        let mut completed = claimed.clone();
+        completed.swap_details.transaction_hash = Some("transaction-hash".to_string());
+
+        let mut dao = MockDaoInterface::new();
+        dao.expect_get_swap_by_id()
+            .once()
+            .return_once(move |_| Ok(Some(swap)));
+
+        let expected_signature = signature.clone();
+        dao.expect_claim_swap_for_submission()
+            .withf(move |id, submitted_signature| {
+                *id == swap_id && submitted_signature == &expected_signature
+            })
+            .once()
+            .return_once(move |_, _| Ok(claimed));
+        dao.expect_update_swap_submitted()
+            .never();
+        dao.expect_update_swap_transaction_hash()
+            .withf(move |id, transaction_hash| {
+                *id == swap_id && transaction_hash == "transaction-hash"
+            })
+            .once()
+            .return_once(move |_, _| Ok(completed));
+
+        let mut clients = validating_swaps_clients();
+        clients
+            .expect_submit_transaction()
+            .withf(|executor, details| {
+                *executor == SwapExecutorType::ZeroExGasless
+                    && details.signature.as_deref() == Some("0xdeadbeef|0xcafebabe")
+            })
+            .once()
+            .returning(|_, _| Ok("transaction-hash".to_string()));
+
+        let executor = SwapsExecutor::new(dao, clients);
+        let result = executor
+            .submit_with_signature(SwapSignatureParams {
+                swap_id,
+                swap_executor: SwapExecutorType::ZeroExGasless,
+                signature,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result
+                .swap_details
+                .transaction_hash
+                .as_deref(),
+            Some("transaction-hash")
+        );
     }
 
     /// The reported bug persisted the payer's unsplittable signature and only
@@ -525,10 +671,22 @@ mod tests {
         let mut dao = MockDaoInterface::new();
         dao.expect_get_swap_by_id()
             .returning(move |_| Ok(Some(swap.clone())));
-        dao.expect_update_swap_set_signature()
+        dao.expect_claim_swap_for_submission()
             .never();
 
-        let executor = SwapsExecutor::new(dao, offline_swaps_clients().await);
+        let mut clients = MockSwapsClientsInterface::new();
+        clients
+            .expect_validate_signature()
+            .withf(|executor, _, signature| {
+                *executor == SwapExecutorType::ZeroExGasless && signature == "0xdeadbeef"
+            })
+            .once()
+            .returning(|_, _, _| Err(SwapsClientError::InvalidSignaturePayload));
+        clients
+            .expect_submit_transaction()
+            .never();
+
+        let executor = SwapsExecutor::new(dao, clients);
 
         let result = executor
             .submit_with_signature(SwapSignatureParams {
@@ -560,10 +718,22 @@ mod tests {
         let mut dao = MockDaoInterface::new();
         dao.expect_get_swap_by_id()
             .returning(move |_| Ok(Some(swap.clone())));
-        dao.expect_update_swap_set_signature()
+        dao.expect_claim_swap_for_submission()
             .never();
 
-        let executor = SwapsExecutor::new(dao, offline_swaps_clients().await);
+        let mut clients = MockSwapsClientsInterface::new();
+        clients
+            .expect_validate_signature()
+            .withf(|executor, _, signature| {
+                *executor == SwapExecutorType::ZeroExGasless && signature == "0xdeadbeef"
+            })
+            .once()
+            .returning(|_, _, _| Err(SwapsClientError::InvalidSignaturePayload));
+        clients
+            .expect_submit_transaction()
+            .never();
+
+        let executor = SwapsExecutor::new(dao, clients);
 
         let result = executor
             .submit_with_signature(SwapSignatureParams {

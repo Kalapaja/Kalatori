@@ -13,6 +13,7 @@ use crate::types::{
     SwapDirection,
     SwapExecutorType,
     SwapSignatureParams,
+    SwapStatus,
 };
 
 use super::AppState;
@@ -25,6 +26,8 @@ pub enum SwapRequestError {
     InvoiceNotFound { invoice_id: Uuid },
     #[error("Swap not found: {swap_id}")]
     SwapNotFound { swap_id: Uuid },
+    #[error("Swap submission was already claimed while in status {current_status}")]
+    SwapAlreadyClaimed { current_status: SwapStatus },
     #[error("Swap direction from {from_chain_id} to {to_chain_id} is not supported")]
     DirectionIsUnsupported {
         from_chain_id: u64,
@@ -67,6 +70,11 @@ impl From<SwapsExecutorError> for SwapRequestError {
             } => SwapRequestError::SwapNotFound {
                 swap_id,
             },
+            SwapsExecutorError::SwapAlreadyClaimed {
+                current_status,
+            } => SwapRequestError::SwapAlreadyClaimed {
+                current_status,
+            },
             SwapsExecutorError::InvoiceNotFound {
                 invoice_id,
             } => SwapRequestError::InvoiceNotFound {
@@ -87,7 +95,10 @@ impl ApiErrorExt for SwapRequestError {
             | SwapRequestError::DirectionIsUnsupported {
                 ..
             }
-            | SwapRequestError::InvalidSignature => "INVALID_REQUEST",
+            | SwapRequestError::InvalidSignature
+            | SwapRequestError::SwapAlreadyClaimed {
+                ..
+            } => "INVALID_REQUEST",
             SwapRequestError::InvoiceNotFound {
                 ..
             }
@@ -121,6 +132,9 @@ impl ApiErrorExt for SwapRequestError {
                 ..
             } => "SWAP_DIRECTION_UNSUPPORTED",
             SwapRequestError::InvalidSignature => "INVALID_SWAP_SIGNATURE",
+            SwapRequestError::SwapAlreadyClaimed {
+                ..
+            } => "SWAP_ALREADY_SUBMITTED",
             SwapRequestError::ProviderRejected {
                 ..
             } => "SWAP_PROVIDER_REJECTED",
@@ -142,6 +156,9 @@ impl ApiErrorExt for SwapRequestError {
                 ..
             }
             | SwapRequestError::InvalidSignature => reqwest::StatusCode::BAD_REQUEST,
+            SwapRequestError::SwapAlreadyClaimed {
+                ..
+            } => reqwest::StatusCode::CONFLICT,
             SwapRequestError::InvoiceNotFound {
                 ..
             }
@@ -181,6 +198,9 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::InvalidSignature => {
                 "The submitted signature does not match the prepared swap quote."
             },
+            SwapRequestError::SwapAlreadyClaimed {
+                ..
+            } => "The swap has already been submitted.",
             SwapRequestError::ProviderRejected {
                 message,
             } => message,
@@ -511,6 +531,26 @@ mod tests {
         );
         assert_eq!(error.category(), "INVALID_REQUEST");
         assert_eq!(error.code(), "INVALID_SWAP_SIGNATURE");
+    }
+
+    #[test]
+    fn an_already_claimed_swap_maps_to_conflict() {
+        let error = SwapRequestError::from(SwapsExecutorError::SwapAlreadyClaimed {
+            current_status: SwapStatus::Submitted,
+        });
+
+        assert!(matches!(
+            &error,
+            SwapRequestError::SwapAlreadyClaimed {
+                current_status: SwapStatus::Submitted,
+            }
+        ));
+        assert_eq!(
+            error.http_status_code(),
+            reqwest::StatusCode::CONFLICT
+        );
+        assert_eq!(error.category(), "INVALID_REQUEST");
+        assert_eq!(error.code(), "SWAP_ALREADY_SUBMITTED");
     }
 
     const POLYGON_USDC: &str = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
