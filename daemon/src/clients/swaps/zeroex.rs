@@ -947,6 +947,28 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn provider_trade_hashes_with_invalid_encoding_or_length_are_not_signed() {
+        let mut keyring_client = KeyringClient::default();
+        keyring_client
+            .expect_sign_polygon_permit()
+            .never();
+
+        for hash in [
+            "not-hex".to_string(),
+            "0xdeadbeef".to_string(),
+            format!("0x{}", "00".repeat(33)),
+        ] {
+            assert_eq!(
+                gasless_client()
+                    .sign_hash(&hash, Uuid::new_v4(), &keyring_client)
+                    .await,
+                Err(SwapsClientError::FailedToSignTransaction),
+                "provider hash {hash:?} must be rejected before keyring signing"
+            );
+        }
+    }
+
     /// Rows written before the validation gate existed can still hold an
     /// unsplittable signature, so the submission path has to survive one too.
     #[tokio::test]

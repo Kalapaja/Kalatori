@@ -659,6 +659,198 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_non_payer_signed_swap_rejects_the_supplied_signature() {
+        let swap = default_swap(Uuid::new_v4());
+        let swap_id = swap.id;
+
+        let mut dao = MockDaoInterface::new();
+        dao.expect_get_swap_by_id()
+            .once()
+            .return_once(move |_| Ok(Some(swap)));
+        dao.expect_claim_swap_for_submission()
+            .never();
+
+        let mut clients = MockSwapsClientsInterface::new();
+        clients
+            .expect_validate_signature()
+            .never();
+        clients
+            .expect_submit_transaction()
+            .never();
+
+        let result = SwapsExecutor::new(dao, clients)
+            .submit_with_signature(SwapSignatureParams {
+                swap_id,
+                swap_executor: SwapExecutorType::ZeroExGasless,
+                signature: "0xdeadbeef".to_string(),
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SwapsExecutorError::InvalidSignature)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_missing_swap_stops_before_signature_validation() {
+        let swap_id = Uuid::new_v4();
+        let mut dao = MockDaoInterface::new();
+        dao.expect_get_swap_by_id()
+            .once()
+            .withf(move |id| *id == swap_id)
+            .returning(|_| Ok(None));
+        dao.expect_claim_swap_for_submission()
+            .never();
+
+        let mut clients = MockSwapsClientsInterface::new();
+        clients
+            .expect_validate_signature()
+            .never();
+        clients
+            .expect_submit_transaction()
+            .never();
+
+        let result = SwapsExecutor::new(dao, clients)
+            .submit_with_signature(SwapSignatureParams {
+                swap_id,
+                swap_executor: SwapExecutorType::ZeroExGasless,
+                signature: "0xdeadbeef".to_string(),
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SwapsExecutorError::SwapNotFound { swap_id: id }) if id == swap_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_swap_lookup_failure_is_an_internal_database_error() {
+        let swap_id = Uuid::new_v4();
+        let mut dao = MockDaoInterface::new();
+        dao.expect_get_swap_by_id()
+            .once()
+            .returning(|_| Err(DaoSwapError::DatabaseError));
+        dao.expect_claim_swap_for_submission()
+            .never();
+
+        let mut clients = MockSwapsClientsInterface::new();
+        clients
+            .expect_validate_signature()
+            .never();
+        clients
+            .expect_submit_transaction()
+            .never();
+
+        let result = SwapsExecutor::new(dao, clients)
+            .submit_with_signature(SwapSignatureParams {
+                swap_id,
+                swap_executor: SwapExecutorType::ZeroExGasless,
+                signature: "0xdeadbeef".to_string(),
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SwapsExecutorError::DatabaseError)
+        ));
+    }
+
+    #[tokio::test]
+    async fn provider_failure_attempts_to_mark_the_claimed_swap_failed() {
+        let swap = gasless_swap_needing_two_signatures();
+        let swap_id = swap.id;
+        let signature = "0xdeadbeef|0xcafebabe".to_string();
+        let provider_error = SwapsClientError::UnknownApiError;
+
+        let mut claimed = swap.clone();
+        claimed.status = SwapStatus::Submitted;
+        claimed.swap_details.signature = Some(signature.clone());
+
+        let mut dao = MockDaoInterface::new();
+        dao.expect_get_swap_by_id()
+            .once()
+            .return_once(move |_| Ok(Some(swap)));
+        dao.expect_claim_swap_for_submission()
+            .once()
+            .return_once(move |_, _| Ok(claimed));
+        let expected_error = provider_error.to_string();
+        dao.expect_update_swap_failed()
+            .withf(move |id, error| *id == swap_id && error == &expected_error)
+            .once()
+            .returning(|_, _| Err(DaoSwapError::DatabaseError));
+        dao.expect_update_swap_transaction_hash()
+            .never();
+
+        let mut clients = validating_swaps_clients();
+        clients
+            .expect_submit_transaction()
+            .once()
+            .return_once(move |_, _| Err(provider_error));
+
+        let result = SwapsExecutor::new(dao, clients)
+            .submit_with_signature(SwapSignatureParams {
+                swap_id,
+                swap_executor: SwapExecutorType::ZeroExGasless,
+                signature,
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SwapsExecutorError::QuoteRequestFailed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn hash_recording_failure_returns_the_claimed_swap_for_reconciliation() {
+        let swap = gasless_swap_needing_two_signatures();
+        let swap_id = swap.id;
+        let signature = "0xdeadbeef|0xcafebabe".to_string();
+
+        let mut claimed = swap.clone();
+        claimed.status = SwapStatus::Submitted;
+        claimed.swap_details.signature = Some(signature.clone());
+        let expected = claimed.clone();
+
+        let mut dao = MockDaoInterface::new();
+        dao.expect_get_swap_by_id()
+            .once()
+            .return_once(move |_| Ok(Some(swap)));
+        dao.expect_claim_swap_for_submission()
+            .once()
+            .return_once(move |_, _| Ok(claimed));
+        dao.expect_update_swap_transaction_hash()
+            .withf(move |id, hash| *id == swap_id && hash == "transaction-hash")
+            .once()
+            .returning(|_, _| Err(DaoSwapError::DatabaseError));
+        dao.expect_update_swap_failed().never();
+
+        let mut clients = validating_swaps_clients();
+        clients
+            .expect_submit_transaction()
+            .once()
+            .returning(|_, _| Ok("transaction-hash".to_string()));
+
+        let result = SwapsExecutor::new(dao, clients)
+            .submit_with_signature(SwapSignatureParams {
+                swap_id,
+                swap_executor: SwapExecutorType::ZeroExGasless,
+                signature,
+            })
+            .await
+            .expect("provider submission succeeded");
+
+        assert_eq!(result, expected);
+        assert_eq!(result.status, SwapStatus::Submitted);
+        assert_eq!(
+            result.swap_details.transaction_hash,
+            None
+        );
+    }
+
     /// The reported bug persisted the payer's unsplittable signature and only
     /// then panicked, leaving a swap row that could never be submitted. The
     /// order matters as much as the rejection: `expect_...().never()` is what

@@ -181,3 +181,47 @@ impl SwapsClients {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::clients::{
+        RawSwapDetails,
+        default_zero_ex_gasless_raw_transaction,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn signature_validation_dispatches_to_each_executor_client() {
+        let clients = SwapsClients::new(SwapsConfig::default()).await;
+        let mut raw_transaction = default_zero_ex_gasless_raw_transaction();
+        raw_transaction.approval = Some(raw_transaction.raw_trade.clone());
+        let details = SwapDetails {
+            id: "quote-with-approval".to_string(),
+            raw_transaction: RawSwapDetails::ZeroExGasless(raw_transaction),
+            signature: None,
+            transaction_hash: None,
+        };
+
+        for executor in [
+            SwapExecutorType::Across,
+            SwapExecutorType::Bungee,
+            SwapExecutorType::ZeroEx,
+        ] {
+            assert_eq!(
+                clients.validate_signature(executor, &details, "0xdeadbeef"),
+                Ok(()),
+                "{executor} accepts an opaque signature"
+            );
+        }
+
+        assert_eq!(
+            clients.validate_signature(
+                SwapExecutorType::ZeroExGasless,
+                &details,
+                "0xdeadbeef"
+            ),
+            Err(SwapsClientError::InvalidSignaturePayload)
+        );
+    }
+}

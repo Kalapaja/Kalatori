@@ -2252,4 +2252,41 @@ mod tests {
                 .await;
         }
     }
+
+    #[tokio::test]
+    async fn invalid_swap_source_releases_the_claimed_payout_for_retry() {
+        let mut executor = setup_executor();
+        let mut request = OutgoingTransferRequest::from(default_payout(Uuid::new_v4()));
+        request.chain = ChainType::PolkadotAssetHub;
+        let payout_id = request.id;
+        let mut expected_retry_meta = request.retry_meta.clone();
+        expected_retry_meta.increment_retry(
+            ChainExecutorError::BuildTransfer {
+                reason: format!(
+                    "Chain {} cannot be a swap source",
+                    ChainType::PolkadotAssetHub
+                ),
+            }
+            .to_string(),
+        );
+        expected_retry_meta.trunc_timestamps();
+
+        executor
+            .dao
+            .expect_update_payout_retry()
+            .once()
+            .withf(move |id, retry_meta, is_retriable| {
+                let mut retry_meta = retry_meta.clone();
+                retry_meta.trunc_timestamps();
+                *id == payout_id && retry_meta == expected_retry_meta && *is_retriable
+            })
+            .returning(|_, _, _| Ok(default_payout(Uuid::new_v4())));
+
+        let mut queue = FuturesUnordered::new();
+        executor
+            .send_transfer(request, &mut queue)
+            .await;
+
+        assert!(queue.is_empty());
+    }
 }

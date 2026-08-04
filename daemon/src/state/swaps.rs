@@ -676,6 +676,25 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn test_create_swap_rejects_a_missing_default_asset() {
+        let mut app_state = app_state_with_decimals(HashMap::new());
+        app_state
+            .payments_config
+            .default_asset_id
+            .clear();
+
+        let result = app_state
+            .create_swap(create_swap_params(Uuid::new_v4()))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SwapRequestError::AssetMetadataUnavailable { asset_id })
+                if asset_id == ChainType::Polygon.to_string()
+        ));
+    }
+
     /// Asset Hub is a valid settlement chain but has no `SwapChainType`
     /// equivalent. Converting it used to `unimplemented!()`, so a deployment
     /// with `default_chain = PolkadotAssetHub` answered this unauthenticated
@@ -696,12 +715,23 @@ mod tests {
             .create_swap(create_swap_params(Uuid::new_v4()))
             .await;
 
-        assert!(
-            matches!(
-                result,
-                Err(SwapRequestError::SwapDestinationUnavailable)
-            ),
-            "expected SwapDestinationUnavailable, got {result:?}"
+        let error = result.expect_err("Asset Hub cannot be a swap destination");
+        assert!(matches!(
+            error,
+            SwapRequestError::SwapDestinationUnavailable
+        ));
+        assert_eq!(
+            error.http_status_code(),
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(error.category(), "SERVICE_UNAVAILABLE");
+        assert_eq!(
+            error.code(),
+            "SWAP_DESTINATION_UNAVAILABLE"
+        );
+        assert_eq!(
+            error.message(),
+            "Swaps are not available for this shop."
         );
     }
 }

@@ -627,3 +627,41 @@ mod client {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chain_client::default_polygon_unsigned_transaction;
+
+    const TEST_MNEMONIC: &str = "test test test test test test test test test test test junk";
+
+    fn keyring() -> Keyring {
+        Keyring::new(SecretString::from(TEST_MNEMONIC))
+    }
+
+    #[test]
+    fn polygon_transaction_without_paymaster_data_is_rejected() {
+        let mut transaction = default_polygon_unsigned_transaction();
+        transaction.op_hash = Some(B256::ZERO);
+
+        let result = keyring().process_sign_polygon_transaction(SignTransactionRequestData {
+            transaction,
+            derivation_params: vec!["invoice-id".to_string()],
+        });
+
+        assert_eq!(result, Err(KeyringError::SigningFailed));
+    }
+
+    #[test]
+    fn polygon_transaction_without_operation_hash_is_rejected() {
+        let mut transaction = default_polygon_unsigned_transaction();
+        transaction.paymaster_data = Some("0xdeadbeef".to_string());
+
+        let result = keyring().process_sign_polygon_transaction(SignTransactionRequestData {
+            transaction,
+            derivation_params: vec!["invoice-id".to_string()],
+        });
+
+        assert_eq!(result, Err(KeyringError::SigningFailed));
+    }
+}

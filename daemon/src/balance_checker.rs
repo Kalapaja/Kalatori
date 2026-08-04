@@ -387,3 +387,70 @@ impl<
         Ok(invoice)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use crate::chain::TransactionsRecorder;
+    use crate::chain_client::MockBlockChainClient;
+    use crate::configs::EtherscanClientConfig;
+    use crate::dao::MockDaoInterface;
+
+    use super::*;
+
+    fn balance_checker() -> BalanceChecker<
+        MockDaoInterface,
+        MockBlockChainClient<AssetHubChainConfig>,
+        MockBlockChainClient<PolygonChainConfig>,
+    > {
+        BalanceChecker::new(
+            MockDaoInterface::default(),
+            InvoiceRegistry::new(),
+            MockBlockChainClient::<AssetHubChainConfig>::default(),
+            MockBlockChainClient::<PolygonChainConfig>::default(),
+            EtherscanClient::new(EtherscanClientConfig {
+                requests_per_second: NonZeroU32::MIN,
+                api_key: String::new(),
+            }),
+            TransactionsRecorder::<MockDaoInterface>::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn malformed_chain_identifiers_fail_before_calling_rpc() {
+        let checker = balance_checker();
+        let asset_hub_address = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty";
+        let polygon_address = "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7";
+
+        for (chain, asset_id, address) in [
+            (
+                ChainType::PolkadotAssetHub,
+                "not-an-asset",
+                asset_hub_address,
+            ),
+            (
+                ChainType::PolkadotAssetHub,
+                "1337",
+                "not-an-address",
+            ),
+            (
+                ChainType::Polygon,
+                "not-an-asset",
+                polygon_address,
+            ),
+            (
+                ChainType::Polygon,
+                polygon_address,
+                "not-an-address",
+            ),
+        ] {
+            assert!(matches!(
+                checker
+                    .get_account_balance(chain, asset_id, address)
+                    .await,
+                Err(BalanceCheckerError::FetchBalanceFailed)
+            ));
+        }
+    }
+}
