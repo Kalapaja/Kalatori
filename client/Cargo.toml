@@ -19,7 +19,10 @@ const-hex = "1"
 
 # Types
 uuid = { version = "1", features = ["v4", "serde"] }
-rust_decimal = "1"
+# Floor, not a preference -- see the note in daemon/Cargo.toml. Consumers of
+# this crate resolve their own lockfile, so the broken versions have to be
+# excluded here, not just locked out of ours.
+rust_decimal = "1.42.1"
 chrono = { version = "0.4", features = ["serde"] }
 serde_json = "1"
 secrecy = "0.10"

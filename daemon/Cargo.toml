@@ -18,7 +18,9 @@ kalatori-client = { path = "../client", features = ["axum-middleware", "sqlx-typ
 
 # Types and data serialization utils
 uuid = { version = "1", features = ["v4", "serde"] }
-rust_decimal = { version = "1", features = ["serde", "macros"] }
+# 1.42.1 is a floor, not a preference: 1.41.0 and 1.42.0 lose the borrow when
+# subtracting rescaled operands (paupino/rust-decimal#804) and are not yanked.
+rust_decimal = { version = "1.42.1", features = ["serde", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
