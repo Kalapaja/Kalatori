@@ -55,8 +55,8 @@ impl From<SwapsClientError> for SwapsExecutorError {
                 message: "There is not enough liquidity for this trade right now.".to_string(),
             },
             // `UnusableQuote` deliberately stays internal: the provider gave us
-            // a quote we cannot publish (missing gas parameters, unrepresentable
-            // expiry). Nothing the requester does differently would fix it.
+            // a quote we cannot publish (an unrepresentable expiry timestamp).
+            // Nothing the requester does differently would fix it.
             //
             // Everything else (transport failures, provider 5xx, malformed
             // responses) is an internal failure from the requester's view

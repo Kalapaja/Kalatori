@@ -98,9 +98,11 @@ pub enum SwapsClientError {
     #[error("No liquidity available")]
     NoLiquidity,
     // A quote that parsed but cannot be turned into a transaction the payer can
-    // actually submit — e.g. the provider omitted the gas parameters, or sent a
-    // timestamp outside the representable range. Publishing such a quote hands
-    // the payer a transaction that is guaranteed to fail on-chain.
+    // actually submit — currently only an expiry timestamp outside the
+    // representable range. Publishing such a quote hands the payer a
+    // transaction that is guaranteed to fail on-chain. Absent gas parameters
+    // are *not* in this class: they are passed through as omitted so the
+    // payer's wallet estimates them (Kalapaja/Kassette#50).
     #[error("Provider returned an unusable quote")]
     UnusableQuote,
     #[error("Operation is not allowed")]

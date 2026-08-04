@@ -59,9 +59,9 @@ pub fn default_across_raw_transaction() -> AcrossRawTransaction {
             contract_address: "".to_string(),
             data: "".to_string(),
             value: 100,
-            gas: 100,
-            max_fee_per_gas: 100,
-            max_priority_fee_per_gas: 100,
+            gas: Some(100),
+            max_fee_per_gas: Some(100),
+            max_priority_fee_per_gas: Some(100),
         },
         approval_transactions: Vec::new(),
     }
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_approval_response_parses_but_rejects_missing_gas_parameters() {
+    fn test_swap_approval_response_passes_through_missing_gas_parameters() {
         for raw in [
             r#"{
                 "inputAmount": "1",
@@ -345,13 +345,44 @@ mod tests {
                     .is_none()
             );
 
-            // Parsing must survive the nulls — but a quote with no gas
-            // parameters is not executable, and substituting 0 would publish a
-            // transaction that cannot be mined, so the conversion rejects it.
-            assert!(matches!(
-                SwapQuote::try_from(parsed),
-                Err(SwapsClientError::UnusableQuote)
-            ));
+            // Absent gas parameters are published as absent: Kassette
+            // estimates them in the payer's wallet. Substituting 0 would
+            // publish a transaction that cannot be mined, so the key must be
+            // missing from the JSON entirely — not `null`, not `"0"`.
+            let quote = SwapQuote::try_from(parsed).unwrap();
+            let RawSwapDetails::Across(details) = quote.quote_details else {
+                panic!("expected Across quote details");
+            };
+
+            assert!(details.transaction.gas.is_none());
+            assert!(
+                details
+                    .transaction
+                    .max_fee_per_gas
+                    .is_none()
+            );
+            assert!(
+                details
+                    .transaction
+                    .max_priority_fee_per_gas
+                    .is_none()
+            );
+            // Across documents an absent `value` as zero, and Kassette
+            // defaults it to `0n` — unlike gas, it is not omitted.
+            assert_eq!(details.transaction.value, 0);
+
+            let serialized = serde_json::to_value(&details.transaction).unwrap();
+            assert!(serialized.get("gas").is_none());
+            assert!(
+                serialized
+                    .get("max_fee_per_gas")
+                    .is_none()
+            );
+            assert!(
+                serialized
+                    .get("max_priority_fee_per_gas")
+                    .is_none()
+            );
         }
     }
 
@@ -828,9 +859,9 @@ mod tests {
                         contract_address: "0x89415a82d909a7238d69094C3Dd1dCC1aCbDa85C".to_string(),
                         data: "0xad5425c6000000000000000000000000a4d353bbc130cbef1811f27ac70989f9d568ceab0000000000000000000000000e3ca7fd040144900adaa5f9b8917f3933a4f5e90000000000000000000000000b2c639c533813f4aa9d7837caf62653d097ff850000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c335900000000000000000000000000000000000000000000000000000000000f55c800000000000000000000000000000000000000000000000000000000000f4d190000000000000000000000000000000000000000000000000000000000000089000000000000000000000000cad97616f91872c02ba3553db315db4015cbe8500000000000000000000000000000000000000000000000000000000069caaf870000000000000000000000000000000000000000000000000000000069cacba700000000000000000000000000000000000000000000000000000000000000050000000000000000000000000000000000000000000000000000000000000180000000000000000000000000000000000000000000000000000000000000000073c0de".to_string(),
                         value: 0,
-                        gas: 571750,
-                        max_fee_per_gas: 1094950,
-                        max_priority_fee_per_gas: 1000000,
+                        gas: Some(571750),
+                        max_fee_per_gas: Some(1094950),
+                        max_priority_fee_per_gas: Some(1000000),
                     },
                     approval_transactions: vec![],
                 },
