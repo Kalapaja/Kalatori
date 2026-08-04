@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 **Please note:**
 This is a public beta release of the Kalatori daemon. While it adheres to the [API specs](https://kalapaja.github.io/kalatori-api), it is still under active development. We encourage you to test it and provide feedback.
 
+## [0.9.4] - 2026-08-04
+
+Patch release fixing payment dead ends found while reviewing everything merged
+since 0.9.3. Requires the Kassette 0.1.0 front-end, which this release pins.
+
+### 🐛 Bug Fixes
+
+- Across quotes: a `gas` of `"0"` is now treated as absent rather than
+  forwarded. Across sends `gas: "0"` — not an omitted key — when its simulation
+  fails, which it does for every ERC-20 payer who has not yet granted an
+  approval. The zero reached the payer's wallet and produced a transaction that
+  could never be mined. A zero `max_fee_per_gas` is normalized the same way and
+  drops the priority fee with it; a zero priority fee alongside a real cap, and
+  a zero `value`, are both legitimate and preserved (#372)
+- Swap provider outages are no longer reported to the payer as rejections: the
+  Across and Bungee clients now fall back to the transport status when the error
+  body carries none, matching the fix 0.9.3 applied only to 0x (#373)
+- Terminal swaps with no transaction hash are dropped from the tracker after one
+  warning, instead of being reloaded and re-warned every polling round with no
+  upper bound on the tracker's size (#374)
+- An invoice update can no longer resurrect a paid invoice in the in-memory
+  registry, nor revert a concurrently recorded payment status while keeping its
+  received amount (#374)
+- Asset Hub balance reconciliation reads the received total inside the
+  transaction that writes its adjustment, so a transfer committed between the
+  balance fetch and the write is no longer counted twice (#374)
+
+### 📚 Documentation
+
+- `docs/swaps.md` records Across's zero-gas sentinel and why 0x is treated
+  differently; `CONTRIBUTING.md` MSRV corrected to 1.91 (#372, #373)
+
 ## [0.9.3] - 2026-07-18
 
 ### 🚀 Features
