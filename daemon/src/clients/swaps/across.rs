@@ -407,9 +407,11 @@ mod tests {
 
     #[test]
     fn test_across_zero_gas_and_fee_cap_are_omitted() {
-        // Trimmed from the production shape returned when an ERC-20 approval
-        // is still missing: Across uses `"0"` as the gas sentinel even though
-        // the fee caps and value are normally absent in this response.
+        // Based on the production shape returned when an ERC-20 approval is
+        // still missing, where Across sends `gas: "0"`. The fee caps and
+        // `value` are normally absent from that response; they are supplied
+        // here on purpose, so one fixture exercises zero-cap normalization and
+        // the genuine-zero `value` alongside the gas sentinel.
         let raw = r#"{
             "inputAmount": "1",
             "maxInputAmount": "1",

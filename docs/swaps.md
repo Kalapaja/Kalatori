@@ -64,9 +64,16 @@ Across does not omit `gas` when its simulation fails. A production
 an Across gas limit of zero exactly like an absent one. It does the same for a
 zero `maxFeePerGas` and drops `maxPriorityFeePerGas` whenever the cap is absent
 or normalized away. A zero priority fee remains valid and is preserved when
-the max fee cap is non-zero. 0x remains separate: its nullable `gas` is omitted
-only when absent, and a supplied limit — including zero — passes through
-verbatim.
+the max fee cap is non-zero.
+
+0x remains separate because its contract differs, not because zero is
+acceptable there. 0x types `gas` as genuinely nullable rather than using zero
+as a sentinel, and its own troubleshooting guide warns that wallet-side
+`eth_estimateGas` can come in *too low* to settle — so a supplied limit is
+forwarded verbatim and only an absent one is omitted. A zero limit from 0x
+would be exactly as unmineable as Across's; there is no evidence it emits one,
+and normalizing on that speculation would risk discarding a limit 0x
+deliberately sized.
 
 The daemon publishes unusable or absent fields with their keys **omitted from
 the JSON**. Absent means "estimate it yourself": Kassette passes `undefined`,
