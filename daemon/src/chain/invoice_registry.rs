@@ -117,11 +117,20 @@ impl InvoiceRegistry {
     }
 
     /// Replace the data of a still-tracked invoice (amount, cart, expiry, ...)
-    /// while preserving the received amount tracked so far.
+    /// while preserving the payment progress tracked so far.
     ///
     /// An absent record is deliberately not inserted: payment processing
     /// removes final invoices, and a post-commit update refresh must not
     /// resurrect one from its stale pre-payment snapshot.
+    ///
+    /// Payment progress means both the received amount *and* the status:
+    /// `update_filled_amount` maintains them as a matched pair, and the record
+    /// handed to a refresh is a pre-payment snapshot of both. `update_invoice`
+    /// never intends to change the status — its UPDATE touches only `amount`,
+    /// `cart` and `valid_till` — so carrying the status through would let a
+    /// concurrently recorded `PartiallyPaid` be reverted to an unpaid status
+    /// while its received amount stayed, which is exactly the inconsistent view
+    /// this function exists to avoid.
     pub async fn refresh_invoice(
         &self,
         mut record: InvoiceWithReceivedAmount,
@@ -130,6 +139,7 @@ impl InvoiceRegistry {
 
         if let Some(existing) = invoices.get_mut(&record.invoice.id) {
             record.total_received_amount = existing.total_received_amount;
+            record.invoice.status = existing.invoice.status;
             *existing = record;
         }
     }
@@ -304,6 +314,74 @@ mod tests {
         assert_eq!(
             registry.get_invoice(&other_id).await,
             None
+        );
+    }
+
+    /// Deterministic update/payment interleaving on a *still-tracked* invoice:
+    /// a transfer lands between the update's commit and its registry refresh.
+    /// The refresh carries a pre-payment snapshot, so it must keep neither half
+    /// of the payment-progress pair — reverting the status while retaining the
+    /// received amount would leave the registry internally inconsistent.
+    #[tokio::test]
+    async fn test_refresh_invoice_does_not_revert_concurrent_payment_status() {
+        let registry = InvoiceRegistry::new();
+        let invoice_id = Uuid::new_v4();
+        let original = Invoice {
+            id: invoice_id,
+            status: InvoiceStatus::Waiting,
+            amount: Decimal::ONE_HUNDRED,
+            ..default_invoice()
+        };
+
+        registry
+            .add_invoice(
+                original
+                    .clone()
+                    .with_amount(Decimal::ZERO),
+            )
+            .await;
+
+        // A transfer is recorded: amount and status move together.
+        registry
+            .update_filled_amount(
+                &invoice_id,
+                Decimal::TEN,
+                InvoiceStatus::PartiallyPaid,
+            )
+            .await;
+
+        // The in-flight invoice update commits and refreshes with the snapshot
+        // it built *before* that transfer: still `Waiting`, still zero.
+        let updated = Invoice {
+            amount: Decimal::from(250),
+            ..original
+        };
+        registry
+            .refresh_invoice(
+                updated
+                    .clone()
+                    .with_amount(Decimal::ZERO),
+            )
+            .await;
+
+        let stored = registry
+            .get_invoice(&invoice_id)
+            .await
+            .unwrap();
+
+        // The edited invoice data is applied ...
+        assert_eq!(
+            stored.invoice.amount,
+            Decimal::from(250)
+        );
+        // ... but payment progress survives intact, both halves.
+        assert_eq!(
+            stored.invoice.status,
+            InvoiceStatus::PartiallyPaid
+        );
+        assert_eq!(
+            stored.total_received_amount,
+            Decimal::TEN
         );
     }
 
