@@ -135,18 +135,13 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
         Ok(())
     }
 
-    async fn store_transaction(
+    async fn store_transaction_in(
         &self,
+        dao_transaction: &D::Transaction,
         transaction: IncomingTransaction,
         invoice_status: InvoiceStatus,
         total_received_amount: Decimal,
     ) -> Result<(), TransactionsRecorderError> {
-        let dao_transaction = self
-            .dao
-            .begin_transaction()
-            .await
-            .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
-
         let invoice_id = transaction.invoice_id;
 
         dao_transaction
@@ -178,21 +173,21 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             // put here total received amount which might be slightly higher or lower then
             // invoice amount
             self.add_payout_to_dao_transaction(
-                &dao_transaction,
+                dao_transaction,
                 invoice,
                 total_received_amount,
             )
             .await?;
 
             self.add_webhook_to_dao_transaction(
-                &dao_transaction,
+                dao_transaction,
                 public_invoice,
                 InvoiceEventType::Paid,
             )
             .await?;
         } else if invoice_status == InvoiceStatus::PartiallyPaid {
             self.add_webhook_to_dao_transaction(
-                &dao_transaction,
+                dao_transaction,
                 public_invoice,
                 InvoiceEventType::PartiallyPaid,
             )
@@ -204,7 +199,7 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             let refund_amount = total_received_amount - payout_amount;
 
             self.add_payout_to_dao_transaction(
-                &dao_transaction,
+                dao_transaction,
                 invoice.clone(),
                 payout_amount,
             )
@@ -218,19 +213,143 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
 
             self.add_webhook_to_dao_transaction(
-                &dao_transaction,
+                dao_transaction,
                 public_invoice,
                 InvoiceEventType::Paid,
             )
             .await?;
         }
 
-        dao_transaction
-            .commit()
+        Ok(())
+    }
+
+    #[cfg(test)]
+    async fn store_transaction(
+        &self,
+        transaction: IncomingTransaction,
+        invoice_status: InvoiceStatus,
+        total_received_amount: Decimal,
+    ) -> Result<(), TransactionsRecorderError> {
+        let dao_transaction = self
+            .dao
+            .begin_transaction()
             .await
             .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
 
-        Ok(())
+        self.store_transaction_in(
+            &dao_transaction,
+            transaction,
+            invoice_status,
+            total_received_amount,
+        )
+        .await?;
+
+        dao_transaction
+            .commit()
+            .await
+            .map_err(|_e| TransactionsRecorderError::DaoTransactionError)
+    }
+
+    pub(crate) async fn process_invoice_transaction_in(
+        &self,
+        dao_transaction: &D::Transaction,
+        invoice: &InvoiceWithReceivedAmount,
+        transaction: IncomingTransaction,
+    ) -> Result<(InvoiceWithReceivedAmount, Decimal), TransactionsRecorderError> {
+        let updated_received_amount =
+            invoice.total_received_amount + transaction.transfer_info.amount;
+
+        let underpayment_tolerance = self
+            .config
+            .get_asset_underpayment_tolerance(
+                invoice.invoice.chain,
+                &invoice.invoice.asset_id,
+            );
+        let min_paid_amount = invoice.invoice.amount - underpayment_tolerance;
+
+        let overpayment_tolerance = self
+            .config
+            .get_asset_overpayment_tolerance(
+                invoice.invoice.chain,
+                &invoice.invoice.asset_id,
+            );
+        let max_paid_amount = invoice.invoice.amount + overpayment_tolerance;
+
+        let is_underpaid = updated_received_amount < min_paid_amount;
+        let is_overpaid = updated_received_amount > max_paid_amount;
+
+        let updated_status = if !is_underpaid && !is_overpaid {
+            InvoiceStatus::Paid
+        } else if is_underpaid {
+            InvoiceStatus::PartiallyPaid
+        } else {
+            InvoiceStatus::OverPaid
+        };
+
+        self.store_transaction_in(
+            dao_transaction,
+            transaction,
+            updated_status,
+            updated_received_amount,
+        )
+        .await?;
+
+        let mut updated_invoice = invoice.clone();
+        updated_invoice.invoice.status = updated_status;
+        updated_invoice.total_received_amount = updated_received_amount;
+
+        Ok((updated_invoice, min_paid_amount))
+    }
+
+    pub(crate) async fn apply_recorded_invoice_update(
+        &self,
+        invoice: &mut InvoiceWithReceivedAmount,
+        updated_invoice: InvoiceWithReceivedAmount,
+        min_paid_amount: Decimal,
+    ) {
+        let updated_status = updated_invoice.invoice.status;
+        let updated_received_amount = updated_invoice.total_received_amount;
+
+        match updated_status {
+            InvoiceStatus::Paid | InvoiceStatus::OverPaid => {
+                tracing::info!(
+                    invoice_id = %updated_invoice.invoice.id,
+                    filled_amount = %updated_received_amount,
+                    min_fill_amount = %min_paid_amount,
+                    "Invoice has been paid, removing from registry, stop monitoring"
+                );
+
+                self.registry
+                    .remove_invoice(&updated_invoice.invoice.id)
+                    .await;
+            },
+            InvoiceStatus::PartiallyPaid => {
+                tracing::info!(
+                    invoice_id = %updated_invoice.invoice.id,
+                    filled_amount = %updated_received_amount,
+                    min_fill_amount = %min_paid_amount,
+                    "Invoice has been partially paid, updating filled amount in registry"
+                );
+
+                self.registry
+                    .update_filled_amount(
+                        &updated_invoice.invoice.id,
+                        updated_received_amount,
+                        updated_status,
+                    )
+                    .await;
+            },
+            _ => {
+                tracing::error!(
+                    invoice_id = %updated_invoice.invoice.id,
+                    invoice_status = %updated_status,
+                    "Recorded invoice transaction produced an unexpected status"
+                );
+                return;
+            },
+        }
+
+        *invoice = updated_invoice;
     }
 
     #[tracing::instrument(skip_all)]
@@ -244,92 +363,23 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
         // address. We'll be able to init balance and transactions refetch and
         // will need to create only refund but not payout. So we'll need to respect the
         // invoice status and probably allow transition `Paid` -> `Overpaid`.
-        let &mut InvoiceWithReceivedAmount {
-            ref mut invoice,
-            ref mut total_received_amount,
-        } = invoice;
+        let dao_transaction = self
+            .dao
+            .begin_transaction()
+            .await
+            .map_err(|_e| TransactionsRecorderError::DaoTransactionError)?;
 
-        let updated_received_amount = *total_received_amount + transaction.transfer_info.amount;
-
-        let underpayment_tolerance = self
-            .config
-            .get_asset_underpayment_tolerance(invoice.chain, &invoice.asset_id);
-        let min_paid_amount = invoice.amount - underpayment_tolerance;
-
-        let overpayment_tolerance = self
-            .config
-            .get_asset_overpayment_tolerance(invoice.chain, &invoice.asset_id);
-        let max_paid_amount = invoice.amount + overpayment_tolerance;
-
-        let is_underpaid = updated_received_amount < min_paid_amount;
-        let is_overpaid = updated_received_amount > max_paid_amount;
-
-        let updated_status = if !is_underpaid && !is_overpaid {
-            InvoiceStatus::Paid
-        } else if is_underpaid {
-            InvoiceStatus::PartiallyPaid
-        } else {
-            InvoiceStatus::OverPaid
-        };
-
-        match self
-            .store_transaction(
-                transaction,
-                updated_status,
-                updated_received_amount,
-            )
+        let (updated_invoice, min_paid_amount) = match self
+            .process_invoice_transaction_in(&dao_transaction, invoice, transaction)
             .await
         {
-            Ok(())
-                if matches!(
-                    updated_status,
-                    InvoiceStatus::Paid | InvoiceStatus::OverPaid
-                ) =>
-            {
-                tracing::info!(
-                    invoice_id = %invoice.id,
-                    filled_amount = %updated_received_amount,
-                    min_fill_amount = %min_paid_amount,
-                    "Invoice has been paid, removing from registry, stop monitoring"
-                );
-
-                self.registry
-                    .remove_invoice(&invoice.id)
-                    .await;
-
-                invoice.status = updated_status;
-                *total_received_amount = updated_received_amount;
-            },
-            Ok(()) if updated_status == InvoiceStatus::PartiallyPaid => {
-                tracing::info!(
-                    invoice_id = %invoice.id,
-                    filled_amount = %updated_received_amount,
-                    min_fill_amount = %min_paid_amount,
-                    "Invoice has been partially paid, updating filled amount in registry"
-                );
-
-                self.registry
-                    .update_filled_amount(
-                        &invoice.id,
-                        updated_received_amount,
-                        updated_status,
-                    )
-                    .await;
-
-                invoice.status = updated_status;
-                *total_received_amount = updated_received_amount;
-            },
-            #[expect(
-                clippy::unreachable,
-                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
-            )]
-            Ok(()) => unreachable!(),
+            Ok(update) => update,
             Err(TransactionsRecorderError::TransactionDuplication {
                 chain,
                 general_transaction_id,
             }) => {
                 tracing::debug!(
-                    invoice_id = %invoice.id,
+                    invoice_id = %invoice.invoice.id,
                     ?chain,
                     transaction_id = ?general_transaction_id,
                     "Transaction is already presented in database, skip it"
@@ -344,13 +394,28 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             },
             Err(TransactionsRecorderError::DaoTransactionError) => {
                 tracing::error!(
-                    invoice_id = %invoice.id,
+                    invoice_id = %invoice.invoice.id,
                     "Error while storing transaction for invoice"
                 );
 
                 return Err(TransactionsRecorderError::DaoTransactionError);
             },
+        };
+
+        if dao_transaction.commit().await.is_err() {
+            tracing::error!(
+                invoice_id = %invoice.invoice.id,
+                "Error while committing transaction for invoice"
+            );
+            return Err(TransactionsRecorderError::DaoTransactionError);
         }
+
+        self.apply_recorded_invoice_update(
+            invoice,
+            updated_invoice,
+            min_paid_amount,
+        )
+        .await;
 
         Ok(())
     }
@@ -358,7 +423,7 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
 
 #[cfg(test)]
 mockall::mock! {
-    pub TransactionsRecorder<D: 'static> {
+    pub TransactionsRecorder<D: DaoInterface + 'static> {
         pub fn new(
             dao: D,
             registry: InvoiceRegistry,
@@ -370,9 +435,23 @@ mockall::mock! {
             invoice: &mut InvoiceWithReceivedAmount,
             transaction: IncomingTransaction,
         ) -> Result<(), TransactionsRecorderError>;
+
+        pub async fn process_invoice_transaction_in(
+            &self,
+            dao_transaction: &D::Transaction,
+            invoice: &InvoiceWithReceivedAmount,
+            transaction: IncomingTransaction,
+        ) -> Result<(InvoiceWithReceivedAmount, Decimal), TransactionsRecorderError>;
+
+        pub async fn apply_recorded_invoice_update(
+            &self,
+            invoice: &mut InvoiceWithReceivedAmount,
+            updated_invoice: InvoiceWithReceivedAmount,
+            min_paid_amount: Decimal,
+        );
     }
 
-    impl<D> Clone for TransactionsRecorder<D> {
+    impl<D: DaoInterface + 'static> Clone for TransactionsRecorder<D> {
         fn clone(&self) -> Self;
     }
 }
@@ -1231,6 +1310,80 @@ mod tests {
                     .is_zero()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn transaction_scoped_adjustment_records_the_shortfall_once() {
+        let invoice = Invoice {
+            amount: Decimal::ONE_HUNDRED,
+            chain: ChainType::PolkadotAssetHub,
+            ..default_invoice()
+        };
+        let invoice_id = invoice.id;
+        let recorded_amount = Decimal::new(3, 0);
+        let adjustment = Decimal::new(7, 0);
+        let expected_total = Decimal::TEN;
+        let invoice_with_amount = invoice
+            .clone()
+            .with_amount(recorded_amount);
+
+        let mut dao_transaction = MockDaoTransactionInterface::default();
+        dao_transaction
+            .expect_create_transaction()
+            .once()
+            .returning(Ok);
+
+        let updated_invoice = Invoice {
+            status: InvoiceStatus::PartiallyPaid,
+            ..invoice
+        };
+        dao_transaction
+            .expect_update_invoice_status()
+            .once()
+            .with(
+                eq(invoice_id),
+                eq(InvoiceStatus::PartiallyPaid),
+            )
+            .return_once(move |_, _| Ok(updated_invoice));
+        dao_transaction
+            .expect_create_webhook_event()
+            .once()
+            .returning(Ok);
+
+        // The caller owns this transaction so the scoped recorder must neither
+        // begin another one nor commit before reconciliation has finished.
+        let recorder = TransactionsRecorder::new(
+            MockDaoInterface::default(),
+            InvoiceRegistry::new(),
+            default_payments_config(),
+        );
+
+        let mut transaction = default_incoming_transaction(invoice_id);
+        transaction.transfer_info.chain = ChainType::PolkadotAssetHub;
+        transaction.transfer_info.amount = adjustment;
+        transaction.transaction_id = GeneralTransactionId {
+            block_number: None,
+            position_in_block: None,
+            tx_hash: None,
+        };
+
+        let (result, _) = recorder
+            .process_invoice_transaction_in(
+                &dao_transaction,
+                &invoice_with_amount,
+                transaction,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.total_received_amount,
+            expected_total
+        );
+        assert_eq!(
+            result.invoice.status,
+            InvoiceStatus::PartiallyPaid
+        );
     }
 
     /// A payout that cannot be built must not roll back the payment.
