@@ -236,21 +236,37 @@ struct BungeeApiResponse<T> {
     status_code: Option<u32>,
 }
 
-impl<T> From<BungeeApiResponse<T>> for SwapsClientError {
-    fn from(value: BungeeApiResponse<T>) -> Self {
+impl<T> BungeeApiResponse<T> {
+    /// `statusCode` is optional in Bungee's error envelope, and a gateway
+    /// failure omits it. Falling back to the transport status keeps a 502/503
+    /// from reaching the payer as a rejection they could act on. Mirrors the 0x
+    /// client, which threads the HTTP status in for the same reason.
+    fn into_client_error(
+        self,
+        status: reqwest::StatusCode,
+    ) -> SwapsClientError {
         tracing::warn!(
-            message = ?value.message,
-            status_code = ?value.status_code,
+            %status,
+            message = ?self.message,
+            status_code = ?self.status_code,
             "Bungee API returned an error response"
         );
 
-        match (value.status_code, value.message) {
-            // Provider-side failures are not the requester's fault
-            (Some(status), _) if status >= 500 => Self::UnknownApiError,
-            (_, Some(message)) => Self::ProviderRejected {
+        let is_server_error = self.status_code.map_or_else(
+            || status.is_server_error(),
+            |embedded| embedded >= 500,
+        );
+
+        // Provider-side failures are not the requester's fault
+        if is_server_error {
+            return SwapsClientError::UnknownApiError;
+        }
+
+        match self.message {
+            Some(message) => SwapsClientError::ProviderRejected {
                 message,
             },
-            _ => Self::UnknownApiError,
+            None => SwapsClientError::UnknownApiError,
         }
     }
 }
@@ -331,17 +347,18 @@ impl BungeeClient {
             request
         };
 
-        let raw_response = request
-            .send()
-            .await
-            .inspect_err(|e| {
-                tracing::warn!(
-                    error.source = ?e,
-                    "Bungee request failed"
-                )
-            })?
-            .text()
-            .await?;
+        let response = request.send().await.inspect_err(|e| {
+            tracing::warn!(
+                error.source = ?e,
+                "Bungee request failed"
+            )
+        })?;
+
+        // Captured before the body is consumed: a Bungee gateway failure omits
+        // `statusCode`, leaving the transport status the only signal that this
+        // was their outage rather than a bad request.
+        let http_status = response.status();
+        let raw_response = response.text().await?;
 
         tracing::trace!(
             text = %raw_response,
@@ -365,7 +382,7 @@ impl BungeeClient {
 
         match response.result {
             Some(result) if response.success => Ok(result),
-            _ => Err(response.into()),
+            _ => Err(response.into_client_error(http_status)),
         }
     }
 }
@@ -378,6 +395,14 @@ impl SwapsClient for BungeeClient {
 
     // TODO: bungee actually can make a cross-chain swaps but it requires API our
     // modifications
+    //
+    // Before flipping this to `true`: a cross-chain `basicReq` carries
+    // `delegate`, `switchboardId` and `refuelAmount`, and its witness carries
+    // `swapOutputToken` and `minSwapOutput` — none of which `BasicRequest` or
+    // `Witness` model. Deserialization tolerates them, but `SubmitOrderRequest`
+    // re-serializes the witness back to `/submit`, so they would be silently
+    // dropped and the witness would no longer match what the payer signed.
+    // See https://github.com/Kalapaja/Kalatori/issues/370.
     const CROSS_CHAIN_SUPPORTED: bool = false;
     const EXECUTOR: SwapExecutorType = SwapExecutorType::Bungee;
     const GASLESS: bool = false;
@@ -1266,43 +1291,85 @@ mod tests {
         assert_eq!(response, expected_response);
         mock.assert();
     }
-    #[test]
-    fn test_error_response_classification() {
-        let rejection: SwapsClientError = BungeeApiResponse::<()> {
+    fn error_response(
+        status_code: Option<u32>,
+        message: Option<&str>,
+    ) -> BungeeApiResponse<()> {
+        BungeeApiResponse::<()> {
             result: None,
             success: false,
-            message: Some("Amount is too low".to_string()),
-            status_code: Some(400),
+            message: message.map(ToString::to_string),
+            status_code,
         }
-        .into();
+    }
+
+    /// A gateway failure answers without `statusCode`. Before the transport
+    /// status was threaded through, this was classified as a rejection and
+    /// surfaced to the payer as a 422 they could do nothing about.
+    #[test]
+    fn server_error_without_status_code_is_not_a_rejection() {
         assert_eq!(
-            rejection,
+            error_response(None, Some("Bad gateway"))
+                .into_client_error(reqwest::StatusCode::BAD_GATEWAY),
+            SwapsClientError::UnknownApiError
+        );
+        assert_eq!(
+            error_response(None, Some("Service unavailable"))
+                .into_client_error(reqwest::StatusCode::SERVICE_UNAVAILABLE),
+            SwapsClientError::UnknownApiError
+        );
+    }
+
+    /// The body stays authoritative when it does carry a status code, in both
+    /// directions.
+    #[test]
+    fn status_code_wins_over_transport_status() {
+        assert_eq!(
+            error_response(Some(400), Some("Amount is too low"))
+                .into_client_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            SwapsClientError::ProviderRejected {
+                message: "Amount is too low".to_string(),
+            }
+        );
+        assert_eq!(
+            error_response(Some(503), Some("Upstream unavailable"))
+                .into_client_error(reqwest::StatusCode::OK),
+            SwapsClientError::UnknownApiError
+        );
+    }
+
+    /// A genuine client-side rejection with no status code must stay a
+    /// rejection — the fallback must not sweep every statusless body into
+    /// "our fault".
+    #[test]
+    fn client_error_without_status_code_stays_a_rejection() {
+        assert_eq!(
+            error_response(None, Some("Unsupported route"))
+                .into_client_error(reqwest::StatusCode::BAD_REQUEST),
+            SwapsClientError::ProviderRejected {
+                message: "Unsupported route".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_error_response_classification() {
+        assert_eq!(
+            error_response(Some(400), Some("Amount is too low"))
+                .into_client_error(reqwest::StatusCode::BAD_REQUEST),
             SwapsClientError::ProviderRejected {
                 message: "Amount is too low".to_string(),
             }
         );
 
-        let provider_failure: SwapsClientError = BungeeApiResponse::<()> {
-            result: None,
-            success: false,
-            message: Some("Internal server error".to_string()),
-            status_code: Some(500),
-        }
-        .into();
         assert_eq!(
-            provider_failure,
+            error_response(Some(500), Some("Internal server error"))
+                .into_client_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
             SwapsClientError::UnknownApiError
         );
 
-        let opaque: SwapsClientError = BungeeApiResponse::<()> {
-            result: None,
-            success: false,
-            message: None,
-            status_code: None,
-        }
-        .into();
         assert_eq!(
-            opaque,
+            error_response(None, None).into_client_error(reqwest::StatusCode::BAD_REQUEST),
             SwapsClientError::UnknownApiError
         );
     }
