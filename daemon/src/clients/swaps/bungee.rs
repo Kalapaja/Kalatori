@@ -312,6 +312,10 @@ impl BungeeClient {
             request.query(&params)
         };
 
+        #[expect(
+            clippy::unwrap_used,
+            reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+        )]
         let request = if let Some(api_access) = self.api_access.as_ref() {
             request.headers(HeaderMap::from_iter([
                 (

@@ -77,6 +77,7 @@ use crate::types::{
     RefundChanges,
     ShopPlatform,
     Swap,
+    SwapChainType,
     Transaction,
     TransferDestinationParams,
     UpdateInvoiceData,
@@ -155,6 +156,10 @@ impl<D: DaoInterface> AppState<D> {
         // asset_id
         let chain = self.payments_config.default_chain;
 
+        #[expect(
+            clippy::unwrap_used,
+            reason = "startup validation requires a default asset id for every configured chain, so the lookup always hits"
+        )]
         let asset_id = self
             .payments_config
             .default_asset_id
@@ -472,15 +477,40 @@ impl<D: DaoInterface> AppState<D> {
             })
         }
 
+        // `validate_recipients` only checks the chains it is handed at startup,
+        // so a historical invoice on a chain that is no longer configured can
+        // reach this with no recipient.
         let destination_address = self
             .payments_config
             .recipient
             .get(&invoice.chain)
-            .unwrap()
+            .ok_or_else(|| {
+                tracing::error!(
+                    chain = %invoice.chain,
+                    %invoice_id,
+                    "No recipient configured for this invoice's chain, cannot prepare a payout"
+                );
+
+                DaoInvoiceError::UnsupportedPayoutChain {
+                    chain: invoice.chain,
+                }
+            })?
             .clone();
 
+        let destination_chain = SwapChainType::try_from(invoice.chain).map_err(|chain| {
+            tracing::error!(
+                %chain,
+                %invoice_id,
+                "Cannot build a payout destination for this chain"
+            );
+
+            DaoInvoiceError::UnsupportedPayoutChain {
+                chain,
+            }
+        })?;
+
         let destination_params = TransferDestinationParams {
-            destination_chain: invoice.chain.into(),
+            destination_chain,
             destination_asset_id: invoice.asset_id.clone(),
             destination_address,
         };

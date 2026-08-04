@@ -289,6 +289,10 @@ async fn send_transfer_request<T: ChainConfig, C: BlockChainClient<T>>(
                 is_retriable: false,
             })
         },
+        #[expect(
+            clippy::unreachable,
+            reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+        )]
         Err(TransactionError::BuildFailed {
             ..
         }) => unreachable!(),
@@ -541,7 +545,11 @@ impl<
         &self,
         request: OutgoingTransferRequest,
     ) -> Result<(), ChainExecutorError> {
-        let from_chain = request.chain.into();
+        let from_chain = SwapChainType::try_from(request.chain).map_err(|chain| {
+            ChainExecutorError::BuildTransfer {
+                reason: format!("Chain {chain} cannot be a swap source"),
+            }
+        })?;
         let to_chain = request
             .destination_params
             .destination_chain;
@@ -561,6 +569,10 @@ impl<
 
         // TODO: make it more normally. Add some helpers for such operation, get
         // precision from prestored values
+        #[expect(
+            clippy::unwrap_used,
+            reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+        )]
         let from_amount_units = (request.amount / Decimal::new(1, 6))
             .to_u128()
             .unwrap();
@@ -644,7 +656,14 @@ impl<
         let origin = request.origin;
         let mut retry_meta = request.retry_meta.clone();
 
-        let from_chain = SwapChainType::from(request.chain);
+        let Ok(from_chain) = SwapChainType::try_from(request.chain) else {
+            tracing::error!(
+                chain = %request.chain,
+                "Outgoing transfer on a chain that cannot be a swap source, skipping"
+            );
+
+            return
+        };
         let to_chain = request
             .destination_params
             .destination_chain;
@@ -708,6 +727,10 @@ impl<
                         );
                     };
                 },
+                #[expect(
+                    clippy::unreachable,
+                    reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+                )]
                 TransactionOriginVariant::InternalTransfer(_) | TransactionOriginVariant::None => {
                     unreachable!()
                 },
@@ -814,6 +837,10 @@ impl<
                         }
                     })?;
             },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
             TransactionOriginVariant::InternalTransfer(_) | TransactionOriginVariant::None => {
                 unreachable!()
             },
@@ -916,6 +943,10 @@ impl<
                         }
                     })?;
             },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
             TransactionOriginVariant::InternalTransfer(_) | TransactionOriginVariant::None => {
                 unreachable!()
             },

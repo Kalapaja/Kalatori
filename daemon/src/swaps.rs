@@ -98,6 +98,31 @@ impl SwapsClients {
         }
     }
 
+    /// Check a caller-supplied signature against the stored quote before it is
+    /// written to the database. Rejecting here keeps a payload that the
+    /// submission path cannot parse from ever reaching the swap row.
+    pub fn validate_signature(
+        &self,
+        executor: SwapExecutorType,
+        details: &SwapDetails,
+        signature: &str,
+    ) -> Result<(), SwapsClientError> {
+        match executor {
+            SwapExecutorType::Across => self
+                .across_client
+                .validate_signature(details, signature),
+            SwapExecutorType::Bungee => self
+                .bungee_client
+                .validate_signature(details, signature),
+            SwapExecutorType::ZeroEx => self
+                .zero_ex_client
+                .validate_signature(details, signature),
+            SwapExecutorType::ZeroExGasless => self
+                .zero_ex_gasless_client
+                .validate_signature(details, signature),
+        }
+    }
+
     pub async fn submit_transaction(
         &self,
         executor: SwapExecutorType,

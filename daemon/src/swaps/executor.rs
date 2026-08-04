@@ -30,6 +30,11 @@ pub enum SwapsExecutorError {
     SwapNotFound { swap_id: Uuid },
     #[error("Invoice {invoice_id} not found")]
     InvoiceNotFound { invoice_id: Uuid },
+    /// The submitted signature does not match the shape the stored quote
+    /// requires. The submitter can fix this by re-signing, so it is a 4xx and
+    /// the swap row is left untouched.
+    #[error("Submitted signature does not match the stored quote")]
+    InvalidSignature,
     #[error("Internal database error")]
     DatabaseError,
 }
@@ -54,6 +59,10 @@ impl From<SwapsClientError> for SwapsExecutorError {
             SwapsClientError::NoLiquidity => SwapsExecutorError::ProviderRejected {
                 message: "There is not enough liquidity for this trade right now.".to_string(),
             },
+            // Caller-supplied data we refused to accept, not a failure of ours:
+            // it has to reach the API as a 4xx so the submitter knows to
+            // re-sign, and must never be reported as an internal error.
+            SwapsClientError::InvalidSignaturePayload => SwapsExecutorError::InvalidSignature,
             // `UnusableQuote` deliberately stays internal: the provider gave us
             // a quote we cannot publish (an unrepresentable expiry timestamp).
             // Nothing the requester does differently would fix it.
@@ -138,17 +147,42 @@ impl<D: DaoInterface + 'static> SwapsExecutor<D> {
         &self,
         swap_signature: SwapSignatureParams,
     ) -> Result<Swap, SwapsExecutorError> {
+        // The signature arrives from the unauthenticated public endpoint, so it
+        // has to be checked against the stored quote *before* it is written:
+        // a payload the submission path cannot parse must neither reach the
+        // swap row nor be handed to the executor. The stored executor is the
+        // authority here — it's the one that drives submission below — not the
+        // executor the caller claims in the request.
+        let stored = self
+            .dao
+            .get_swap_by_id(swap_signature.swap_id)
+            .await
+            .map_err(|_| SwapsExecutorError::DatabaseError)?
+            .ok_or(SwapsExecutorError::SwapNotFound {
+                swap_id: swap_signature.swap_id,
+            })?;
+
+        // Only payer-signed executors accept a submitted signature at all. This
+        // is checked against the stored executor rather than the one named in
+        // the request: the request's is caller-controlled, and answering it
+        // would let a caller pick an executor that validates nothing.
         if !matches!(
-            swap_signature.swap_executor,
+            stored.request.swap_executor,
             SwapExecutorType::Bungee | SwapExecutorType::ZeroEx | SwapExecutorType::ZeroExGasless
         ) {
-            // TODO: other error, perhaps also check executor on DB level
             tracing::warn!(
-                swap_executor = %swap_signature.swap_executor,
-                "Got submit with signature request for wrong swap executor"
+                swap_executor = %stored.request.swap_executor,
+                "Got submit-with-signature request for a swap that is not payer-signed"
             );
-            return Err(SwapsExecutorError::DatabaseError);
+
+            return Err(SwapsExecutorError::InvalidSignature)
         }
+
+        self.clients.validate_signature(
+            stored.request.swap_executor,
+            &stored.swap_details,
+            &swap_signature.signature,
+        )?;
 
         let swap = self
             .dao
@@ -351,7 +385,20 @@ mockall::mock! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::SwapChainType;
+    use crate::clients::{
+        RawSwapDetails,
+        default_zero_ex_gasless_raw_transaction,
+    };
+    use crate::configs::{
+        SwapsConfig,
+        ZeroExApiConfig,
+    };
+    use crate::dao::MockDaoInterface;
+    use crate::types::{
+        SwapChainType,
+        SwapSignatureParams,
+        default_swap,
+    };
 
     /// The provider's own explanation is the only thing safe to surface to the
     /// payment UI, so it has to survive the hop to the executor verbatim.
@@ -430,5 +477,109 @@ mod tests {
                 "{error:?} must map to QuoteRequestFailed, got {converted:?}"
             );
         }
+    }
+
+    /// A payload the submitter can fix has to reach the API as a 4xx, so it
+    /// must not collapse into the internal-failure bucket above.
+    #[test]
+    fn an_invalid_signature_payload_is_the_submitters_fault() {
+        assert!(matches!(
+            SwapsExecutorError::from(SwapsClientError::InvalidSignaturePayload),
+            SwapsExecutorError::InvalidSignature
+        ));
+    }
+
+    /// `ZeroExClient::new` only builds an RPC client; it performs no I/O for an
+    /// `http://` endpoint, so the address never has to answer.
+    async fn offline_swaps_clients() -> SwapsClients {
+        SwapsClients::new(SwapsConfig {
+            zero_ex: ZeroExApiConfig {
+                api_key: "".into(),
+                rpc_url: "http://127.0.0.1:1".to_string(),
+            },
+            ..SwapsConfig::default()
+        })
+        .await
+    }
+
+    fn gasless_swap_needing_two_signatures() -> Swap {
+        let mut swap = default_swap(Uuid::new_v4());
+        let mut raw_transaction = default_zero_ex_gasless_raw_transaction();
+        raw_transaction.approval = Some(raw_transaction.raw_trade.clone());
+
+        swap.request.swap_executor = SwapExecutorType::ZeroExGasless;
+        swap.swap_details.raw_transaction = RawSwapDetails::ZeroExGasless(raw_transaction);
+
+        swap
+    }
+
+    /// The reported bug persisted the payer's unsplittable signature and only
+    /// then panicked, leaving a swap row that could never be submitted. The
+    /// order matters as much as the rejection: `expect_...().never()` is what
+    /// pins the row as untouched.
+    #[tokio::test]
+    async fn a_malformed_signature_never_reaches_the_swap_row() {
+        let swap = gasless_swap_needing_two_signatures();
+        let swap_id = swap.id;
+
+        let mut dao = MockDaoInterface::new();
+        dao.expect_get_swap_by_id()
+            .returning(move |_| Ok(Some(swap.clone())));
+        dao.expect_update_swap_set_signature()
+            .never();
+
+        let executor = SwapsExecutor::new(dao, offline_swaps_clients().await);
+
+        let result = executor
+            .submit_with_signature(SwapSignatureParams {
+                swap_id,
+                swap_executor: SwapExecutorType::ZeroExGasless,
+                // One signature for a quote that needs the
+                // `"<trade>|<approval>"` pair.
+                signature: "0xdeadbeef".to_string(),
+            })
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(SwapsExecutorError::InvalidSignature)
+            ),
+            "expected InvalidSignature, got {result:?}"
+        );
+    }
+
+    /// The caller names an executor in the request body, but the stored quote
+    /// is what submission actually uses — so validation has to follow the
+    /// stored one, or a caller could pick an executor that validates nothing.
+    #[tokio::test]
+    async fn validation_follows_the_stored_executor_not_the_requested_one() {
+        let swap = gasless_swap_needing_two_signatures();
+        let swap_id = swap.id;
+
+        let mut dao = MockDaoInterface::new();
+        dao.expect_get_swap_by_id()
+            .returning(move |_| Ok(Some(swap.clone())));
+        dao.expect_update_swap_set_signature()
+            .never();
+
+        let executor = SwapsExecutor::new(dao, offline_swaps_clients().await);
+
+        let result = executor
+            .submit_with_signature(SwapSignatureParams {
+                swap_id,
+                // Bungee performs no signature validation of its own.
+                swap_executor: SwapExecutorType::Bungee,
+                signature: "0xdeadbeef".to_string(),
+            })
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(SwapsExecutorError::InvalidSignature)
+            ),
+            "expected InvalidSignature, got {result:?}"
+        );
     }
 }

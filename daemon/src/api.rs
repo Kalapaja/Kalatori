@@ -117,6 +117,10 @@ pub async fn api_server(
 
     let host = SocketAddr::new(config.host, config.port);
 
+    #[expect(
+        clippy::expect_used,
+        reason = "startup: the daemon is useless without its listener, and `api_server` has no error channel"
+    )]
     let listener = TcpListener::bind(host)
         .await
         .expect("Failed to bind to address");
@@ -214,10 +218,26 @@ pub async fn api_server(
         .map_request(|req| req);
 
     async move {
-        axum::serve(listener, app.into_make_service())
-            .with_graceful_shutdown(cancellation_token.cancelled_owned())
+        // Losing the listener is fatal — without it the daemon is invisible
+        // while chain trackers, payouts and webhooks keep running. Panicking
+        // would be caught by the panic hook and shut things down, but it would
+        // also abort mid-request; cancelling the token reaches the same
+        // shutdown through the graceful path.
+        if let Err(error) = axum::serve(listener, app.into_make_service())
+            .with_graceful_shutdown(
+                cancellation_token
+                    .clone()
+                    .cancelled_owned(),
+            )
             .await
-            .unwrap();
+        {
+            tracing::error!(
+                error.source = ?error,
+                "The API server stopped serving, shutting the daemon down"
+            );
+
+            cancellation_token.cancel();
+        }
     }
 }
 

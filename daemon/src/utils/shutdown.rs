@@ -93,6 +93,10 @@ pub async fn listener(
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the tip task body is a `tokio::select!` over two cancellation futures and cannot panic"
+    )]
     tip.await
         .expect("tip task shouldn't panic");
 
@@ -175,6 +179,10 @@ impl Display for PrettyPanic<'_> {
         let payload = self.panic_info.payload();
         let message_option = match payload.downcast_ref() {
             Some(string) => Some(*string),
+            #[expect(
+                clippy::string_slice,
+                reason = "`[..]` is the full range, so there is no character boundary to land inside"
+            )]
             None => payload
                 .downcast_ref::<String>()
                 .map(|string| &string[..]),

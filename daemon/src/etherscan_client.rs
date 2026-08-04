@@ -100,7 +100,13 @@ impl EtherscanClient {
             })?
             .text()
             .await
-            .unwrap();
+            .inspect_err(|e| {
+                tracing::warn!(
+                    error.source = ?e,
+                    "Etherscan response body could not be read"
+                )
+            })
+            .map_err(|_| EtherscanClientError::RequestFailed)?;
 
         tracing::trace!(
             text = %raw_response,

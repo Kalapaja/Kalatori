@@ -33,6 +33,11 @@ pub enum TransactionsRecorderError {
         chain: ChainType,
         general_transaction_id: GeneralTransactionId,
     },
+    /// The invoice settled on a chain that has no swap-side equivalent, so the
+    /// payout destination cannot be expressed. Recording the payment itself
+    /// still succeeds; only the payout scheduling is skipped.
+    #[error("Chain {chain} cannot be a payout destination")]
+    UnsupportedPayoutChain { chain: ChainType },
 }
 
 #[derive(Clone)]
@@ -81,18 +86,40 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
     ) -> Result<(), TransactionsRecorderError> {
         let chain = invoice.chain;
 
+        // `validate_recipients` only checks the chains it is handed at startup,
+        // so this lookup is not guaranteed to hit.
         let payout_address = self
             .config
             .recipient
             .get(&chain)
-            // unwrap should be safe cause on program startup we check
-            // that recipient is set for all required chains
-            .unwrap()
+            .ok_or_else(|| {
+                tracing::error!(
+                    %chain,
+                    invoice_id = %invoice.id,
+                    "No recipient configured for this chain, payout not created"
+                );
+
+                TransactionsRecorderError::UnsupportedPayoutChain {
+                    chain,
+                }
+            })?
             .clone();
+
+        let destination_chain = SwapChainType::try_from(chain).map_err(|chain| {
+            tracing::error!(
+                %chain,
+                invoice_id = %invoice.id,
+                "Cannot build a payout destination for this chain, payout not created"
+            );
+
+            TransactionsRecorderError::UnsupportedPayoutChain {
+                chain,
+            }
+        })?;
 
         let destination_params = TransferDestinationParams {
             destination_address: payout_address,
-            destination_chain: SwapChainType::from(chain),
+            destination_chain,
             destination_asset_id: invoice.asset_id.clone(),
         };
 
@@ -290,6 +317,10 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 invoice.status = updated_status;
                 *total_received_amount = updated_received_amount;
             },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
             Ok(()) => unreachable!(),
             Err(TransactionsRecorderError::TransactionDuplication {
                 chain,
@@ -316,6 +347,24 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 );
 
                 return Err(TransactionsRecorderError::DaoTransactionError);
+            },
+            // The payment itself was recorded; only the payout could not be
+            // scheduled, because this chain has no swap-side representation.
+            // Surface it so the operator can settle manually.
+            Err(TransactionsRecorderError::UnsupportedPayoutChain {
+                chain,
+            }) => {
+                tracing::error!(
+                    invoice_id = %invoice.id,
+                    %chain,
+                    "Invoice paid but no payout could be scheduled for its chain, manual settlement required"
+                );
+
+                return Err(
+                    TransactionsRecorderError::UnsupportedPayoutChain {
+                        chain,
+                    },
+                );
             },
         }
 

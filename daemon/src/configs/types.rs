@@ -162,6 +162,10 @@ pub struct ChainsConfig {
 
 impl ChainsConfig {
     /// Extend chains config with default asset IDs from payments config
+    #[expect(
+        clippy::unwrap_used,
+        reason = "startup config validation: a chain without a default asset id or without a chain config is an unusable configuration, and refusing to start is the intended outcome"
+    )]
     pub fn add_default_asset_ids(
         &mut self,
         default_asset_ids: &HashMap<ChainType, String>,
@@ -188,6 +192,10 @@ impl ChainsConfig {
 
     /// Extend chains config with asset IDs of restored invoices from the
     /// database
+    #[expect(
+        clippy::unwrap_used,
+        reason = "startup: restored invoices reference a chain that is no longer configured, which the operator has to resolve before the daemon can run"
+    )]
     pub fn add_restored_asset_ids(
         &mut self,
         restored_asset_ids: HashMap<ChainType, HashSet<String>>,
@@ -742,6 +750,10 @@ impl OAuthConfig {
 
 /// Normalize a URL for consistent comparison: lowercase scheme and host, remove
 /// trailing slash, keep explicit port only if non-default.
+#[expect(
+    clippy::panic,
+    reason = "startup config validation: an unparsable auth server URL is unusable, and refusing to start is the intended outcome"
+)]
 fn normalize_url(url: &str) -> String {
     let url = url.trim_end_matches('/');
 

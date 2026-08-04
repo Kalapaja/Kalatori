@@ -67,6 +67,10 @@ impl KalatoriClient {
         // unwraps `build()` internally): the timeouts are constant and valid, so
         // this only fails if the TLS backend/resolver can't initialise — a
         // startup-time environment fault, not a money-path condition.
+        #[expect(
+            clippy::expect_used,
+            reason = "construction-time TLS/resolver init; the timeouts are constants, and `new` has no error channel"
+        )]
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)

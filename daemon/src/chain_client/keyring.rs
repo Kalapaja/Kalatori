@@ -185,8 +185,14 @@ impl Keyring {
         }
         let hash = hasher.finalize();
 
-        let account = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) & 0x7FFFFFFF;
-        let index = u32::from_be_bytes([hash[4], hash[5], hash[6], hash[7]]);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "SHA-256 always finalizes to 32 bytes, so the first 8 are always present"
+        )]
+        let (account, index) = (
+            u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) & 0x7FFFFFFF,
+            u32::from_be_bytes([hash[4], hash[5], hash[6], hash[7]]),
+        );
 
         // Use both account and index for collision avoid
         let path = format!("m/44'/60'/{account}'/0/{index}");
@@ -230,7 +236,16 @@ impl Keyring {
         let signer = self.generate_polygon_derived_signer(derivation_params)?;
         let signature = signer
             .sign_hash_sync(&permit_hash)
-            .unwrap();
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = crate::utils::logging::category::CHAIN_CLIENT,
+                    error.operation = "sign_permit",
+                    error.source = ?e,
+                    "Permit signing failed"
+                );
+
+                KeyringError::SigningFailed
+            })?;
 
         Ok(SignedPermit {
             signature,
@@ -257,17 +272,28 @@ impl Keyring {
         let signer = self.generate_polygon_derived_signer(derivation_params)?;
 
         let authorization = transaction.authorization.clone();
-        let auth_signature = signer
-            .sign_hash_sync(&authorization.signature_hash())
-            .unwrap();
+        let sign = |hash| {
+            signer
+                .sign_hash_sync(hash)
+                .map_err(|e| {
+                    tracing::debug!(
+                        error.category = crate::utils::logging::category::CHAIN_CLIENT,
+                        error.operation = "sign_polygon_transaction",
+                        error.source = ?e,
+                        "Transaction signing failed"
+                    );
+
+                    KeyringError::SigningFailed
+                })
+        };
+
+        let authorization_hash = authorization.signature_hash();
+        let auth_signature = sign(&authorization_hash)?;
         let eip7702_auth = authorization
             .into_signed(auth_signature)
             .into();
 
-        let signature = signer
-            .sign_hash_sync(&op_hash)
-            .unwrap()
-            .as_bytes();
+        let signature = sign(&op_hash)?.as_bytes();
 
         let op_params = UserOperationParams {
             sender: transaction.sender,

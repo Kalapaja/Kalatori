@@ -159,6 +159,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                     .await
                     .map_err(|_| SwapsTrackerError::DatabaseError)?;
             },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
             TransactionOriginVariant::InternalTransfer(_) => unreachable!(),
             TransactionOriginVariant::None => {},
         }
@@ -228,6 +232,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                     // TODO: add logs but it shouldn't really happen
                 }
             },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
             TransactionOriginVariant::InternalTransfer(_) => unreachable!(),
             TransactionOriginVariant::None => {},
         }
