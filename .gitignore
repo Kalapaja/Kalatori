@@ -1,4 +1,6 @@
 target
+# Alternate CARGO_TARGET_DIR names (e.g. target-sq for a locally built SQLite)
+target-*
 database/
 
 # front-end
