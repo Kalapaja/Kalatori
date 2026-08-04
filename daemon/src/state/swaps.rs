@@ -97,8 +97,8 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::ProviderRejected {
                 ..
             }
-            | SwapRequestError::QuoteRequestFailed
-            | SwapRequestError::SwapDestinationUnavailable => "SWAP_ERROR",
+            | SwapRequestError::QuoteRequestFailed => "SWAP_ERROR",
+            SwapRequestError::SwapDestinationUnavailable => "SERVICE_UNAVAILABLE",
             SwapRequestError::AssetMetadataUnavailable {
                 ..
             }
@@ -150,9 +150,11 @@ impl ApiErrorExt for SwapRequestError {
             } => reqwest::StatusCode::NOT_FOUND,
             SwapRequestError::ProviderRejected {
                 ..
-            }
-            | SwapRequestError::SwapDestinationUnavailable => {
-                reqwest::StatusCode::UNPROCESSABLE_ENTITY
+            } => reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            // The caller cannot make this succeed by sending anything else —
+            // this shop simply cannot do swaps — so it is not a 4xx.
+            SwapRequestError::SwapDestinationUnavailable => {
+                reqwest::StatusCode::SERVICE_UNAVAILABLE
             },
             SwapRequestError::QuoteRequestFailed
             | SwapRequestError::AssetMetadataUnavailable {

@@ -122,7 +122,12 @@ impl KalatoriClient {
                 .build()?,
         };
 
-        add_headers_to_reqwest(&self.config, &mut request);
+        // `KalatoriHttpMethod` has only GET and POST, and both header values are
+        // ASCII by construction, so signing cannot fail on this path — there is
+        // no error channel here to report it through anyway. Third-party callers
+        // of `add_headers_to_reqwest`, which accepts any `reqwest::Request`, do
+        // need to check the return value.
+        let _signed = add_headers_to_reqwest(&self.config, &mut request);
 
         Ok(request)
     }

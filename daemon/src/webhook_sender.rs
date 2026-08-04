@@ -125,7 +125,14 @@ impl<D: DaoInterface + 'static> WebhookSender<D> {
             })
             .ok()?;
 
-        add_headers_to_reqwest(&self.hmac_config, &mut request);
+        if !add_headers_to_reqwest(&self.hmac_config, &mut request) {
+            tracing::error!(
+                %url,
+                "Could not sign the webhook request, leaving the event undelivered"
+            );
+
+            return None
+        }
 
         Some(request)
     }

@@ -6,6 +6,14 @@ overview — see [architecture.md](architecture.md) for the component map.
 
 ## Payer signatures are validated against the stored quote (2026-08-04)
 
+> **Known gap:** submission is not atomic. Two concurrent requests for the same
+> swap can both read `Created`, both persist a signature, both transition to
+> `Submitted` (the status trigger permits `Submitted → Submitted`), and both
+> call the provider — risking duplicate external execution and a row whose
+> signature, hash and error come from different requests. The fix is a
+> conditional `UPDATE ... WHERE id = ? AND status = 'Created' RETURNING` so only
+> one request may submit. Not addressed here.
+
 A gasless 0x quote can require two signatures — the trade and a token approval
 — and the payer submits them as one `"<trade>|<approval>"` string through the
 unauthenticated `POST /public/swap/signature`. The submission path used to
@@ -27,11 +35,19 @@ The shape of the payload is now checked before it is written:
   accepted at the door cannot fail to split later. The submission path still
   returns the error rather than unwrapping, because rows written before this
   landed may already hold an unsplittable value.
-- Each component must also be `0x`-prefixed even-length hex, matching 0x's
-  `signatureBytes`. This is not cosmetic: persisting a signature moves the swap
-  to `Submitted`, and the provider's rejection then marks it terminally
-  `Failed` — so a payload that only fails at submit time could not actually be
-  "fixed by re-signing", which is what the 4xx promises.
+- Each component must also be `0x`-prefixed even-length hex. 0x's schema types
+  `signatureBytes` only as `string` and does not mandate the prefix, so this is
+  deliberately **narrower** than the provider's contract; every value 0x's own
+  examples and reference clients produce carries the prefix, and the only
+  gasless signature the daemon generates comes from `const_hex::encode_prefixed`.
+- **Shape validation is not authenticity.** `0x00|0x00` passes it. Such a
+  payload is persisted, moves the swap to `Submitted`, and is then rejected by
+  the provider, which marks the swap terminally `Failed` — so anyone holding a
+  swap UUID can still destroy a `Created` gasless swap, and for those payloads
+  the 400's "re-sign and retry" promise does not hold. Closing that needs the
+  signature verified against the quote and payer before persistence, or
+  provider invalid-signature responses classified as re-signable so the swap
+  stays `Created`. Neither is done yet.
 - Whether an approval signature is required is derived from `approval` being
   present in the stored quote. 0x documents `approval != null` as gasless
   approval being *available*, with `issues.allowance` indicating whether it is

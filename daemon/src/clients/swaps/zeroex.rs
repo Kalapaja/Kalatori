@@ -864,8 +864,8 @@ mod tests {
 
     /// The signature payload on `POST /public/swap/signature` is payer
     /// controlled and unauthenticated, so every shape it can take has to come
-    /// back as an error rather than a panic — a panic there aborts the whole
-    /// daemon (the release profile is `panic = "abort"`).
+    /// back as an error rather than a panic — `set_panic_hook` cancels the
+    /// shutdown token on any panic, so one takes the whole daemon down.
     #[test]
     fn malformed_gasless_signatures_are_rejected_not_unwrapped() {
         // The exact payload from the report: one signature, no separator, for

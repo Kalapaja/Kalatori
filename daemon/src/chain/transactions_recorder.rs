@@ -33,11 +33,6 @@ pub enum TransactionsRecorderError {
         chain: ChainType,
         general_transaction_id: GeneralTransactionId,
     },
-    /// The invoice settled on a chain that has no swap-side equivalent, so the
-    /// payout destination cannot be expressed. Recording the payment itself
-    /// still succeeds; only the payout scheduling is skipped.
-    #[error("Chain {chain} cannot be a payout destination")]
-    UnsupportedPayoutChain { chain: ChainType },
 }
 
 #[derive(Clone)]
@@ -78,6 +73,15 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
         Ok(())
     }
 
+    /// Schedule the payout for a paid invoice.
+    ///
+    /// Failing to build a payout destination must **not** abort the surrounding
+    /// database transaction — that transaction is what records the incoming
+    /// payment. Rolling it back loses the payment entirely, and the tracker
+    /// rediscovers and re-fails the same transfer forever. So the two
+    /// destination problems below are logged and skipped: the payment, the
+    /// invoice status and the `Paid` webhook still commit, and the operator
+    /// settles the payout by hand. Database failures stay fatal.
     async fn add_payout_to_dao_transaction(
         &self,
         dao_transaction: &D::Transaction,
@@ -88,34 +92,32 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
 
         // `validate_recipients` only checks the chains it is handed at startup,
         // so this lookup is not guaranteed to hit.
-        let payout_address = self
+        let Some(payout_address) = self
             .config
             .recipient
             .get(&chain)
-            .ok_or_else(|| {
-                tracing::error!(
-                    %chain,
-                    invoice_id = %invoice.id,
-                    "No recipient configured for this chain, payout not created"
-                );
-
-                TransactionsRecorderError::UnsupportedPayoutChain {
-                    chain,
-                }
-            })?
-            .clone();
-
-        let destination_chain = SwapChainType::try_from(chain).map_err(|chain| {
+            .cloned()
+        else {
             tracing::error!(
                 %chain,
                 invoice_id = %invoice.id,
-                "Cannot build a payout destination for this chain, payout not created"
+                "No recipient configured for this chain, payment recorded but payout not scheduled, manual settlement required"
             );
 
-            TransactionsRecorderError::UnsupportedPayoutChain {
-                chain,
-            }
-        })?;
+            return Ok(())
+        };
+
+        // Asset Hub has no `SwapChainType` equivalent, so a payout destination
+        // cannot be expressed for it.
+        let Ok(destination_chain) = SwapChainType::try_from(chain) else {
+            tracing::error!(
+                %chain,
+                invoice_id = %invoice.id,
+                "Cannot build a payout destination for this chain, payment recorded but payout not scheduled, manual settlement required"
+            );
+
+            return Ok(())
+        };
 
         let destination_params = TransferDestinationParams {
             destination_address: payout_address,
@@ -347,24 +349,6 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 );
 
                 return Err(TransactionsRecorderError::DaoTransactionError);
-            },
-            // The payment itself was recorded; only the payout could not be
-            // scheduled, because this chain has no swap-side representation.
-            // Surface it so the operator can settle manually.
-            Err(TransactionsRecorderError::UnsupportedPayoutChain {
-                chain,
-            }) => {
-                tracing::error!(
-                    invoice_id = %invoice.id,
-                    %chain,
-                    "Invoice paid but no payout could be scheduled for its chain, manual settlement required"
-                );
-
-                return Err(
-                    TransactionsRecorderError::UnsupportedPayoutChain {
-                        chain,
-                    },
-                );
             },
         }
 
@@ -1247,5 +1231,92 @@ mod tests {
                     .is_zero()
             );
         }
+    }
+
+    /// A payout that cannot be built must not roll back the payment.
+    ///
+    /// Asset Hub has no `SwapChainType` equivalent, so no payout destination
+    /// can be expressed for it. When that failure propagated out of
+    /// `add_payout_to_dao_transaction` it aborted the surrounding transaction
+    /// before `commit`, so the incoming transaction, the invoice status and the
+    /// `Paid` webhook were all discarded — and the caller only logs, so the
+    /// tracker rediscovered and re-failed the same transfer forever. The
+    /// payment has to commit; only the payout is skipped.
+    #[tokio::test]
+    async fn a_payout_that_cannot_be_built_still_commits_the_payment() {
+        let mut config = default_payments_config();
+        config.default_chain = ChainType::PolkadotAssetHub;
+        config.recipient.insert(
+            ChainType::PolkadotAssetHub,
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
+        );
+
+        let invoice = Invoice {
+            chain: ChainType::PolkadotAssetHub,
+            ..default_invoice()
+        };
+        let invoice_id = invoice.id;
+        let amount = Decimal::ONE_THOUSAND;
+
+        let returning_invoice = Invoice {
+            status: InvoiceStatus::Paid,
+            ..invoice.clone()
+        };
+
+        let mut dao_transaction = MockDaoTransactionInterface::default();
+
+        dao_transaction
+            .expect_create_transaction()
+            .once()
+            .returning(Ok);
+
+        dao_transaction
+            .expect_update_invoice_status()
+            .once()
+            .with(eq(invoice_id), eq(InvoiceStatus::Paid))
+            .returning(move |_, _| Ok(returning_invoice.clone()));
+
+        // The payout is the part that cannot be built.
+        dao_transaction
+            .expect_create_payout()
+            .never();
+
+        // The merchant still has to be told the invoice was paid...
+        dao_transaction
+            .expect_create_webhook_event()
+            .once()
+            .returning(Ok);
+
+        // ...and above all, the work must actually be committed.
+        dao_transaction
+            .expect_commit()
+            .once()
+            .returning(|| Ok(()));
+
+        let registry = InvoiceRegistry::new();
+        let mut recorder = TransactionsRecorder::new(
+            MockDaoInterface::default(),
+            registry,
+            config,
+        );
+
+        recorder
+            .dao
+            .expect_begin_transaction()
+            .once()
+            .return_once(move || Ok(dao_transaction));
+
+        let result = recorder
+            .store_transaction(
+                default_incoming_transaction(invoice_id),
+                InvoiceStatus::Paid,
+                amount,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "recording the payment must succeed even with no payout destination, got {result:?}"
+        );
     }
 }

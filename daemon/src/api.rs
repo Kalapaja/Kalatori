@@ -218,26 +218,16 @@ pub async fn api_server(
         .map_request(|req| req);
 
     async move {
-        // Losing the listener is fatal — without it the daemon is invisible
-        // while chain trackers, payouts and webhooks keep running. Panicking
-        // would be caught by the panic hook and shut things down, but it would
-        // also abort mid-request; cancelling the token reaches the same
-        // shutdown through the graceful path.
-        if let Err(error) = axum::serve(listener, app.into_make_service())
-            .with_graceful_shutdown(
-                cancellation_token
-                    .clone()
-                    .cancelled_owned(),
-            )
-            .await
-        {
-            tracing::error!(
-                error.source = ?error,
-                "The API server stopped serving, shutting the daemon down"
-            );
-
-            cancellation_token.cancel();
-        }
+        // `axum::serve` resolves to `io::Result<()>` but documents that it
+        // never errors: it returns `Ok(())` only once the shutdown signal
+        // fires. Accept errors are logged and retried internally, forever, so
+        // there is nothing here to branch on. Note the consequence, which this
+        // code cannot fix: a permanently broken listener leaves the daemon
+        // running and invisible rather than shutting it down. Detecting that is
+        // tracked in the panic-gate backlog in docs/conventions.md.
+        let _served = axum::serve(listener, app.into_make_service())
+            .with_graceful_shutdown(cancellation_token.cancelled_owned())
+            .await;
     }
 }
 

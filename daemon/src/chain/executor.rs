@@ -654,15 +654,25 @@ impl<
         futures_set: &mut FuturesUnordered<BoxedTransferFuture>,
     ) {
         let origin = request.origin;
-        let mut retry_meta = request.retry_meta.clone();
+        let retry_meta = request.retry_meta.clone();
 
-        let Ok(from_chain) = SwapChainType::try_from(request.chain) else {
-            tracing::error!(
-                chain = %request.chain,
-                "Outgoing transfer on a chain that cannot be a swap source, skipping"
-            );
+        // The transfer has already been claimed as `InProgress`, so returning
+        // here would strand it in that state forever. Push the failure through
+        // the same retry/status handling every other build failure uses.
+        let from_chain = match SwapChainType::try_from(request.chain) {
+            Ok(from_chain) => from_chain,
+            Err(chain) => {
+                self.mark_transfer_failed(
+                    &ChainExecutorError::BuildTransfer {
+                        reason: format!("Chain {chain} cannot be a swap source"),
+                    },
+                    origin,
+                    retry_meta,
+                )
+                .await;
 
-            return
+                return
+            },
         };
         let to_chain = request
             .destination_params
@@ -693,49 +703,63 @@ impl<
         };
 
         if let Err(error) = result {
-            let is_retriable = error.is_retriable();
-
-            tracing::warn!(
-                %error,
-                %is_retriable,
-                "Failed to prepare transfer request, it will be marked as failed"
-            );
-            retry_meta.increment_retry(error.to_string());
-
-            match origin.variant() {
-                TransactionOriginVariant::Payout(id) => {
-                    if let Err(error) = self
-                        .dao
-                        .update_payout_retry(id, retry_meta, is_retriable)
-                        .await
-                    {
-                        tracing::error!(
-                            %error,
-                            "Error while trying to mark payout request failed. It might stuck with In Progress status"
-                        );
-                    };
-                },
-                TransactionOriginVariant::Refund(id) => {
-                    if let Err(error) = self
-                        .dao
-                        .update_refund_retry(id, retry_meta, is_retriable)
-                        .await
-                    {
-                        tracing::error!(
-                            %error,
-                            "Error while trying to mark refund request failed. It might stuck with In Progress status"
-                        );
-                    };
-                },
-                #[expect(
-                    clippy::unreachable,
-                    reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
-                )]
-                TransactionOriginVariant::InternalTransfer(_) | TransactionOriginVariant::None => {
-                    unreachable!()
-                },
-            }
+            self.mark_transfer_failed(&error, origin, retry_meta)
+                .await;
         };
+    }
+
+    /// Release a transfer that was already claimed as `InProgress` back through
+    /// the retry/status machinery. Every path that claims a transfer and then
+    /// fails to build it has to come through here — returning early instead
+    /// leaves the row `InProgress` forever.
+    async fn mark_transfer_failed(
+        &self,
+        error: &ChainExecutorError,
+        origin: TransactionOrigin,
+        mut retry_meta: RetryMeta,
+    ) {
+        let is_retriable = error.is_retriable();
+
+        tracing::warn!(
+            %error,
+            %is_retriable,
+            "Failed to prepare transfer request, it will be marked as failed"
+        );
+        retry_meta.increment_retry(error.to_string());
+
+        match origin.variant() {
+            TransactionOriginVariant::Payout(id) => {
+                if let Err(error) = self
+                    .dao
+                    .update_payout_retry(id, retry_meta, is_retriable)
+                    .await
+                {
+                    tracing::error!(
+                        %error,
+                        "Error while trying to mark payout request failed. It might stuck with In Progress status"
+                    );
+                };
+            },
+            TransactionOriginVariant::Refund(id) => {
+                if let Err(error) = self
+                    .dao
+                    .update_refund_retry(id, retry_meta, is_retriable)
+                    .await
+                {
+                    tracing::error!(
+                        %error,
+                        "Error while trying to mark refund request failed. It might stuck with In Progress status"
+                    );
+                };
+            },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
+            TransactionOriginVariant::InternalTransfer(_) | TransactionOriginVariant::None => {
+                unreachable!()
+            },
+        }
     }
 
     async fn schedule_transfers(

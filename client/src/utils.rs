@@ -153,13 +153,16 @@ pub fn compute_webhook_signature(
     const_hex::encode(mac.finalize().into_bytes())
 }
 
-/// Signs `request` in place. Requests with a method other than GET or POST are
-/// left unsigned — the server rejects them, which is the same outcome as
-/// signing them wrongly and strictly better than taking the process down.
+/// Signs `request` in place, returning whether it was actually signed.
+///
+/// Requests with a method other than GET or POST are left unsigned. **Check the
+/// return value** — sending an unsigned request is not a safe default, it just
+/// fails authentication at the far end, and silently doing so would turn a
+/// signing bug into an unexplained 401. Callers should skip or retry instead.
 pub fn add_headers_to_reqwest(
     config: &HmacConfig,
     request: &mut reqwest::Request,
-) {
+) -> bool {
     let timestamp = timestamp_secs().to_string();
 
     let Some(signature) = hmac_from_request_parts(
@@ -173,7 +176,7 @@ pub fn add_headers_to_reqwest(
             .unwrap_or(&[]),
         &timestamp,
     ) else {
-        return
+        return false
     };
 
     let encoded_signature = const_hex::encode(signature.finalize().into_bytes());
@@ -183,12 +186,14 @@ pub fn add_headers_to_reqwest(
         HeaderValue::from_str(&encoded_signature),
     ) else {
         // Both are ASCII digits / hex by construction, so this is unreachable
-        // in practice; returning beats asserting it with a panic.
-        return
+        // in practice; reporting it beats asserting it with a panic.
+        return false
     };
 
     let headers = request.headers_mut();
 
     headers.insert(TIMESTAMP_HEADER, timestamp_value);
     headers.insert(SIGNATURE_HEADER, signature_value);
+
+    true
 }

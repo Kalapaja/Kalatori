@@ -2,7 +2,8 @@
 
 ## Code Style
 
-- **Rust edition 2024**, MSRV 1.88
+- **Rust edition 2024**, MSRV 1.91 (`daemon/Cargo.toml`; the other workspace
+  members declare none, so this is the effective floor)
 - **rustfmt**: Nightly required (`cargo +nightly fmt --all`)
 - Self-named modules only (e.g., `chain.rs` + `chain/` directory) — **never `mod.rs`** (enforced by `mod_module_files` clippy lint). Rationale: better Git history, avoids file renaming issues.
 
@@ -21,10 +22,10 @@ mod_module_files = "warn"
 
 **CI enforces** `RUSTFLAGS="-Dwarnings"` — all warnings are errors, including pedantic.
 
-Per-crate lints (in `daemon/Cargo.toml`):
-- `pedantic = { level = "warn", priority = -1 }`
-- `arithmetic_side_effects = "warn"`
-- `shadow_reuse`, `shadow_same`, `shadow_unrelated` = "warn"
+There are **no** per-crate lint tables — `daemon`, `client` and `tools/cargo-bin`
+all carry only `[lints] workspace = true`, so the root block above plus the panic
+gate below is the complete set. In particular `pedantic` and
+`arithmetic_side_effects` are *not* enabled anywhere.
 
 ## Panic Gate
 
@@ -115,7 +116,10 @@ In order of preference:
 ### Backlog
 
 - **Grandfathered sites.** Panics predating the gate that were not audited carry
-  a marker reason. Find them with:
+  a marker reason. These deliberately do **not** satisfy the "state why it cannot
+  happen" rule above — the marker records that the site is unaudited, and some
+  are known to be reachable. It is a backlog entry, not a justification, and
+  must not be extended to new code. Find them with:
 
   ```bash
   grep -rn "grandfathered when the panic gate landed" daemon/src client/src

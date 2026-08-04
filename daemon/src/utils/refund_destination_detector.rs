@@ -16,12 +16,18 @@ pub enum RefundDestinationDetectorError {
     DatabaseError,
     #[error("No available destination found")]
     NoAvailableDestination,
+    /// The sender's chain has no payout-destination representation. Unlike
+    /// `NoAvailableDestination` this is our own modelling gap, not a statement
+    /// about the refund, so it must not become terminal.
+    #[error("No payout destination can be expressed for the sender's chain")]
+    DestinationUnrepresentable,
 }
 
 impl RefundDestinationDetectorError {
     fn is_retriable(&self) -> bool {
         match self {
-            RefundDestinationDetectorError::DatabaseError => true,
+            RefundDestinationDetectorError::DatabaseError
+            | RefundDestinationDetectorError::DestinationUnrepresentable => true,
             RefundDestinationDetectorError::NoAvailableDestination => false,
         }
     }
@@ -150,15 +156,21 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
         // TODO: now we just get the first one, later we'll have to also check them
         // using arkhm API
         if let Some(trans) = transactions.first() {
+            // Asset Hub is a supported settlement chain that simply has no
+            // `SwapChainType` equivalent yet. `NoAvailableDestination` is
+            // non-retriable and would make the refund terminally `Failed`, so
+            // report it as retriable instead: the destination becomes
+            // expressible once Asset Hub payouts are modelled, and until then
+            // an operator can act on the row.
             let destination_chain =
                 SwapChainType::try_from(trans.transfer_info.chain).map_err(|chain| {
-                    tracing::warn!(
+                    tracing::error!(
                         %chain,
                         transaction_id = %trans.id,
-                        "Refund sender is on a chain that cannot be a destination"
+                        "Refund sender is on a chain with no payout destination, leaving the refund for retry"
                     );
 
-                    RefundDestinationDetectorError::NoAvailableDestination
+                    RefundDestinationDetectorError::DestinationUnrepresentable
                 })?;
 
             let params = TransferDestinationParams {
