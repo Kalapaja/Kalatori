@@ -116,10 +116,10 @@ pub struct ApprovalTransaction {
 pub struct SwapTransactionInternal {
     // Across simulates against the depositor's CURRENT state, so this is
     // legitimately `false` before the user has granted approvals. We no longer
-    // act on it — the gas parameters decide whether a quote is usable (see
-    // `TryFrom` below) — but it must still never be *required*: Across's schema
-    // marks it optional and `/swap/gasless` omits it altogether, so a bare
-    // `bool` would fail the entire quote the first time it is absent.
+    // act on it — unusable gas sentinels are normalized during transaction
+    // conversion — but it must still never be *required*: Across's schema marks
+    // it optional and `/swap/gasless` omits it altogether, so a bare `bool`
+    // would fail the entire quote the first time it is absent.
     #[expect(dead_code)]
     #[serde(default = "default_simulation_success")]
     pub simulation_success: bool,
@@ -156,12 +156,12 @@ pub struct SwapTransaction {
     #[serde(default)]
     #[serde_as(as = "DisplayFromStr")]
     pub value: u128,
-    // Omit-and-estimate, not zero: Across leaves these out when its simulation
-    // fails, and since Kalapaja/Kassette#50 Kassette converts them with
-    // `!= null ? BigInt(…) : undefined`, which drops the key from
-    // `eth_sendTransaction` so the payer's wallet estimates instead. They must
-    // therefore be *absent* from the JSON rather than `null` or `0` — a zero
-    // gas limit or zero fee cap publishes a transaction that cannot be mined.
+    // Omit-and-estimate, not zero: with `simulationSuccess: false`, Across sends
+    // `gas: "0"` while genuinely omitting the fee caps and `value`. We normalize
+    // a zero gas limit or max fee cap to absent; dropping the cap also drops the
+    // priority fee. A zero priority fee remains valid alongside a non-zero cap.
+    // Kassette turns absent gas fields into `undefined`, so the payer's wallet
+    // estimates them instead of publishing an unmineable zero-gas transaction.
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gas: Option<u128>,
@@ -177,16 +177,23 @@ impl From<SwapTransactionInternal> for SwapTransaction {
     fn from(value: SwapTransactionInternal) -> Self {
         // `value` genuinely defaults to zero — Across omits the key for
         // zero-value (ERC-20) transfers and documents `value ? BigInt(v) : 0n`
-        // as the caller's handling. The gas parameters do not default; they
-        // pass through as-is, absent included (see the field comments above).
+        // as the caller's handling. Across uses zero as the unusable sentinel
+        // for `gas` and `maxFeePerGas`; without a usable fee cap, its priority
+        // fee must be dropped too. See the field comments above.
+        let gas = value.gas.filter(|gas| *gas != 0);
+        let max_fee_per_gas = value
+            .max_fee_per_gas
+            .filter(|fee| *fee != 0);
+        let max_priority_fee_per_gas = max_fee_per_gas.and(value.max_priority_fee_per_gas);
+
         Self {
             chain_id: value.chain_id,
             contract_address: value.to,
             data: value.data,
             value: value.value.unwrap_or_default(),
-            gas: value.gas,
-            max_fee_per_gas: value.max_fee_per_gas,
-            max_priority_fee_per_gas: value.max_priority_fee_per_gas,
+            gas,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
         }
     }
 }

@@ -1079,6 +1079,11 @@ mod tests {
                 details.raw_transaction.gas,
                 Some(210_000)
             );
+            let serialized = serde_json::to_value(&details.raw_transaction).unwrap();
+            assert_eq!(
+                serialized.get("gas"),
+                Some(&serde_json::json!("210000"))
+            );
         }
     }
 
