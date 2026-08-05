@@ -12,12 +12,14 @@ use crate::clients::{
 };
 use crate::dao::{
     DaoInterface,
+    DaoSwapError,
     DaoTransactionInterface,
 };
 use crate::types::{
     PayoutStatus,
     RefundStatus,
     Swap,
+    SwapStatus,
     TransactionOriginVariant,
 };
 use crate::utils::logging::{
@@ -66,6 +68,77 @@ impl TrackedSwaps {
     ) {
         self.swaps.remove(&swap_id);
     }
+}
+
+/// Apply the result of re-reading a hashless tracked swap.
+///
+/// Kept separate from the database call so the tracker-store behavior can be
+/// tested without constructing its unrelated provider and chain clients.
+fn apply_hashless_swap_reload(
+    store: &mut TrackedSwaps,
+    swap: &Swap,
+    reload_result: Result<Option<Swap>, DaoSwapError>,
+) -> Option<Swap> {
+    let reloaded = match reload_result {
+        Ok(Some(reloaded)) => reloaded,
+        Ok(None) => {
+            tracing::warn!(
+                swap_id = %swap.id,
+                invoice_id = %swap.request.invoice_id,
+                "Tracked swap has disappeared from the database, dropping it from the tracker"
+            );
+            store.remove_swap(swap.id);
+            return None;
+        },
+        Err(e) => {
+            tracing::warn!(
+                swap_id = %swap.id,
+                invoice_id = %swap.request.invoice_id,
+                error = ?e,
+                "Failed to re-read a swap with no transaction hash, will retry next round"
+            );
+            return None;
+        },
+    };
+
+    if reloaded
+        .swap_details
+        .transaction_hash
+        .is_none()
+    {
+        if matches!(
+            reloaded.status,
+            SwapStatus::Completed | SwapStatus::Failed | SwapStatus::Abandoned
+        ) {
+            // Loud on purpose: the swap was marked `Submitted` before the
+            // external call, so funds may have been in flight with nothing
+            // recorded to track them by. Remove it after this signal because a
+            // terminal row can never acquire a hash on a later refresh.
+            tracing::warn!(
+                swap_id = %swap.id,
+                invoice_id = %swap.request.invoice_id,
+                swap_status = %reloaded.status,
+                "Tracked swap reached a terminal status without a transaction hash; manual reconciliation may be required, dropping it from the tracker"
+            );
+            store.remove_swap(swap.id);
+            return None;
+        }
+
+        // Loud on purpose: the swap was marked `Submitted` before the external
+        // call, so funds may be in flight with nothing recorded to track them
+        // by.
+        tracing::warn!(
+            swap_id = %swap.id,
+            invoice_id = %swap.request.invoice_id,
+            swap_status = %reloaded.status,
+            "Tracked swap still has no transaction hash and cannot be polled — if this persists, its submission needs manual reconciliation"
+        );
+        return None;
+    }
+
+    store.add_swaps(vec![reloaded.clone()]);
+
+    Some(reloaded)
 }
 
 pub struct SwapsTracker<D: DaoInterface + 'static> {
@@ -159,6 +232,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                     .await
                     .map_err(|_| SwapsTrackerError::DatabaseError)?;
             },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
             TransactionOriginVariant::InternalTransfer(_) => unreachable!(),
             TransactionOriginVariant::None => {},
         }
@@ -228,6 +305,10 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                     // TODO: add logs but it shouldn't really happen
                 }
             },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
             TransactionOriginVariant::InternalTransfer(_) => unreachable!(),
             TransactionOriginVariant::None => {},
         }
@@ -289,49 +370,8 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         &mut self,
         swap: &Swap,
     ) -> Option<Swap> {
-        let reloaded = match self.dao.get_swap_by_id(swap.id).await {
-            Ok(Some(reloaded)) => reloaded,
-            Ok(None) => {
-                tracing::warn!(
-                    swap_id = %swap.id,
-                    invoice_id = %swap.request.invoice_id,
-                    "Tracked swap has disappeared from the database, dropping it from the tracker"
-                );
-                self.store.remove_swap(swap.id);
-                return None;
-            },
-            Err(e) => {
-                tracing::warn!(
-                    swap_id = %swap.id,
-                    invoice_id = %swap.request.invoice_id,
-                    error = ?e,
-                    "Failed to re-read a swap with no transaction hash, will retry next round"
-                );
-                return None;
-            },
-        };
-
-        if reloaded
-            .swap_details
-            .transaction_hash
-            .is_none()
-        {
-            // Loud on purpose: the swap was marked `Submitted` before the
-            // external call, so funds may be in flight with nothing recorded
-            // to track them by.
-            tracing::warn!(
-                swap_id = %swap.id,
-                invoice_id = %swap.request.invoice_id,
-                swap_status = %reloaded.status,
-                "Tracked swap still has no transaction hash and cannot be polled — if this persists, its submission needs manual reconciliation"
-            );
-            return None;
-        }
-
-        self.store
-            .add_swaps(vec![reloaded.clone()]);
-
-        Some(reloaded)
+        let reload_result = self.dao.get_swap_by_id(swap.id).await;
+        apply_hashless_swap_reload(&mut self.store, swap, reload_result)
     }
 
     async fn check_swaps(&mut self) {
@@ -498,5 +538,60 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
         tokio::spawn(async move {
             self.perform(token).await;
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::dao::DaoSwapError;
+    use crate::types::{
+        SwapStatus,
+        default_swap,
+    };
+
+    use super::*;
+
+    #[test]
+    fn terminal_hashless_swap_is_dropped_after_reload() {
+        let mut swap = default_swap(Uuid::new_v4());
+        swap.status = SwapStatus::Submitted;
+
+        let mut failed = swap.clone();
+        failed.status = SwapStatus::Failed;
+
+        let mut store = TrackedSwaps::new();
+        store.add_swaps(vec![swap.clone()]);
+
+        assert!(apply_hashless_swap_reload(&mut store, &swap, Ok(Some(failed))).is_none());
+        assert!(!store.swaps.contains_key(&swap.id));
+    }
+
+    #[test]
+    fn transient_hashless_swap_states_remain_tracked_for_retry() {
+        let mut swap = default_swap(Uuid::new_v4());
+        swap.status = SwapStatus::Submitted;
+
+        let mut store = TrackedSwaps::new();
+        store.add_swaps(vec![swap.clone()]);
+
+        assert!(
+            apply_hashless_swap_reload(
+                &mut store,
+                &swap,
+                Ok(Some(swap.clone()))
+            )
+            .is_none()
+        );
+        assert!(store.swaps.contains_key(&swap.id));
+
+        assert!(
+            apply_hashless_swap_reload(
+                &mut store,
+                &swap,
+                Err(DaoSwapError::DatabaseError)
+            )
+            .is_none()
+        );
+        assert!(store.swaps.contains_key(&swap.id));
     }
 }

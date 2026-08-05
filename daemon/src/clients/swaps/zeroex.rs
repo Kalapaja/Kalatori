@@ -59,10 +59,16 @@ type ChainProvider = FillProvider<JoinedRecommendedFillers, RootProvider>;
 // A reqwest client without a timeout hangs an invoice payment indefinitely on
 // a stalled 0x connection; Across and Bungee clients already bound theirs.
 fn zero_ex_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    #[expect(
+        clippy::expect_used,
+        reason = "startup: constant timeout, so this only fails if the TLS backend cannot initialise"
+    )]
+    let client = reqwest::Client::builder()
         .timeout(ZERO_EX_CLIENT_REQUEST_TIMEOUT)
         .build()
-        .expect("Failed to build 0x HTTP client")
+        .expect("Failed to build 0x HTTP client");
+
+    client
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,43 +93,31 @@ impl From<ZeroExTransactionStatus> for ExecutorSwapStatus {
 pub struct RawTransactionData {
     to: String,
     data: String,
-    #[serde_as(as = "DisplayFromStr")]
-    gas: u64,
+    // 0x documents `transaction.gas` as nullable when it cannot estimate at
+    // quote time. Since Kalapaja/Kassette#50 an absent gas limit is converted
+    // to `undefined` and estimated by the payer's wallet, so the field is
+    // omitted from the JSON rather than sent as `null` or a `0` that would
+    // publish a transaction with a zero gas limit, which cannot be mined.
+    // `gas_price` and `value` stay required — 0x's v2 spec does not mark them
+    // nullable, and Kassette still types them as required strings.
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gas: Option<u64>,
     #[serde_as(as = "DisplayFromStr")]
     gas_price: u128,
     #[serde_as(as = "DisplayFromStr")]
     value: u128,
 }
 
-impl TryFrom<ZeroExTransaction> for RawTransactionData {
-    type Error = SwapsClientError;
-
-    fn try_from(value: ZeroExTransaction) -> Result<Self, Self::Error> {
-        // 0x documents `transaction.gas` as nullable when it cannot estimate at
-        // quote time. It is not safe to substitute `0`: this transaction is
-        // handed to the payer's wallet, and Kassette submits it unguarded via
-        // `BigInt(rawTx.gas)`, so `0` becomes a zero-gas-limit transaction that
-        // cannot be mined. Omitting the key instead throws in the browser.
-        // Neither is publishable, so reject the quote. Once Kassette accepts
-        // absent gas (Kalapaja/Kassette#49) this can be passed through as
-        // optional instead of rejected.
-        let Some(gas) = value.gas else {
-            tracing::warn!(
-                error.category = category::SWAPS_CLIENT,
-                error.operation = operation::GET_QUOTE,
-                "0x quote has no gas estimate, rejecting"
-            );
-
-            return Err(SwapsClientError::UnusableQuote)
-        };
-
-        Ok(Self {
+impl From<ZeroExTransaction> for RawTransactionData {
+    fn from(value: ZeroExTransaction) -> Self {
+        Self {
             to: value.to,
             data: value.data,
-            gas,
+            gas: value.gas,
             gas_price: value.gas_price,
             value: value.value,
-        })
+        }
     }
 }
 
@@ -142,7 +136,7 @@ pub fn default_zero_ex_raw_transaction() -> ZeroExRawTransaction {
         allowance_target: Some("0x0000000000001ff3684f28c67538d4d072c22734".to_string()),
         raw_transaction: RawTransactionData {
             to: "0x0000000000001ff3684f28c67538d4d072c22734".to_string(),
-            data: "0x2213bc0b000000000000000000000000b0873c46937d34e98615e8c868bd3580bc6dcd4700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ea5ed2ad6f9c5fa000000000000000000000000b0873c46937d34e98615e8c868bd3580bc6dcd4700000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000006641fff991f0000000000000000000000005151537093e68f61a48cb98ba56922abcd2bc5e40000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c3359000000000000000000000000000000000000000000000000000000000001821600000000000000000000000000000000000000000000000000000000000000a0f5303154d2e14bb0f960c9410000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000001200000000000000000000000000000000000000000000000000000000000000260000000000000000000000000000000000000000000000000000000000000038000000000000000000000000000000000000000000000000000000000000004400000000000000000000000000000000000000000000000000000000000000044bd01c2260000000000000000000000000000000000000000000000000000000069c2e3d00000000000000000000000000000000000000000000000000ea5ed2ad6f9c5fa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010438c9c147000000000000000000000000eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee00000000000000000000000000000000000000000000000000000000000027100000000000000000000000000d500b1d8e8ef31e21c99d1db9a6444d3adf1270000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000024d0e30db00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e48d68a156000000000000000000000000b0873c46937d34e98615e8c868bd3580bc6dcd4700000000000000000000000000000000000000000000000000000000000027100000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400d500b1d8e8ef31e21c99d1db9a6444d3adf1270000001f400000000000000000000000000000001000276a43c499c542cef5e3811e1192ce70d8cc03d5c335900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008434ee90ca000000000000000000000000f5c4f3dc02c3fb9279495a8fef7b0741da9561570000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c335900000000000000000000000000000000000000000000000000000000000187a1000000000000000000000000000000000000000000000000000000000000271000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000012438c9c1470000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c3359000000000000000000000000000000000000000000000000000000000000000f0000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c3359000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000044a9059cbb000000000000000000000000ad01c20d5886137e056775af56915de824c8fce50000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(), gas: 302525, gas_price: 198773677713, value: 1055510455939352058 }
+            data: "0x2213bc0b000000000000000000000000b0873c46937d34e98615e8c868bd3580bc6dcd4700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ea5ed2ad6f9c5fa000000000000000000000000b0873c46937d34e98615e8c868bd3580bc6dcd4700000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000006641fff991f0000000000000000000000005151537093e68f61a48cb98ba56922abcd2bc5e40000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c3359000000000000000000000000000000000000000000000000000000000001821600000000000000000000000000000000000000000000000000000000000000a0f5303154d2e14bb0f960c9410000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000500000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000001200000000000000000000000000000000000000000000000000000000000000260000000000000000000000000000000000000000000000000000000000000038000000000000000000000000000000000000000000000000000000000000004400000000000000000000000000000000000000000000000000000000000000044bd01c2260000000000000000000000000000000000000000000000000000000069c2e3d00000000000000000000000000000000000000000000000000ea5ed2ad6f9c5fa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010438c9c147000000000000000000000000eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee00000000000000000000000000000000000000000000000000000000000027100000000000000000000000000d500b1d8e8ef31e21c99d1db9a6444d3adf1270000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000024d0e30db00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e48d68a156000000000000000000000000b0873c46937d34e98615e8c868bd3580bc6dcd4700000000000000000000000000000000000000000000000000000000000027100000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400d500b1d8e8ef31e21c99d1db9a6444d3adf1270000001f400000000000000000000000000000001000276a43c499c542cef5e3811e1192ce70d8cc03d5c335900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008434ee90ca000000000000000000000000f5c4f3dc02c3fb9279495a8fef7b0741da9561570000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c335900000000000000000000000000000000000000000000000000000000000187a1000000000000000000000000000000000000000000000000000000000000271000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000012438c9c1470000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c3359000000000000000000000000000000000000000000000000000000000000000f0000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c3359000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000044a9059cbb000000000000000000000000ad01c20d5886137e056775af56915de824c8fce50000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(), gas: Some(302525), gas_price: 198773677713, value: 1055510455939352058 }
     }
 }
 
@@ -164,6 +158,66 @@ pub type ZeroExQuoteDetails = ZeroExRawTransaction;
 pub struct ZeroExGaslessRawTransaction {
     pub raw_trade: ZeroExTrade,
     pub approval: Option<ZeroExTrade>,
+}
+
+/// Separator between the two signatures a gasless swap needs. A quote with an
+/// approval trade requires both the trade signature and the approval
+/// signature, and they travel through the API and the database as one
+/// `"<trade>|<approval>"` string.
+const GASLESS_SIGNATURE_SEPARATOR: char = '|';
+
+/// 0x takes each signature as `signatureBytes`, a `0x`-prefixed hex string.
+///
+/// Checking the encoding at the door matters beyond rejecting nonsense: once a
+/// signature is persisted the swap moves to `Submitted`, and the provider's
+/// rejection then marks it terminally `Failed` — so a payload that only fails
+/// at submit time cannot actually be "fixed by re-signing", which is what the
+/// 4xx promises the caller.
+fn is_signature_shaped(component: &str) -> bool {
+    let Some(digits) = component.strip_prefix("0x") else {
+        return false
+    };
+
+    !digits.is_empty()
+        && digits.len() % 2 == 0
+        && digits
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
+}
+
+/// Split a gasless signature payload into its trade and approval halves.
+///
+/// The payload is supplied by the payer over the unauthenticated
+/// `POST /public/swap/signature` endpoint, so it cannot be assumed to have the
+/// shape the stored quote needs. Both the pre-persist validation and the
+/// submission path go through here, so a payload accepted at the door can
+/// never fail to split later.
+fn split_gasless_signature(
+    signature: &str,
+    approval_required: bool,
+) -> Result<(&str, Option<&str>), SwapsClientError> {
+    if !approval_required {
+        // A separator here means the payer signed for a different quote than
+        // the one we stored.
+        return if is_signature_shaped(signature) {
+            Ok((signature, None))
+        } else {
+            Err(SwapsClientError::InvalidSignaturePayload)
+        }
+    }
+
+    let (trade_signature, approval_signature) = signature
+        .split_once(GASLESS_SIGNATURE_SEPARATOR)
+        .ok_or(SwapsClientError::InvalidSignaturePayload)?;
+
+    if !is_signature_shaped(trade_signature) || !is_signature_shaped(approval_signature) {
+        return Err(SwapsClientError::InvalidSignaturePayload)
+    }
+
+    Ok((
+        trade_signature,
+        Some(approval_signature),
+    ))
 }
 
 #[cfg(test)]
@@ -358,6 +412,10 @@ pub struct ZeroExClient {
 
 impl ZeroExClient {
     pub async fn new(config: &SwapsConfig) -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "startup: without its RPC endpoint the 0x client cannot serve any swap, so refusing to start is the intended outcome"
+        )]
         let chain_client = ProviderBuilder::new()
             .connect(&config.zero_ex.rpc_url)
             .await
@@ -581,10 +639,23 @@ impl ZeroExGaslessClient {
         invoice_id: Uuid,
         keyring_client: &KeyringClient,
     ) -> Result<String, SwapsClientError> {
-        let hash = B256::from_slice(&const_hex::decode(hash).map_err(|e| {
-            tracing::error!(error = ?e, %hash,  "Failed to decode stored trade hash");
+        // `B256::from_slice` panics on anything that is not exactly 32 bytes,
+        // and the hash comes from the provider's quote — so length has to be
+        // checked, not assumed.
+        let decoded = const_hex::decode(hash).map_err(|e| {
+            tracing::error!(error = ?e, %hash, "Failed to decode stored trade hash");
             SwapsClientError::FailedToSignTransaction
-        })?);
+        })?;
+
+        let hash = B256::try_from(decoded.as_slice()).map_err(|e| {
+            tracing::error!(
+                error = ?e,
+                %hash,
+                len = decoded.len(),
+                "Stored trade hash is not 32 bytes"
+            );
+            SwapsClientError::FailedToSignTransaction
+        })?;
 
         let data = SignPermitRequestData {
             permit_hash: hash,
@@ -691,6 +762,24 @@ impl SwapsClient for ZeroExGaslessClient {
         Ok(signature)
     }
 
+    fn validate_signature(
+        &self,
+        details: &SwapDetails,
+        signature: &str,
+    ) -> Result<(), SwapsClientError> {
+        let raw_details: ZeroExGaslessRawTransaction = details
+            .raw_transaction
+            .clone()
+            .try_into()?;
+
+        split_gasless_signature(
+            signature,
+            raw_details.approval.is_some(),
+        )?;
+
+        Ok(())
+    }
+
     async fn submit_transaction_internal(
         &self,
         data: &SwapDetails,
@@ -701,26 +790,26 @@ impl SwapsClient for ZeroExGaslessClient {
             .clone()
             .try_into()?;
 
-        let (approval, signature_bytes) = if let Some(approval) = raw_details.approval {
-            // TODO: get rid of unwrap
-            let (trade_signature, approval_signature) = signature.split_once("|").unwrap();
+        let (trade_signature, approval_signature) = split_gasless_signature(
+            signature,
+            raw_details.approval.is_some(),
+        )?;
 
-            let approval = SignedTrade {
-                trade_type: approval.trade_type,
-                eip712: approval.eip712,
-                signature: TypedSignature {
-                    signature_type: 5,
-                    signature_bytes: approval_signature.to_string(),
+        let approval = raw_details
+            .approval
+            .zip(approval_signature)
+            .map(
+                |(approval, approval_signature)| SignedTrade {
+                    trade_type: approval.trade_type,
+                    eip712: approval.eip712,
+                    signature: TypedSignature {
+                        signature_type: 5,
+                        signature_bytes: approval_signature.to_string(),
+                    },
                 },
-            };
+            );
 
-            (
-                Some(approval),
-                trade_signature.to_string(),
-            )
-        } else {
-            (None, signature.clone())
-        };
+        let signature_bytes = trade_signature.to_string();
 
         let params = SubmitTransactionRequest {
             // TODO: get rid of hardcoded chain id
@@ -772,6 +861,127 @@ mod tests {
     use crate::types::SwapQuote;
 
     use super::*;
+
+    /// The signature payload on `POST /public/swap/signature` is payer
+    /// controlled and unauthenticated, so every shape it can take has to come
+    /// back as an error rather than a panic — `set_panic_hook` cancels the
+    /// shutdown token on any panic, so one takes the whole daemon down.
+    #[test]
+    fn malformed_gasless_signatures_are_rejected_not_unwrapped() {
+        // The exact payload from the report: one signature, no separator, for
+        // a quote that also needs an approval signature.
+        for signature in [
+            // The exact payload from the report: one signature, no separator.
+            "0xdeadbeef",
+            "",
+            "|0xabcd",
+            "0xabcd|",
+            "|",
+            "0xabcd|0xabcd|0xabcd",
+            // Well-formed pair, but the halves are not hex.
+            "garbage|also-garbage",
+            "0xabcd|not-hex",
+            // Hex without the prefix, and an odd number of digits.
+            "abcd|0xabcd",
+            "0xabc|0xabcd",
+        ] {
+            assert_eq!(
+                split_gasless_signature(signature, true),
+                Err(SwapsClientError::InvalidSignaturePayload),
+                "{signature:?} must be rejected for an approval-requiring quote"
+            );
+        }
+
+        // A quote without an approval trade takes the signature whole, so a
+        // separator there means the payer signed for a different quote.
+        for signature in ["", "0xabcd|0xabcd", "garbage", "abcd", "0x", "0xabc"] {
+            assert_eq!(
+                split_gasless_signature(signature, false),
+                Err(SwapsClientError::InvalidSignaturePayload),
+                "{signature:?} must be rejected for a quote without an approval"
+            );
+        }
+    }
+
+    #[test]
+    fn well_formed_gasless_signatures_split() {
+        assert_eq!(
+            split_gasless_signature("0xdead|0xbeef", true),
+            Ok(("0xdead", Some("0xbeef")))
+        );
+        assert_eq!(
+            split_gasless_signature("0xdead", false),
+            Ok(("0xdead", None))
+        );
+    }
+
+    fn gasless_details_with_approval(signature: Option<String>) -> SwapDetails {
+        let mut raw_transaction = default_zero_ex_gasless_raw_transaction();
+        raw_transaction.approval = Some(raw_transaction.raw_trade.clone());
+
+        SwapDetails {
+            id: "quote-with-approval".to_string(),
+            raw_transaction: RawSwapDetails::ZeroExGasless(raw_transaction),
+            signature,
+            transaction_hash: None,
+        }
+    }
+
+    fn gasless_client() -> ZeroExGaslessClient {
+        ZeroExGaslessClient::new(&SwapsConfig::default())
+    }
+
+    /// This is the gate that keeps a bad payload out of the database: the
+    /// executor calls it before `claim_swap_for_submission`.
+    #[test]
+    fn validate_signature_rejects_a_separatorless_payload() {
+        let details = gasless_details_with_approval(None);
+
+        assert_eq!(
+            gasless_client().validate_signature(&details, "0xdeadbeef"),
+            Err(SwapsClientError::InvalidSignaturePayload)
+        );
+        assert_eq!(
+            gasless_client().validate_signature(&details, "0xdead|0xbeef"),
+            Ok(())
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_trade_hashes_with_invalid_encoding_or_length_are_not_signed() {
+        let mut keyring_client = KeyringClient::default();
+        keyring_client
+            .expect_sign_polygon_permit()
+            .never();
+
+        for hash in [
+            "not-hex".to_string(),
+            "0xdeadbeef".to_string(),
+            format!("0x{}", "00".repeat(33)),
+        ] {
+            assert_eq!(
+                gasless_client()
+                    .sign_hash(&hash, Uuid::new_v4(), &keyring_client)
+                    .await,
+                Err(SwapsClientError::FailedToSignTransaction),
+                "provider hash {hash:?} must be rejected before keyring signing"
+            );
+        }
+    }
+
+    /// Rows written before the validation gate existed can still hold an
+    /// unsplittable signature, so the submission path has to survive one too.
+    #[tokio::test]
+    async fn submitting_a_stored_bad_signature_errors_instead_of_panicking() {
+        let details = gasless_details_with_approval(Some("0xdeadbeef".to_string()));
+
+        assert_eq!(
+            gasless_client()
+                .submit_transaction_internal(&details)
+                .await,
+            Err(SwapsClientError::InvalidSignaturePayload)
+        );
+    }
 
     #[test]
     fn test_error_response_classification() {
@@ -865,16 +1075,24 @@ mod tests {
                 panic!("expected 0x quote details");
             };
             assert!(details.allowance_target.is_none());
-            assert_eq!(details.raw_transaction.gas, 210_000);
+            assert_eq!(
+                details.raw_transaction.gas,
+                Some(210_000)
+            );
+            let serialized = serde_json::to_value(&details.raw_transaction).unwrap();
+            assert_eq!(
+                serialized.get("gas"),
+                Some(&serde_json::json!("210000"))
+            );
         }
     }
 
     #[test]
-    fn test_full_quote_parses_but_rejects_missing_gas() {
+    fn test_full_quote_passes_through_missing_gas() {
         // `transaction.gas` is nullable when 0x cannot estimate at quote time.
-        // The response must still parse, but the quote must not be published:
-        // Kassette submits `BigInt(rawTx.gas)` unguarded, so a substituted 0
-        // becomes a zero-gas-limit transaction that cannot be mined.
+        // The quote is published with the key omitted so the payer's wallet
+        // estimates: substituting 0 would hand over a zero-gas-limit
+        // transaction that cannot be mined.
         for raw in [
             FULL_QUOTE_WITH_NULLABLE_FIELDS.to_string(),
             FULL_QUOTE_WITH_NULLABLE_FIELDS.replace("\"gas\": null,", ""),
@@ -886,10 +1104,19 @@ mod tests {
             };
             assert!(response.transaction.gas.is_none());
 
-            assert!(matches!(
-                SwapQuote::try_from(response),
-                Err(SwapsClientError::UnusableQuote)
-            ));
+            let quote = SwapQuote::try_from(response).unwrap();
+            let RawSwapDetails::ZeroEx(details) = quote.quote_details else {
+                panic!("expected 0x quote details");
+            };
+            assert!(details.raw_transaction.gas.is_none());
+
+            let serialized = serde_json::to_value(&details.raw_transaction).unwrap();
+            assert!(serialized.get("gas").is_none());
+            // `gasPrice` and `value` are not nullable in 0x's v2 spec and
+            // Kassette still requires them, so they must survive the round
+            // trip unconditionally.
+            assert!(serialized.get("gas_price").is_some());
+            assert!(serialized.get("value").is_some());
         }
     }
 

@@ -1,0 +1,15 @@
+# `set_panic_hook` (daemon/src/utils/shutdown.rs) cancels the shutdown token on
+# any panic, so a reachable panic kills the payment gateway — most of all on the
+# unauthenticated `/public` routes. The panic-capable constructs are denied in
+# the root `Cargo.toml`; the options below keep that gate off test code, where a
+# panic is just a failed assertion.
+#
+# NB: clippy has no equivalent option for `unreachable`, `todo`,
+# `unimplemented`, or `string_slice` — those four DO fire inside
+# `#[cfg(test)]` modules and need a local `#[expect]` there.
+#
+# See docs/conventions.md ("Panic Gate").
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

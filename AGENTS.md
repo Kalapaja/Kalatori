@@ -1,6 +1,6 @@
 # Kalatori — AI Agent Guide
 
-Self-hosted, non-custodial blockchain payment gateway daemon for Polkadot Asset Hub and Polygon. Derives unique HD payment accounts per invoice, monitors chains for incoming payments, auto-withdraws to merchant recipient. License: GPLv3. **Rust edition 2024, MSRV 1.88.** Status: Public Beta.
+Self-hosted, non-custodial blockchain payment gateway daemon for Polkadot Asset Hub and Polygon. Derives unique HD payment accounts per invoice, monitors chains for incoming payments, auto-withdraws to merchant recipient. License: GPLv3. **Rust edition 2024, MSRV 1.91.** Status: Public Beta.
 
 ## Critical Pitfalls
 
@@ -106,7 +106,7 @@ daemon/examples/              Integration test examples (crud, webhook)
 | [docs/error-handling.md](docs/error-handling.md) | 5 Error Design Principles with examples | Designing error types |
 | [docs/architecture.md](docs/architecture.md) | Component map, data flow, payment lifecycle, config, key derivation | Understanding the system |
 | [docs/testing-strategy.md](docs/testing-strategy.md) | Test types, commands, CI pipeline, mock patterns | Adding/modifying tests |
-| [docs/swaps.md](docs/swaps.md) | Swaps decision records: unusable-quote rejection, submission protocol | Changing swap clients/executor |
+| [docs/swaps.md](docs/swaps.md) | Swaps decision records: gas-parameter pass-through, submission protocol | Changing swap clients/executor |
 | [docs/mcp-tooling.md](docs/mcp-tooling.md) | MCP server availability and usage patterns | Using MCP tools |
 | [docs/doc-update-triggers.md](docs/doc-update-triggers.md) | What docs to update after code changes | After any PR |
 | [docs/DATABASE.md](docs/DATABASE.md) | SQLite schema, DAO pattern, status transitions | DB schema changes |

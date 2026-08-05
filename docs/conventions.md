@@ -2,7 +2,8 @@
 
 ## Code Style
 
-- **Rust edition 2024**, MSRV 1.88
+- **Rust edition 2024**, MSRV 1.91 (`daemon/Cargo.toml`; the other workspace
+  members declare none, so this is the effective floor)
 - **rustfmt**: Nightly required (`cargo +nightly fmt --all`)
 - Self-named modules only (e.g., `chain.rs` + `chain/` directory) — **never `mod.rs`** (enforced by `mod_module_files` clippy lint). Rationale: better Git history, avoids file renaming issues.
 
@@ -21,10 +22,126 @@ mod_module_files = "warn"
 
 **CI enforces** `RUSTFLAGS="-Dwarnings"` — all warnings are errors, including pedantic.
 
-Per-crate lints (in `daemon/Cargo.toml`):
-- `pedantic = { level = "warn", priority = -1 }`
-- `arithmetic_side_effects = "warn"`
-- `shadow_reuse`, `shadow_same`, `shadow_unrelated` = "warn"
+There are **no** per-crate lint tables — `daemon`, `client` and `tools/cargo-bin`
+all carry only `[lints] workspace = true`, so the root block above plus the panic
+gate below is the complete set. In particular `pedantic` and
+`arithmetic_side_effects` are *not* enabled anywhere.
+
+## Panic Gate
+
+`set_panic_hook` (`daemon/src/utils/shutdown.rs`) cancels the shutdown token on
+**any** panic, in any thread, and the hook runs *before* unwinding — so nothing
+downstream can contain it. On the unauthenticated `/public` routes that makes a
+reachable panic a remote kill switch for the payment gateway.
+[Issue #349](https://github.com/Kalapaja/Kalatori/issues/349) was exactly this,
+via a `split_once("|").unwrap()` on a payer-supplied signature.
+
+These restriction lints are denied workspace-wide:
+
+```toml
+[workspace.lints.clippy]
+expect_used      = "deny"
+indexing_slicing = "deny"
+panic            = "deny"
+string_slice     = "deny"
+todo             = "deny"
+unimplemented    = "deny"
+unreachable      = "deny"
+unwrap_used      = "deny"
+```
+
+### What the gate does and does not cover
+
+It covers the listed constructs **in first-party code**. It is not a proof that
+the daemon cannot panic. Still uncaught, and still fatal:
+
+- `assert!`, `assert_eq!`, `debug_assert!` — including production assertions.
+- **Integer and `Decimal` arithmetic, division, shifts, datetime arithmetic.**
+  `clippy::arithmetic_side_effects` is not enabled. See the backlog below.
+- Panicking library APIs — `B256::from_slice`, `Vec::remove`, `chrono`
+  constructors, and anything else that panics on out-of-domain input.
+- `std::process::abort`/`exit`, and allocation failure.
+- Panics inside dependencies on data we hand them.
+
+Treat the gate as removing the *careless* panics, not as a guarantee.
+
+### Test code
+
+`clippy.toml` sets `allow-unwrap-in-tests`, `allow-expect-in-tests`,
+`allow-panic-in-tests` and `allow-indexing-slicing-in-tests`. These cover the
+whole `#[cfg(test)]` module — helper functions included, and `#[tokio::test]`
+behaves like `#[test]`.
+
+**Clippy has no equivalent option for `unreachable`, `todo`, `unimplemented` or
+`string_slice`.** Those four fire inside test modules too, and need a local
+`#[expect]` there.
+
+Example binaries under `client/examples/` get no test exemption and carry
+file-level `#![expect(clippy::unwrap_used)]`. That is a blunt instrument — it
+also exempts every unwrap added to those files later. Prefer returning `Result`
+from new examples.
+
+### Satisfying the gate
+
+In order of preference:
+
+1. **Return a typed error.** Almost always right for anything a request, a
+   database row, or a network peer can influence. See
+   [error-handling.md](error-handling.md).
+2. **Degrade gracefully** where there is no error channel — but only when the
+   degraded path is *correct*, not merely non-panicking. A webhook that gets
+   retried beats a daemon that is gone; an API server that silently stops
+   serving does not. If the condition is genuinely fatal, cancel the shutdown
+   token rather than swallowing it.
+3. **Keep the panic and justify it** — only when the panicking case is provably
+   impossible, or is a startup failure where refusing to run is correct:
+
+   ```rust
+   #[expect(
+       clippy::indexing_slicing,
+       reason = "SHA-256 always finalizes to 32 bytes, so the first 8 are always present"
+   )]
+   ```
+
+   The workspace denies `allow_attributes`, so it must be `#[expect]`, not
+   `#[allow]` — an expectation that stops firing becomes a warning, and under
+   CI's `-Dwarnings` an error, which keeps annotations from going stale.
+
+   **The reason must state why the panicking case cannot happen**, and must cite
+   something actually enforced. "Should never fail" is not a reason.
+   "Startup validation populates an entry for every `ChainType`" is — provided
+   that validation really does. A reason that asserts an unenforced invariant is
+   worse than no annotation, because it manufactures confidence.
+
+### Backlog
+
+- **Grandfathered sites.** Panics predating the gate that were not audited carry
+  a marker reason. These deliberately do **not** satisfy the "state why it cannot
+  happen" rule above — the marker records that the site is unaudited, and some
+  are known to be reachable. It is a backlog entry, not a justification, and
+  must not be extended to new code. Find them with:
+
+  ```bash
+  grep -rn "grandfathered when the panic gate landed" daemon/src client/src
+  ```
+
+  These are *not* cleared — some are known-reachable. Prefer converting one to a
+  typed error over extending the marker to new code.
+
+- **Arithmetic is not gated.** `clippy::arithmetic_side_effects` would catch
+  overflow, division by zero and `Decimal` panics; roughly two dozen daemon
+  sites trip it today. Division by zero panics unconditionally; overflow
+  currently *wraps silently* in release, which for a daemon computing payment
+  amounts is arguably worse than panicking.
+
+- **`[profile.release]` is in `daemon/Cargo.toml`, a workspace member, so Cargo
+  ignores it** — it prints `profiles for the non root package will be ignored`
+  on every build. `panic = "abort"`, `overflow-checks`, `lto`, `strip` and
+  `codegen-units` are therefore *not* in effect. Moving the block to the
+  workspace root should be sequenced **after** the arithmetic gate above:
+  enabling `overflow-checks` while two dozen unguarded sites remain would turn
+  silent wrapping into live panics, i.e. create the very DoS class this gate
+  exists to close.
 
 ## Logging
 

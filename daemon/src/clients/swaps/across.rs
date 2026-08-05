@@ -59,9 +59,9 @@ pub fn default_across_raw_transaction() -> AcrossRawTransaction {
             contract_address: "".to_string(),
             data: "".to_string(),
             value: 100,
-            gas: 100,
-            max_fee_per_gas: 100,
-            max_priority_fee_per_gas: 100,
+            gas: Some(100),
+            max_fee_per_gas: Some(100),
+            max_priority_fee_per_gas: Some(100),
         },
         approval_transactions: Vec::new(),
     }
@@ -69,19 +69,34 @@ pub fn default_across_raw_transaction() -> AcrossRawTransaction {
 
 pub type AcrossQuoteDetails = AcrossRawTransaction;
 
-impl From<AcrossApiError> for SwapsClientError {
-    fn from(value: AcrossApiError) -> Self {
+impl AcrossApiError {
+    /// Across usually embeds the status in the error body, but a gateway
+    /// failure (502/503) answers with a bare `{"message": …}` and no `status`.
+    /// Falling back to the transport status keeps those from reaching the payer
+    /// as a rejection they could act on. Mirrors the 0x client, which threads
+    /// the HTTP status in for the same reason.
+    fn into_client_error(
+        self,
+        status: reqwest::StatusCode,
+    ) -> SwapsClientError {
         tracing::warn!(
-            error.source = ?value,
+            %status,
+            error.source = ?self,
             "Across API returned an error response"
         );
 
-        match value.status {
-            // Provider-side failures are not the requester's fault
-            Some(status) if status >= 500 => Self::UnknownApiError,
-            _ => Self::ProviderRejected {
-                message: value.message,
-            },
+        let is_server_error = self.status.map_or_else(
+            || status.is_server_error(),
+            |embedded| embedded >= 500,
+        );
+
+        // Provider-side failures are not the requester's fault
+        if is_server_error {
+            return SwapsClientError::UnknownApiError;
+        }
+
+        SwapsClientError::ProviderRejected {
+            message: self.message,
         }
     }
 }
@@ -115,7 +130,7 @@ impl AcrossClient {
     {
         let full_url = format!("{}{}", self.base_url, url);
 
-        let raw_response = self
+        let response = self
             .client
             .get(full_url)
             .query(&params)
@@ -127,9 +142,13 @@ impl AcrossClient {
                     error.source = ?e,
                     "Across request failed"
                 )
-            })?
-            .text()
-            .await?;
+            })?;
+
+        // Captured before the body is consumed: an Across gateway failure omits
+        // the embedded `status`, leaving the transport status the only signal
+        // that this was their outage rather than a bad request.
+        let http_status = response.status();
+        let raw_response = response.text().await?;
 
         tracing::trace!(
             text = %raw_response,
@@ -153,7 +172,7 @@ impl AcrossClient {
 
         match response {
             AcrossApiResponse::Ok(data) => Ok(data),
-            AcrossApiResponse::Err(e) => Err(e.into()),
+            AcrossApiResponse::Err(e) => Err(e.into_client_error(http_status)),
         }
     }
 }
@@ -297,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_approval_response_parses_but_rejects_missing_gas_parameters() {
+    fn test_swap_approval_response_passes_through_missing_gas_parameters() {
         for raw in [
             r#"{
                 "inputAmount": "1",
@@ -345,14 +364,182 @@ mod tests {
                     .is_none()
             );
 
-            // Parsing must survive the nulls — but a quote with no gas
-            // parameters is not executable, and substituting 0 would publish a
-            // transaction that cannot be mined, so the conversion rejects it.
-            assert!(matches!(
-                SwapQuote::try_from(parsed),
-                Err(SwapsClientError::UnusableQuote)
-            ));
+            // Absent gas parameters are published as absent: Kassette
+            // estimates them in the payer's wallet. Substituting 0 would
+            // publish a transaction that cannot be mined, so the key must be
+            // missing from the JSON entirely — not `null`, not `"0"`.
+            let quote = SwapQuote::try_from(parsed).unwrap();
+            let RawSwapDetails::Across(details) = quote.quote_details else {
+                panic!("expected Across quote details");
+            };
+
+            assert!(details.transaction.gas.is_none());
+            assert!(
+                details
+                    .transaction
+                    .max_fee_per_gas
+                    .is_none()
+            );
+            assert!(
+                details
+                    .transaction
+                    .max_priority_fee_per_gas
+                    .is_none()
+            );
+            // Across documents an absent `value` as zero, and Kassette
+            // defaults it to `0n` — unlike gas, it is not omitted.
+            assert_eq!(details.transaction.value, 0);
+
+            let serialized = serde_json::to_value(&details.transaction).unwrap();
+            assert!(serialized.get("gas").is_none());
+            assert!(
+                serialized
+                    .get("max_fee_per_gas")
+                    .is_none()
+            );
+            assert!(
+                serialized
+                    .get("max_priority_fee_per_gas")
+                    .is_none()
+            );
         }
+    }
+
+    #[test]
+    fn test_across_zero_gas_and_fee_cap_are_omitted() {
+        // Based on the production shape returned when an ERC-20 approval is
+        // still missing, where Across sends `gas: "0"`. The fee caps and
+        // `value` are normally absent from that response; they are supplied
+        // here on purpose, so one fixture exercises zero-cap normalization and
+        // the genuine-zero `value` alongside the gas sentinel.
+        let raw = r#"{
+            "inputAmount": "1",
+            "maxInputAmount": "1",
+            "expectedOutputAmount": "1",
+            "swapTx": {
+                "simulationSuccess": false,
+                "chainId": 137,
+                "to": "0x1111111111111111111111111111111111111111",
+                "data": "0x1234",
+                "value": "0",
+                "gas": "0",
+                "maxFeePerGas": "0",
+                "maxPriorityFeePerGas": "1500000000"
+            },
+            "id": "quote-zero-sentinels",
+            "quoteExpiryTimestamp": 1893456000
+        }"#;
+
+        let AcrossApiResponse::Ok(parsed) =
+            serde_json::from_str::<AcrossApiResponse<SwapApprovalResponse>>(raw).unwrap()
+        else {
+            panic!("zero gas sentinels must parse as the success arm");
+        };
+        assert_eq!(parsed.swap_tx.gas, Some(0));
+        assert_eq!(parsed.swap_tx.max_fee_per_gas, Some(0));
+        assert_eq!(
+            parsed.swap_tx.max_priority_fee_per_gas,
+            Some(1_500_000_000)
+        );
+        assert_eq!(parsed.swap_tx.value, Some(0));
+
+        let quote = SwapQuote::try_from(parsed).unwrap();
+        let RawSwapDetails::Across(details) = quote.quote_details else {
+            panic!("expected Across quote details");
+        };
+        assert!(details.transaction.gas.is_none());
+        assert!(
+            details
+                .transaction
+                .max_fee_per_gas
+                .is_none()
+        );
+        assert!(
+            details
+                .transaction
+                .max_priority_fee_per_gas
+                .is_none()
+        );
+        assert_eq!(details.transaction.value, 0);
+
+        let serialized = serde_json::to_value(&details.transaction).unwrap();
+        assert!(serialized.get("gas").is_none());
+        assert!(
+            serialized
+                .get("max_fee_per_gas")
+                .is_none()
+        );
+        assert!(
+            serialized
+                .get("max_priority_fee_per_gas")
+                .is_none()
+        );
+        assert_eq!(
+            serialized.get("value"),
+            Some(&serde_json::json!("0"))
+        );
+    }
+
+    #[test]
+    fn test_across_preserves_non_zero_gas_and_zero_priority_fee() {
+        let raw = r#"{
+            "inputAmount": "1",
+            "maxInputAmount": "1",
+            "expectedOutputAmount": "1",
+            "swapTx": {
+                "simulationSuccess": true,
+                "chainId": 137,
+                "to": "0x1111111111111111111111111111111111111111",
+                "data": "0x1234",
+                "gas": "21000",
+                "maxFeePerGas": "30000000000",
+                "maxPriorityFeePerGas": "0"
+            },
+            "id": "quote-valid-zero-priority",
+            "quoteExpiryTimestamp": 1893456000
+        }"#;
+
+        let AcrossApiResponse::Ok(parsed) =
+            serde_json::from_str::<AcrossApiResponse<SwapApprovalResponse>>(raw).unwrap()
+        else {
+            panic!("valid gas parameters must parse as the success arm");
+        };
+        let quote = SwapQuote::try_from(parsed).unwrap();
+        let RawSwapDetails::Across(details) = quote.quote_details else {
+            panic!("expected Across quote details");
+        };
+
+        assert_eq!(details.transaction.gas, Some(21_000));
+        assert_eq!(
+            details.transaction.max_fee_per_gas,
+            Some(30_000_000_000)
+        );
+        assert_eq!(
+            details
+                .transaction
+                .max_priority_fee_per_gas,
+            Some(0)
+        );
+        // The same zero value results from an omitted provider field.
+        assert_eq!(details.transaction.value, 0);
+
+        let serialized = serde_json::to_value(&details.transaction).unwrap();
+        assert_eq!(
+            serialized.get("gas"),
+            Some(&serde_json::json!("21000"))
+        );
+        assert_eq!(
+            serialized.get("max_fee_per_gas"),
+            Some(&serde_json::json!("30000000000"))
+        );
+        assert_eq!(
+            serialized.get("max_priority_fee_per_gas"),
+            Some(&serde_json::json!("0"))
+        );
+        assert_eq!(
+            serialized.get("value"),
+            Some(&serde_json::json!("0"))
+        );
     }
 
     #[test]
@@ -828,9 +1015,9 @@ mod tests {
                         contract_address: "0x89415a82d909a7238d69094C3Dd1dCC1aCbDa85C".to_string(),
                         data: "0xad5425c6000000000000000000000000a4d353bbc130cbef1811f27ac70989f9d568ceab0000000000000000000000000e3ca7fd040144900adaa5f9b8917f3933a4f5e90000000000000000000000000b2c639c533813f4aa9d7837caf62653d097ff850000000000000000000000003c499c542cef5e3811e1192ce70d8cc03d5c335900000000000000000000000000000000000000000000000000000000000f55c800000000000000000000000000000000000000000000000000000000000f4d190000000000000000000000000000000000000000000000000000000000000089000000000000000000000000cad97616f91872c02ba3553db315db4015cbe8500000000000000000000000000000000000000000000000000000000069caaf870000000000000000000000000000000000000000000000000000000069cacba700000000000000000000000000000000000000000000000000000000000000050000000000000000000000000000000000000000000000000000000000000180000000000000000000000000000000000000000000000000000000000000000073c0de".to_string(),
                         value: 0,
-                        gas: 571750,
-                        max_fee_per_gas: 1094950,
-                        max_priority_fee_per_gas: 1000000,
+                        gas: Some(571750),
+                        max_fee_per_gas: Some(1094950),
+                        max_priority_fee_per_gas: Some(1000000),
                     },
                     approval_transactions: vec![],
                 },
@@ -893,9 +1080,23 @@ mod tests {
         assert_eq!(response, expected_response);
         mock.assert();
     }
+    fn api_error(
+        status: Option<u32>,
+        message: &str,
+    ) -> AcrossApiError {
+        AcrossApiError {
+            error_type: None,
+            error: None,
+            code: None,
+            status,
+            message: message.to_string(),
+            id: None,
+        }
+    }
+
     #[test]
     fn test_error_response_classification() {
-        let api_error = AcrossApiError {
+        let rejection = AcrossApiError {
             error_type: Some("InvalidParamError".to_string()),
             error: None,
             code: Some("AMOUNT_TOO_LOW".to_string()),
@@ -904,23 +1105,65 @@ mod tests {
             id: None,
         };
         assert_eq!(
-            SwapsClientError::from(api_error),
+            rejection.into_client_error(reqwest::StatusCode::BAD_REQUEST),
             SwapsClientError::ProviderRejected {
                 message: "Sent amount is too low relative to fees".to_string(),
             }
         );
 
-        let server_error = AcrossApiError {
-            error_type: None,
-            error: None,
-            code: None,
-            status: Some(500),
-            message: "Internal server error".to_string(),
-            id: None,
-        };
         assert_eq!(
-            SwapsClientError::from(server_error),
+            api_error(Some(500), "Internal server error")
+                .into_client_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
             SwapsClientError::UnknownApiError
+        );
+    }
+
+    /// A gateway failure answers with a bare `{"message": …}` and no embedded
+    /// status. Before the transport status was threaded through, this was
+    /// classified as a rejection and surfaced to the payer as a 422 they could
+    /// do nothing about.
+    #[test]
+    fn server_error_without_embedded_status_is_not_a_rejection() {
+        assert_eq!(
+            api_error(None, "Bad gateway").into_client_error(reqwest::StatusCode::BAD_GATEWAY),
+            SwapsClientError::UnknownApiError
+        );
+        assert_eq!(
+            api_error(None, "Service unavailable")
+                .into_client_error(reqwest::StatusCode::SERVICE_UNAVAILABLE),
+            SwapsClientError::UnknownApiError
+        );
+    }
+
+    /// The body stays authoritative when it does carry a status: a 400-shaped
+    /// rejection delivered over an unexpected transport status is still the
+    /// requester's problem to fix.
+    #[test]
+    fn embedded_status_wins_over_transport_status() {
+        assert_eq!(
+            api_error(Some(400), "Amount too low")
+                .into_client_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            SwapsClientError::ProviderRejected {
+                message: "Amount too low".to_string(),
+            }
+        );
+        assert_eq!(
+            api_error(Some(503), "Upstream unavailable").into_client_error(reqwest::StatusCode::OK),
+            SwapsClientError::UnknownApiError
+        );
+    }
+
+    /// A genuine client-side rejection with no embedded status must stay a
+    /// rejection — the fallback must not sweep every statusless body into
+    /// "our fault".
+    #[test]
+    fn client_error_without_embedded_status_stays_a_rejection() {
+        assert_eq!(
+            api_error(None, "Unsupported route")
+                .into_client_error(reqwest::StatusCode::BAD_REQUEST),
+            SwapsClientError::ProviderRejected {
+                message: "Unsupported route".to_string(),
+            }
         );
     }
 }

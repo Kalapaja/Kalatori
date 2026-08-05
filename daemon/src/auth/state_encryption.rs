@@ -45,6 +45,10 @@ pub fn derive_state_key(
         client_secret,
     );
     let mut okm = [0u8; 32];
+    #[expect(
+        clippy::expect_used,
+        reason = "HKDF-SHA256 only rejects output longer than 255*32 bytes; `okm` is 32"
+    )]
     hk.expand(HKDF_INFO, &mut okm)
         .expect("HKDF-SHA256 expand should not fail for 32-byte output");
     SecretBox::new(Box::new(okm))
@@ -61,6 +65,10 @@ pub fn encrypt_state(
     let cipher = XChaCha20Poly1305::new(key.expose_secret().into());
     let nonce = chacha20poly1305::XNonce::from(rand::random::<[u8; NONCE_LEN]>());
 
+    #[expect(
+        clippy::expect_used,
+        reason = "XChaCha20-Poly1305 encryption only fails for a plaintext beyond 256 GiB; every caller passes a generated PKCE verifier of at most 128 bytes"
+    )]
     let ciphertext = cipher
         .encrypt(&nonce, code_verifier.as_bytes())
         .expect("XChaCha20-Poly1305 encryption should not fail");

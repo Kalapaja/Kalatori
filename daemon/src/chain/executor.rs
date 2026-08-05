@@ -289,6 +289,10 @@ async fn send_transfer_request<T: ChainConfig, C: BlockChainClient<T>>(
                 is_retriable: false,
             })
         },
+        #[expect(
+            clippy::unreachable,
+            reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+        )]
         Err(TransactionError::BuildFailed {
             ..
         }) => unreachable!(),
@@ -541,7 +545,11 @@ impl<
         &self,
         request: OutgoingTransferRequest,
     ) -> Result<(), ChainExecutorError> {
-        let from_chain = request.chain.into();
+        let from_chain = SwapChainType::try_from(request.chain).map_err(|chain| {
+            ChainExecutorError::BuildTransfer {
+                reason: format!("Chain {chain} cannot be a swap source"),
+            }
+        })?;
         let to_chain = request
             .destination_params
             .destination_chain;
@@ -561,6 +569,10 @@ impl<
 
         // TODO: make it more normally. Add some helpers for such operation, get
         // precision from prestored values
+        #[expect(
+            clippy::unwrap_used,
+            reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+        )]
         let from_amount_units = (request.amount / Decimal::new(1, 6))
             .to_u128()
             .unwrap();
@@ -642,9 +654,26 @@ impl<
         futures_set: &mut FuturesUnordered<BoxedTransferFuture>,
     ) {
         let origin = request.origin;
-        let mut retry_meta = request.retry_meta.clone();
+        let retry_meta = request.retry_meta.clone();
 
-        let from_chain = SwapChainType::from(request.chain);
+        // The transfer has already been claimed as `InProgress`, so returning
+        // here would strand it in that state forever. Push the failure through
+        // the same retry/status handling every other build failure uses.
+        let from_chain = match SwapChainType::try_from(request.chain) {
+            Ok(from_chain) => from_chain,
+            Err(chain) => {
+                self.mark_transfer_failed(
+                    &ChainExecutorError::BuildTransfer {
+                        reason: format!("Chain {chain} cannot be a swap source"),
+                    },
+                    origin,
+                    retry_meta,
+                )
+                .await;
+
+                return
+            },
+        };
         let to_chain = request
             .destination_params
             .destination_chain;
@@ -674,45 +703,63 @@ impl<
         };
 
         if let Err(error) = result {
-            let is_retriable = error.is_retriable();
-
-            tracing::warn!(
-                %error,
-                %is_retriable,
-                "Failed to prepare transfer request, it will be marked as failed"
-            );
-            retry_meta.increment_retry(error.to_string());
-
-            match origin.variant() {
-                TransactionOriginVariant::Payout(id) => {
-                    if let Err(error) = self
-                        .dao
-                        .update_payout_retry(id, retry_meta, is_retriable)
-                        .await
-                    {
-                        tracing::error!(
-                            %error,
-                            "Error while trying to mark payout request failed. It might stuck with In Progress status"
-                        );
-                    };
-                },
-                TransactionOriginVariant::Refund(id) => {
-                    if let Err(error) = self
-                        .dao
-                        .update_refund_retry(id, retry_meta, is_retriable)
-                        .await
-                    {
-                        tracing::error!(
-                            %error,
-                            "Error while trying to mark refund request failed. It might stuck with In Progress status"
-                        );
-                    };
-                },
-                TransactionOriginVariant::InternalTransfer(_) | TransactionOriginVariant::None => {
-                    unreachable!()
-                },
-            }
+            self.mark_transfer_failed(&error, origin, retry_meta)
+                .await;
         };
+    }
+
+    /// Release a transfer that was already claimed as `InProgress` back through
+    /// the retry/status machinery. Every path that claims a transfer and then
+    /// fails to build it has to come through here — returning early instead
+    /// leaves the row `InProgress` forever.
+    async fn mark_transfer_failed(
+        &self,
+        error: &ChainExecutorError,
+        origin: TransactionOrigin,
+        mut retry_meta: RetryMeta,
+    ) {
+        let is_retriable = error.is_retriable();
+
+        tracing::warn!(
+            %error,
+            %is_retriable,
+            "Failed to prepare transfer request, it will be marked as failed"
+        );
+        retry_meta.increment_retry(error.to_string());
+
+        match origin.variant() {
+            TransactionOriginVariant::Payout(id) => {
+                if let Err(error) = self
+                    .dao
+                    .update_payout_retry(id, retry_meta, is_retriable)
+                    .await
+                {
+                    tracing::error!(
+                        %error,
+                        "Error while trying to mark payout request failed. It might stuck with In Progress status"
+                    );
+                };
+            },
+            TransactionOriginVariant::Refund(id) => {
+                if let Err(error) = self
+                    .dao
+                    .update_refund_retry(id, retry_meta, is_retriable)
+                    .await
+                {
+                    tracing::error!(
+                        %error,
+                        "Error while trying to mark refund request failed. It might stuck with In Progress status"
+                    );
+                };
+            },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
+            TransactionOriginVariant::InternalTransfer(_) | TransactionOriginVariant::None => {
+                unreachable!()
+            },
+        }
     }
 
     async fn schedule_transfers(
@@ -814,6 +861,10 @@ impl<
                         }
                     })?;
             },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
             TransactionOriginVariant::InternalTransfer(_) | TransactionOriginVariant::None => {
                 unreachable!()
             },
@@ -916,6 +967,10 @@ impl<
                         }
                     })?;
             },
+            #[expect(
+                clippy::unreachable,
+                reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
+            )]
             TransactionOriginVariant::InternalTransfer(_) | TransactionOriginVariant::None => {
                 unreachable!()
             },
@@ -2196,5 +2251,42 @@ mod tests {
                 .send_transfer(request, &mut queue)
                 .await;
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_swap_source_releases_the_claimed_payout_for_retry() {
+        let mut executor = setup_executor();
+        let mut request = OutgoingTransferRequest::from(default_payout(Uuid::new_v4()));
+        request.chain = ChainType::PolkadotAssetHub;
+        let payout_id = request.id;
+        let mut expected_retry_meta = request.retry_meta.clone();
+        expected_retry_meta.increment_retry(
+            ChainExecutorError::BuildTransfer {
+                reason: format!(
+                    "Chain {} cannot be a swap source",
+                    ChainType::PolkadotAssetHub
+                ),
+            }
+            .to_string(),
+        );
+        expected_retry_meta.trunc_timestamps();
+
+        executor
+            .dao
+            .expect_update_payout_retry()
+            .once()
+            .withf(move |id, retry_meta, is_retriable| {
+                let mut retry_meta = retry_meta.clone();
+                retry_meta.trunc_timestamps();
+                *id == payout_id && retry_meta == expected_retry_meta && *is_retriable
+            })
+            .returning(|_, _, _| Ok(default_payout(Uuid::new_v4())));
+
+        let mut queue = FuturesUnordered::new();
+        executor
+            .send_transfer(request, &mut queue)
+            .await;
+
+        assert!(queue.is_empty());
     }
 }

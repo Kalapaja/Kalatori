@@ -294,7 +294,13 @@ pub fn default_polygon_signed_transaction() -> PolygonSignedTransaction {
 
 impl SignedTransactionUtils for PolygonSignedTransaction {
     fn to_raw_string(&self) -> String {
-        serde_json::to_string(&self.op_params).unwrap()
+        #[expect(
+            clippy::unwrap_used,
+            reason = "`op_params` is a flat struct of strings and numbers, so serialisation has no failure mode"
+        )]
+        let raw = serde_json::to_string(&self.op_params).unwrap();
+
+        raw
     }
 
     fn hash(&self) -> String {

@@ -155,7 +155,15 @@ impl TaskTracker {
             Ok(())
         })
         .await
-        .expect("this future shouldn't return errors");
+        .unwrap_or_else(|error| {
+            // The closure above only ever returns `Ok`, so this is dead in
+            // practice — but this runs during shutdown, where a panic would
+            // abort the process instead of letting the tasks wind down.
+            tracing::error!(
+                error.source = ?error,
+                "The task tracker's shutdown future returned an error"
+            );
+        });
     }
 }
 

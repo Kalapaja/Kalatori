@@ -63,6 +63,10 @@ pub fn parse_public_keys(paserk_keys: &[String]) -> Vec<AsymmetricPublicKey<V4>>
         .iter()
         .enumerate()
         .map(|(i, key_str)| {
+            #[expect(
+                clippy::panic,
+                reason = "config validation at startup: an unparsable signing key means the daemon cannot verify any token, so refusing to start is correct"
+            )]
             AsymmetricPublicKey::<V4>::try_from(key_str.as_str()).unwrap_or_else(|e| {
                 panic!("auth config: failed to parse token_public_keys[{i}]: {e}")
             })
@@ -221,6 +225,10 @@ pub fn is_within_refresh_grace(claims: &TokenClaims) -> bool {
 /// Returns the keypair and the public key as a PASERK `k4.public.*` string
 /// suitable for `token_public_keys` in config.
 #[cfg(any(feature = "dev_api", test))]
+#[expect(
+    clippy::expect_used,
+    reason = "dev/test-only key generation; a failure here is a broken build, not a runtime path"
+)]
 pub fn generate_dev_keypair() -> (
     pasetors::keys::AsymmetricKeyPair<V4>,
     String,
@@ -244,6 +252,10 @@ pub fn generate_dev_keypair() -> (
 ///
 /// The resulting token string can be verified with `verify_token()`.
 #[cfg(any(feature = "dev_api", test))]
+#[expect(
+    clippy::expect_used,
+    reason = "reachable: `sub`/`email` reach this from the dev-only mint route, and pasetors rejects an empty subject. Gated behind the non-default `dev_api` feature, which the API docs mark as not for production. Tracked in the panic-gate backlog."
+)]
 pub fn sign_token(
     secret_key: &pasetors::keys::AsymmetricSecretKey<V4>,
     claims: &TokenClaims,

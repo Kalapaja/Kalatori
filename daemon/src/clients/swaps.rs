@@ -98,15 +98,24 @@ pub enum SwapsClientError {
     #[error("No liquidity available")]
     NoLiquidity,
     // A quote that parsed but cannot be turned into a transaction the payer can
-    // actually submit — e.g. the provider omitted the gas parameters, or sent a
-    // timestamp outside the representable range. Publishing such a quote hands
-    // the payer a transaction that is guaranteed to fail on-chain.
+    // actually submit — currently only an expiry timestamp outside the
+    // representable range. Publishing such a quote hands the payer a
+    // transaction that is guaranteed to fail on-chain. Absent gas parameters
+    // are *not* in this class: they are passed through as omitted so the
+    // payer's wallet estimates them (Kalapaja/Kassette#50).
     #[error("Provider returned an unusable quote")]
     UnusableQuote,
     #[error("Operation is not allowed")]
     OperationIsNotAllowed,
     #[error("Failed to sign transaction")]
     FailedToSignTransaction,
+    /// The signature payload does not match the shape the stored quote needs —
+    /// e.g. a gasless quote with an approval trade was handed a single
+    /// signature instead of the `"<trade>|<approval>"` pair. The submitter can
+    /// fix this by re-signing, so it must reach the API as a 4xx and never be
+    /// persisted.
+    #[error("Signature payload does not match the stored quote")]
+    InvalidSignaturePayload,
 }
 
 impl From<reqwest::Error> for SwapsClientError {
@@ -214,6 +223,18 @@ pub trait SwapsClient {
         data.signature
             .as_ref()
             .ok_or(SwapsClientError::SignatureIsNotSet)
+    }
+
+    /// Check a caller-supplied signature against the stored quote *before* it
+    /// is persisted. Most executors take an opaque signature blob and have
+    /// nothing to check; the gasless path encodes two signatures in one string
+    /// and overrides this.
+    fn validate_signature(
+        &self,
+        _details: &SwapDetails,
+        _signature: &str,
+    ) -> Result<(), SwapsClientError> {
+        Ok(())
     }
 
     async fn submit_transaction_internal(

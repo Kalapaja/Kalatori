@@ -116,12 +116,14 @@ pub struct ZeroExGetQuoteResponse {
 impl TryFrom<ZeroExGetQuoteResponse> for SwapQuote {
     type Error = SwapsClientError;
 
+    // Infallible today — an absent gas estimate is passed through rather than
+    // rejected — but the trait requires the fallible shape.
     fn try_from(value: ZeroExGetQuoteResponse) -> Result<Self, Self::Error> {
         let details = ZeroExQuoteDetails {
             allowance_target: value.allowance_target,
             // permit_hash: value.permit2.hash,
             // permit_data: value.permit2.eip712,
-            raw_transaction: value.transaction.try_into()?,
+            raw_transaction: value.transaction.into(),
         };
 
         Ok(Self {

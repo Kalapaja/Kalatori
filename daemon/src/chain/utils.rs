@@ -10,11 +10,17 @@ pub fn ss58hash(data: &[u8]) -> [u8; HASH_512_LEN] {
         .to_state();
     blake2b_state.update(BASE58_ID);
     blake2b_state.update(data);
-    blake2b_state
+    #[expect(
+        clippy::expect_used,
+        reason = "the state is built with `hash_length(HASH_512_LEN)`, so the digest is always exactly HASH_512_LEN bytes"
+    )]
+    let hash = blake2b_state
         .finalize()
         .as_bytes()
         .try_into()
-        .expect("static length, always fits")
+        .expect("static length, always fits");
+
+    hash
 }
 
 // Same as `to_ss58check_with_version()` method for `Ss58Codec` from `sp_core`,
@@ -37,6 +43,10 @@ pub fn to_base58_string(
             let second = ((ident >> 8) as u8) | ((ident & 0b0000_0000_0000_0011) as u8) << 6;
             vec![first | 0b0100_0000, second]
         },
+        #[expect(
+            clippy::unreachable,
+            reason = "`ident` is masked to 14 bits above, so it cannot exceed 16_383"
+        )]
         _ => unreachable!("masked out the upper two bits; qed"),
     };
     v.extend(bytes);
