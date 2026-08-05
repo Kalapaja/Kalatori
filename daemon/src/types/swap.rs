@@ -132,13 +132,20 @@ pub enum SwapChainType {
     Zora,
 }
 
-impl From<ChainType> for SwapChainType {
-    fn from(value: ChainType) -> Self {
+/// Not every chain the daemon settles on can be a swap endpoint —
+/// `SwapChainType` has no Asset Hub variant — so the conversion is fallible. It
+/// used to be a `From` that panicked on Asset Hub, which made a deployment with
+/// `default_chain = PolkadotAssetHub` answer the unauthenticated
+/// `POST /public/swap/create` with a daemon shutdown, and did the same when an
+/// Asset Hub invoice was paid out.
+impl TryFrom<ChainType> for SwapChainType {
+    /// The chain that has no swap-side equivalent.
+    type Error = ChainType;
+
+    fn try_from(value: ChainType) -> Result<Self, Self::Error> {
         match value {
-            ChainType::Polygon => SwapChainType::Polygon,
-            ChainType::PolkadotAssetHub => {
-                unimplemented!("Polkadot Asset Hub can not be used with swaps enabled")
-            },
+            ChainType::Polygon => Ok(SwapChainType::Polygon),
+            ChainType::PolkadotAssetHub => Err(value),
         }
     }
 }

@@ -117,6 +117,10 @@ pub async fn api_server(
 
     let host = SocketAddr::new(config.host, config.port);
 
+    #[expect(
+        clippy::expect_used,
+        reason = "startup: the daemon is useless without its listener, and `api_server` has no error channel"
+    )]
     let listener = TcpListener::bind(host)
         .await
         .expect("Failed to bind to address");
@@ -214,10 +218,16 @@ pub async fn api_server(
         .map_request(|req| req);
 
     async move {
-        axum::serve(listener, app.into_make_service())
+        // `axum::serve` resolves to `io::Result<()>` but documents that it
+        // never errors: it returns `Ok(())` only once the shutdown signal
+        // fires. Accept errors are logged and retried internally, forever, so
+        // there is nothing here to branch on. Note the consequence, which this
+        // code cannot fix: a permanently broken listener leaves the daemon
+        // running and invisible rather than shutting it down. Detecting that is
+        // tracked in the panic-gate backlog in docs/conventions.md.
+        let _served = axum::serve(listener, app.into_make_service())
             .with_graceful_shutdown(cancellation_token.cancelled_owned())
-            .await
-            .unwrap();
+            .await;
     }
 }
 

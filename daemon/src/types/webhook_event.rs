@@ -22,6 +22,10 @@ pub struct WebhookEvent {
 
 impl<T: KalatoriEventExt> From<GenericEvent<T>> for WebhookEvent {
     fn from(event: GenericEvent<T>) -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "infallible for the concrete payloads in this crate, which are plain structs; `KalatoriEventExt` only bounds `Serialize`, so a future payload with non-string map keys could break this"
+        )]
         let payload =
             serde_json::to_value(&event).expect("Failed to serialize webhook event payload");
 

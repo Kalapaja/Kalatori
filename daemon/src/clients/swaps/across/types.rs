@@ -116,10 +116,10 @@ pub struct ApprovalTransaction {
 pub struct SwapTransactionInternal {
     // Across simulates against the depositor's CURRENT state, so this is
     // legitimately `false` before the user has granted approvals. We no longer
-    // act on it — the gas parameters decide whether a quote is usable (see
-    // `TryFrom` below) — but it must still never be *required*: Across's schema
-    // marks it optional and `/swap/gasless` omits it altogether, so a bare
-    // `bool` would fail the entire quote the first time it is absent.
+    // act on it — unusable gas sentinels are normalized during transaction
+    // conversion — but it must still never be *required*: Across's schema marks
+    // it optional and `/swap/gasless` omits it altogether, so a bare `bool`
+    // would fail the entire quote the first time it is absent.
     #[expect(dead_code)]
     #[serde(default = "default_simulation_success")]
     pub simulation_success: bool,
@@ -156,48 +156,37 @@ pub struct SwapTransaction {
     #[serde(default)]
     #[serde_as(as = "DisplayFromStr")]
     pub value: u128,
-    #[serde_as(as = "DisplayFromStr")]
-    pub gas: u128,
-    #[serde_as(as = "DisplayFromStr")]
-    pub max_fee_per_gas: u128,
-    #[serde_as(as = "DisplayFromStr")]
-    pub max_priority_fee_per_gas: u128,
+    // Omit-and-estimate, not zero: with `simulationSuccess: false`, Across sends
+    // `gas: "0"` while genuinely omitting the fee caps and `value`. We normalize
+    // a zero gas limit or max fee cap to absent; dropping the cap also drops the
+    // priority fee. A zero priority fee remains valid alongside a non-zero cap.
+    // Kassette turns absent gas fields into `undefined`, so the payer's wallet
+    // estimates them instead of publishing an unmineable zero-gas transaction.
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gas: Option<u128>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fee_per_gas: Option<u128>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_priority_fee_per_gas: Option<u128>,
 }
 
-impl TryFrom<SwapTransactionInternal> for SwapTransaction {
-    type Error = SwapsClientError;
-
-    fn try_from(value: SwapTransactionInternal) -> Result<Self, Self::Error> {
+impl From<SwapTransactionInternal> for SwapTransaction {
+    fn from(value: SwapTransactionInternal) -> Self {
         // `value` genuinely defaults to zero — Across omits the key for
         // zero-value (ERC-20) transfers and documents `value ? BigInt(v) : 0n`
-        // as the caller's handling.
-        //
-        // The gas parameters do not: Across documents them as omit-and-estimate
-        // (`gas ? BigInt(gas) : undefined`), and Kassette submits them
-        // unguarded via `BigInt(swapTx.gas)`. Substituting `0` would publish a
-        // transaction with a zero gas limit and zero fee caps, which cannot be
-        // mined; omitting the field would throw in the payer's browser. Reject
-        // the quote instead of handing over either. Once Kassette accepts
-        // absent gas (Kalapaja/Kassette#49) these can be passed through as
-        // optional instead of rejected.
-        let (Some(gas), Some(max_fee_per_gas), Some(max_priority_fee_per_gas)) = (
-            value.gas,
-            value.max_fee_per_gas,
-            value.max_priority_fee_per_gas,
-        ) else {
-            tracing::warn!(
-                error.category = category::SWAPS_CLIENT,
-                error.operation = operation::GET_QUOTE,
-                gas = ?value.gas,
-                max_fee_per_gas = ?value.max_fee_per_gas,
-                max_priority_fee_per_gas = ?value.max_priority_fee_per_gas,
-                "Across quote is missing gas parameters, rejecting"
-            );
+        // as the caller's handling. Across uses zero as the unusable sentinel
+        // for `gas` and `maxFeePerGas`; without a usable fee cap, its priority
+        // fee must be dropped too. See the field comments above.
+        let gas = value.gas.filter(|gas| *gas != 0);
+        let max_fee_per_gas = value
+            .max_fee_per_gas
+            .filter(|fee| *fee != 0);
+        let max_priority_fee_per_gas = max_fee_per_gas.and(value.max_priority_fee_per_gas);
 
-            return Err(SwapsClientError::UnusableQuote)
-        };
-
-        Ok(Self {
+        Self {
             chain_id: value.chain_id,
             contract_address: value.to,
             data: value.data,
@@ -205,7 +194,7 @@ impl TryFrom<SwapTransactionInternal> for SwapTransaction {
             gas,
             max_fee_per_gas,
             max_priority_fee_per_gas,
-        })
+        }
     }
 }
 
@@ -236,7 +225,7 @@ impl TryFrom<SwapApprovalResponse> for SwapQuote {
 
     fn try_from(value: SwapApprovalResponse) -> Result<Self, Self::Error> {
         let details = AcrossQuoteDetails {
-            transaction: value.swap_tx.try_into()?,
+            transaction: value.swap_tx.into(),
             approval_transactions: value.approval_txns.unwrap_or_default(),
         };
 

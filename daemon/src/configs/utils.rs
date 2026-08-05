@@ -47,15 +47,25 @@ pub fn config_from_file_or_env_with_list_keys<T: DeserializeOwned>(
         env_source = env_source.with_list_parse_key(key);
     }
 
+    #[expect(
+        clippy::panic,
+        reason = "startup: an unreadable or malformed config file leaves nothing to run, and refusing to start is the intended outcome"
+    )]
     let config = Config::builder()
         .add_source(config::File::with_name(filename).required(false))
         .add_source(env_source)
         .build()
         .unwrap_or_else(|err| panic!("Failed to read config file: {filename}. Error: {err}"));
 
-    config
+    #[expect(
+        clippy::panic,
+        reason = "startup: an unreadable or malformed config file leaves nothing to run, and refusing to start is the intended outcome"
+    )]
+    let parsed = config
         .try_deserialize()
-        .unwrap_or_else(|err| panic!("Failed to parse config file: {filename}. Error: {err}"))
+        .unwrap_or_else(|err| panic!("Failed to parse config file: {filename}. Error: {err}"));
+
+    parsed
 }
 
 /// Returns `true` if any environment variables with the given prefix exist.

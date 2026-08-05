@@ -210,6 +210,10 @@ fn validate_and_extend_configs(
 
 #[expect(clippy::too_many_lines)]
 async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "startup: this is the first install of the process-wide crypto provider, so it cannot already be set"
+    )]
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .unwrap();
@@ -263,11 +267,19 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     )?;
 
     // Initialize Asset Hub client
+    #[expect(
+        clippy::unwrap_used,
+        reason = "startup: `set_default_chains_if_missing` establishes an entry for every `ChainType` before this point, and config validation has already succeeded"
+    )]
     let asset_hub_chain_config = chains_config
         .chains
         .get(&ChainType::PolkadotAssetHub)
         .unwrap();
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "startup: `set_default_chains_if_missing` establishes an entry for every `ChainType` before this point, and config validation has already succeeded"
+    )]
     let asset_hub_assets = chains_config
         .chains
         .get(&ChainType::PolkadotAssetHub)
@@ -291,11 +303,19 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         })?;
 
     // Initialize Polygon client
+    #[expect(
+        clippy::unwrap_used,
+        reason = "startup: `set_default_chains_if_missing` establishes an entry for every `ChainType` before this point, and config validation has already succeeded"
+    )]
     let polygon_chain_config = chains_config
         .chains
         .get(&ChainType::Polygon)
         .unwrap();
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "startup: `set_default_chains_if_missing` establishes an entry for every `ChainType` before this point, and config validation has already succeeded"
+    )]
     let polygon_assets = chains_config
         .chains
         .get(&ChainType::Polygon)
@@ -503,7 +523,17 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         }
         shutdown_listener_result = &mut shutdown_listener => shutdown_listener_result
     }
-    .expect("shutdown listener shouldn't panic");
+    .unwrap_or_else(|error| {
+        // Reached only if the shutdown listener task itself panicked or was
+        // cancelled. Re-panicking here would abort before the logs are
+        // flushed below, so report it and let the exit code carry the failure.
+        tracing::error!(
+            error.source = ?error,
+            "The shutdown listener did not complete cleanly"
+        );
+
+        Err(Error::Fatal)
+    });
 
     // Flush remaining logs to Loki after all components have stopped, so no
     // log records are lost.

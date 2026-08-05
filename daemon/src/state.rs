@@ -77,6 +77,7 @@ use crate::types::{
     RefundChanges,
     ShopPlatform,
     Swap,
+    SwapChainType,
     Transaction,
     TransferDestinationParams,
     UpdateInvoiceData,
@@ -155,6 +156,10 @@ impl<D: DaoInterface> AppState<D> {
         // asset_id
         let chain = self.payments_config.default_chain;
 
+        #[expect(
+            clippy::unwrap_used,
+            reason = "startup validation requires a default asset id for every configured chain, so the lookup always hits"
+        )]
         let asset_id = self
             .payments_config
             .default_asset_id
@@ -472,15 +477,40 @@ impl<D: DaoInterface> AppState<D> {
             })
         }
 
+        // `validate_recipients` only checks the chains it is handed at startup,
+        // so a historical invoice on a chain that is no longer configured can
+        // reach this with no recipient.
         let destination_address = self
             .payments_config
             .recipient
             .get(&invoice.chain)
-            .unwrap()
+            .ok_or_else(|| {
+                tracing::error!(
+                    chain = %invoice.chain,
+                    %invoice_id,
+                    "No recipient configured for this invoice's chain, cannot prepare a payout"
+                );
+
+                DaoInvoiceError::UnsupportedPayoutChain {
+                    chain: invoice.chain,
+                }
+            })?
             .clone();
 
+        let destination_chain = SwapChainType::try_from(invoice.chain).map_err(|chain| {
+            tracing::error!(
+                %chain,
+                %invoice_id,
+                "Cannot build a payout destination for this chain"
+            );
+
+            DaoInvoiceError::UnsupportedPayoutChain {
+                chain,
+            }
+        })?;
+
         let destination_params = TransferDestinationParams {
-            destination_chain: invoice.chain.into(),
+            destination_chain,
             destination_asset_id: invoice.asset_id.clone(),
             destination_address,
         };
@@ -892,6 +922,7 @@ mod tests {
         DetectedShopPlatform,
         Invoice,
         InvoiceCart,
+        InvoiceStatus,
         default_invoice,
     };
 
@@ -1058,6 +1089,71 @@ mod tests {
         assert!(matches!(
             result,
             Err(DaoInvoiceError::DatabaseError)
+        ));
+    }
+
+    #[tokio::test]
+    async fn initiate_payout_rejects_an_invoice_without_a_configured_recipient() {
+        let mut app_state = setup_app_state().await;
+        let mut invoice = default_invoice();
+        invoice.status = InvoiceStatus::Paid;
+        let invoice_id = invoice.id;
+
+        app_state
+            .dao
+            .expect_get_invoice_by_id()
+            .once()
+            .with(eq(invoice_id))
+            .return_once(move |_| Ok(Some(invoice)));
+        app_state
+            .dao
+            .expect_create_payout()
+            .never();
+
+        let result = app_state
+            .initiate_payout(invoice_id)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(
+                DaoInvoiceError::UnsupportedPayoutChain {
+                    chain: ChainType::Polygon,
+                }
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn initiate_payout_rejects_a_chain_without_a_swap_destination() {
+        let mut app_state = setup_app_state().await;
+        let mut invoice = default_invoice();
+        invoice.chain = ChainType::PolkadotAssetHub;
+        invoice.status = InvoiceStatus::Paid;
+        let invoice_id = invoice.id;
+
+        app_state
+            .dao
+            .expect_get_invoice_by_id()
+            .once()
+            .with(eq(invoice_id))
+            .return_once(move |_| Ok(Some(invoice)));
+        app_state
+            .dao
+            .expect_create_payout()
+            .never();
+
+        let result = app_state
+            .initiate_payout(invoice_id)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(
+                DaoInvoiceError::UnsupportedPayoutChain {
+                    chain: ChainType::PolkadotAssetHub,
+                }
+            )
         ));
     }
 

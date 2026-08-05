@@ -6,6 +6,7 @@
 /// Log category constants for identifying the source subsystem
 pub mod category {
     pub const AUTH: &str = "auth";
+    pub const BALANCE_CHECKER: &str = "balance_checker";
     pub const CHAIN_CLIENT: &str = "chain_client";
     pub const SWAPS_CLIENT: &str = "swaps_client";
     pub const SWAPS_TRACKER: &str = "swaps_tracker";

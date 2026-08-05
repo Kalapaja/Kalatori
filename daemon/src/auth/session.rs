@@ -251,7 +251,13 @@ fn set_session_cookie(
 /// Build a `Set-Cookie` header that clears the session cookie.
 pub(crate) fn clear_cookie_header() -> HeaderValue {
     let value = format!("{COOKIE_NAME}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
-    HeaderValue::from_str(&value).expect("clear cookie header should be valid ASCII")
+    #[expect(
+        clippy::expect_used,
+        reason = "`value` is built from string literals only — no runtime input can make it non-ASCII"
+    )]
+    let header = HeaderValue::from_str(&value).expect("clear cookie header should be valid ASCII");
+
+    header
 }
 
 // ============================================================================

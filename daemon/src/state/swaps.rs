@@ -13,6 +13,7 @@ use crate::types::{
     SwapDirection,
     SwapExecutorType,
     SwapSignatureParams,
+    SwapStatus,
 };
 
 use super::AppState;
@@ -25,6 +26,8 @@ pub enum SwapRequestError {
     InvoiceNotFound { invoice_id: Uuid },
     #[error("Swap not found: {swap_id}")]
     SwapNotFound { swap_id: Uuid },
+    #[error("Swap submission was already claimed while in status {current_status}")]
+    SwapAlreadyClaimed { current_status: SwapStatus },
     #[error("Swap direction from {from_chain_id} to {to_chain_id} is not supported")]
     DirectionIsUnsupported {
         from_chain_id: u64,
@@ -37,6 +40,16 @@ pub enum SwapRequestError {
     ProviderRejected { message: String },
     #[error("Failed to get quotes for swap")]
     QuoteRequestFailed,
+    /// This deployment settles on a chain that cannot be a swap destination
+    /// (Asset Hub), so no swap can be prepared here at all. Nothing the caller
+    /// sends changes that.
+    #[error("Swaps are not available for this shop's settlement chain")]
+    SwapDestinationUnavailable,
+    /// The submitted signature does not match the shape the stored quote
+    /// requires. Fixable by the submitter, so it is a 400 and nothing is
+    /// persisted.
+    #[error("Submitted signature does not match the stored quote")]
+    InvalidSignature,
     #[error("Asset metadata unavailable for asset {asset_id}")]
     AssetMetadataUnavailable { asset_id: String },
     #[error("Database error")]
@@ -57,11 +70,17 @@ impl From<SwapsExecutorError> for SwapRequestError {
             } => SwapRequestError::SwapNotFound {
                 swap_id,
             },
+            SwapsExecutorError::SwapAlreadyClaimed {
+                current_status,
+            } => SwapRequestError::SwapAlreadyClaimed {
+                current_status,
+            },
             SwapsExecutorError::InvoiceNotFound {
                 invoice_id,
             } => SwapRequestError::InvoiceNotFound {
                 invoice_id,
             },
+            SwapsExecutorError::InvalidSignature => SwapRequestError::InvalidSignature,
             SwapsExecutorError::DatabaseError => SwapRequestError::DatabaseError,
         }
     }
@@ -75,6 +94,10 @@ impl ApiErrorExt for SwapRequestError {
             }
             | SwapRequestError::DirectionIsUnsupported {
                 ..
+            }
+            | SwapRequestError::InvalidSignature
+            | SwapRequestError::SwapAlreadyClaimed {
+                ..
             } => "INVALID_REQUEST",
             SwapRequestError::InvoiceNotFound {
                 ..
@@ -86,6 +109,7 @@ impl ApiErrorExt for SwapRequestError {
                 ..
             }
             | SwapRequestError::QuoteRequestFailed => "SWAP_ERROR",
+            SwapRequestError::SwapDestinationUnavailable => "SERVICE_UNAVAILABLE",
             SwapRequestError::AssetMetadataUnavailable {
                 ..
             }
@@ -107,10 +131,15 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::DirectionIsUnsupported {
                 ..
             } => "SWAP_DIRECTION_UNSUPPORTED",
+            SwapRequestError::InvalidSignature => "INVALID_SWAP_SIGNATURE",
+            SwapRequestError::SwapAlreadyClaimed {
+                ..
+            } => "SWAP_ALREADY_SUBMITTED",
             SwapRequestError::ProviderRejected {
                 ..
             } => "SWAP_PROVIDER_REJECTED",
             SwapRequestError::QuoteRequestFailed => "QUOTE_REQUEST_FAILED",
+            SwapRequestError::SwapDestinationUnavailable => "SWAP_DESTINATION_UNAVAILABLE",
             SwapRequestError::AssetMetadataUnavailable {
                 ..
             }
@@ -125,7 +154,11 @@ impl ApiErrorExt for SwapRequestError {
             }
             | SwapRequestError::DirectionIsUnsupported {
                 ..
-            } => reqwest::StatusCode::BAD_REQUEST,
+            }
+            | SwapRequestError::InvalidSignature => reqwest::StatusCode::BAD_REQUEST,
+            SwapRequestError::SwapAlreadyClaimed {
+                ..
+            } => reqwest::StatusCode::CONFLICT,
             SwapRequestError::InvoiceNotFound {
                 ..
             }
@@ -135,6 +168,11 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::ProviderRejected {
                 ..
             } => reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            // The caller cannot make this succeed by sending anything else —
+            // this shop simply cannot do swaps — so it is not a 4xx.
+            SwapRequestError::SwapDestinationUnavailable => {
+                reqwest::StatusCode::SERVICE_UNAVAILABLE
+            },
             SwapRequestError::QuoteRequestFailed
             | SwapRequestError::AssetMetadataUnavailable {
                 ..
@@ -157,10 +195,19 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::DirectionIsUnsupported {
                 ..
             } => "This swap direction is not supported.",
+            SwapRequestError::InvalidSignature => {
+                "The submitted signature does not match the prepared swap quote."
+            },
+            SwapRequestError::SwapAlreadyClaimed {
+                ..
+            } => "The swap has already been submitted.",
             SwapRequestError::ProviderRejected {
                 message,
             } => message,
             SwapRequestError::QuoteRequestFailed => "Failed to get a quote from the swap provider.",
+            SwapRequestError::SwapDestinationUnavailable => {
+                "Swaps are not available for this shop."
+            },
             // The asset id is deliberately not surfaced: it's our own
             // configuration/chain-metadata state, not something the caller can act on.
             SwapRequestError::AssetMetadataUnavailable {
@@ -179,11 +226,18 @@ impl<D: DaoInterface> AppState<D> {
         let direction = SwapDirection::Incoming;
         let invoice_id = params.invoice_id;
         let default_chain = self.payments_config.default_chain;
+        // Startup validation requires a default asset for every chain, so this
+        // should always hit — but `/public/swap/create` is unauthenticated, and
+        // no configuration mistake may be reachable as a remote daemon kill.
         let to_token_address = self
             .payments_config
             .default_asset_id
             .get(&default_chain)
-            .unwrap()
+            .ok_or_else(
+                || SwapRequestError::AssetMetadataUnavailable {
+                    asset_id: default_chain.to_string(),
+                },
+            )?
             .clone();
 
         let from_chain = SwapChainType::try_from(params.from_chain_id).map_err(|chain_id| {
@@ -192,7 +246,17 @@ impl<D: DaoInterface> AppState<D> {
             }
         })?;
 
-        let to_chain = default_chain.into();
+        // A deployment can legitimately settle on a chain that is not a swap
+        // endpoint (Asset Hub). That must answer this unauthenticated route
+        // with a rejection, not take the daemon down.
+        let to_chain = SwapChainType::try_from(default_chain).map_err(|chain| {
+            tracing::warn!(
+                %chain,
+                "Swap requested but the configured default chain cannot be a swap destination"
+            );
+
+            SwapRequestError::SwapDestinationUnavailable
+        })?;
 
         let swap_executor =
             SwapExecutorType::detect(from_chain, to_chain, direction).ok_or_else(|| {
@@ -450,6 +514,45 @@ mod tests {
         );
     }
 
+    /// A signature the submitter can re-sign is their problem to fix, so the
+    /// unauthenticated endpoint has to answer 4xx. Answering 500 — or, as
+    /// before, aborting the daemon — is the bug.
+    #[test]
+    fn a_rejected_signature_is_a_400_not_an_internal_error() {
+        let error = SwapRequestError::from(SwapsExecutorError::InvalidSignature);
+
+        assert!(matches!(
+            error,
+            SwapRequestError::InvalidSignature
+        ));
+        assert_eq!(
+            error.http_status_code(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
+        assert_eq!(error.category(), "INVALID_REQUEST");
+        assert_eq!(error.code(), "INVALID_SWAP_SIGNATURE");
+    }
+
+    #[test]
+    fn an_already_claimed_swap_maps_to_conflict() {
+        let error = SwapRequestError::from(SwapsExecutorError::SwapAlreadyClaimed {
+            current_status: SwapStatus::Submitted,
+        });
+
+        assert!(matches!(
+            &error,
+            SwapRequestError::SwapAlreadyClaimed {
+                current_status: SwapStatus::Submitted,
+            }
+        ));
+        assert_eq!(
+            error.http_status_code(),
+            reqwest::StatusCode::CONFLICT
+        );
+        assert_eq!(error.category(), "INVALID_REQUEST");
+        assert_eq!(error.code(), "SWAP_ALREADY_SUBMITTED");
+    }
+
     const POLYGON_USDC: &str = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
 
     fn app_state_with_decimals(
@@ -571,5 +674,64 @@ mod tests {
             result,
             Err(SwapRequestError::AssetMetadataUnavailable { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn test_create_swap_rejects_a_missing_default_asset() {
+        let mut app_state = app_state_with_decimals(HashMap::new());
+        app_state
+            .payments_config
+            .default_asset_id
+            .clear();
+
+        let result = app_state
+            .create_swap(create_swap_params(Uuid::new_v4()))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SwapRequestError::AssetMetadataUnavailable { asset_id })
+                if asset_id == ChainType::Polygon.to_string()
+        ));
+    }
+
+    /// Asset Hub is a valid settlement chain but has no `SwapChainType`
+    /// equivalent. Converting it used to `unimplemented!()`, so a deployment
+    /// with `default_chain = PolkadotAssetHub` answered this unauthenticated
+    /// route by shutting the daemon down.
+    #[tokio::test]
+    async fn test_create_swap_rejects_a_settlement_chain_that_cannot_swap() {
+        let mut app_state = app_state_with_decimals(HashMap::new());
+        app_state.payments_config.default_chain = ChainType::PolkadotAssetHub;
+        app_state
+            .payments_config
+            .default_asset_id
+            .insert(
+                ChainType::PolkadotAssetHub,
+                "1337".to_string(),
+            );
+
+        let result = app_state
+            .create_swap(create_swap_params(Uuid::new_v4()))
+            .await;
+
+        let error = result.expect_err("Asset Hub cannot be a swap destination");
+        assert!(matches!(
+            error,
+            SwapRequestError::SwapDestinationUnavailable
+        ));
+        assert_eq!(
+            error.http_status_code(),
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(error.category(), "SERVICE_UNAVAILABLE");
+        assert_eq!(
+            error.code(),
+            "SWAP_DESTINATION_UNAVAILABLE"
+        );
+        assert_eq!(
+            error.message(),
+            "Swaps are not available for this shop."
+        );
     }
 }

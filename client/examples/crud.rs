@@ -1,3 +1,10 @@
+//! Integration example: a failed `unwrap` here is a failed test run, which is
+//! exactly the intended signal.
+#![expect(
+    clippy::unwrap_used,
+    reason = "example harness — unwrapping is how a failed step is reported"
+)]
+
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
