@@ -7,7 +7,7 @@ runs:
     # Cache project-local tool binaries (subxt-cli, nextest, llvm-cov, ...).
     - name: Cache project-local tool binaries
       id: cache-bin
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: .bin/
         key: bins-${{ hashFiles('Cargo.toml') }}
@@ -25,7 +25,7 @@ runs:
     # do not bust this cache.
     - name: Cache front-end
       id: cache-front-end
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: static/
         key: front-end-${{ hashFiles('front-end.mk') }}
