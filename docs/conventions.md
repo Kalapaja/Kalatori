@@ -7,12 +7,15 @@
 - **rustfmt**: Nightly required (`cargo +nightly fmt --all`)
 - Self-named modules only (e.g., `chain.rs` + `chain/` directory) — **never `mod.rs`** (enforced by `mod_module_files` clippy lint). Rationale: better Git history, avoids file renaming issues.
 
-## Clippy Lints
+## Lints
 
-Workspace lints in root `Cargo.toml`:
+The question people arrive with is *"will CI catch X?"*, so the gate is
+described in the four parts that answer it.
+
+**1. Explicit clippy lints** — `[workspace.lints.clippy]` in the root
+`Cargo.toml`:
 
 ```toml
-[workspace.lints.clippy]
 allow_attributes = "deny"
 cargo_common_metadata = "warn"
 cast_possible_truncation = "warn"
@@ -20,12 +23,103 @@ ignored_unit_patterns = "warn"
 mod_module_files = "warn"
 ```
 
-**CI enforces** `RUSTFLAGS="-Dwarnings"` — all warnings are errors, including pedantic.
+Plus the eight panic-gate denials listed under [Panic Gate](#panic-gate) below,
+which live in the same table.
 
-There are **no** per-crate lint tables — `daemon`, `client` and `tools/cargo-bin`
-all carry only `[lints] workspace = true`, so the root block above plus the panic
-gate below is the complete set. In particular `pedantic` and
-`arithmetic_side_effects` are *not* enabled anywhere.
+**2. Explicit rustc lint groups** — `[workspace.lints.rust]`, in the same file
+and easy to miss:
+
+```toml
+future_incompatible = "warn"
+let_underscore = "warn"
+rust_2018_idioms = "warn"
+unused = "warn"
+```
+
+Two of these matter beyond the compiler's own defaults: `rust_2018_idioms` and
+`let_underscore` are groups containing allow-by-default lints, so they add
+enforcement rather than restating it.
+
+**3. Compiler and clippy defaults** — everything warn-by-default in `rustc` and
+`clippy`, always on.
+
+**4. Command-line escalation** — `RUSTFLAGS="-Dwarnings"`. This is narrower
+than it sounds, so it is spelled out in the next section.
+
+Both tables reach every crate through `[lints] workspace = true`, which
+`daemon`, `client` and `tools/cargo-bin` all carry. That inheritance is the
+load-bearing mechanism and it is invisible: a crate that omits the two lines
+silently opts out of *everything* above, and nothing enforces that it does not.
+There are **no** per-crate lint tables, so buckets 1–3 are the whole set.
+
+### Where `-Dwarnings` actually applies
+
+`RUSTFLAGS="-Dwarnings"` is set in exactly one place: the `cargo-clippy` recipe
+in the `Makefile`, invoked by the PR **clippy job**. It lints all targets and
+all features across the workspace, and anything an enabled lint reports there
+fails that job.
+
+The build, test, coverage, integration-test and release jobs do **not** set it,
+so a warning that only surfaces during a `cargo build` fails nothing.
+Dependencies are capped regardless, so nothing in the dependency graph can fail
+the build whatever the flag says. Nothing in this repo configures that — Cargo
+passes `--cap-lints warn` to every non-path dependency on its own, which is why
+`RUSTFLAGS` reaching the whole graph is harmless.
+
+Note also that `-Dwarnings` escalates lints that are *already enabled*. It
+cannot turn on a lint that is off — which is why the list above, not the flag,
+determines what protects you.
+
+### What is not enabled, and why the docs used to say otherwise
+
+`pedantic`, `arithmetic_side_effects` and the `shadow_*` family are **off**.
+
+They were not declined after deliberation — they were configured and then
+removed, and the documentation simply went stale:
+
+- `pedantic` and `arithmetic_side_effects` were removed on 2026-01-16 in
+  `ed941bc`, titled *"style: fix clippy and rustfmt warnings"* — a commit that
+  silenced the warnings by config rather than fixing them.
+- The `shadow_*` family went the same way in `abcaf13` (2025-12-02).
+
+Turning them back on today produces **471 warnings** across the workspace,
+deduplicated by site — so adopting them is a cleanup project, not a config
+change. The bulk is shadowing (149 `shadow_unrelated`, 52 `shadow_reuse`), then
+45 unseparated long literals, 32 unchecked arithmetic operations, 25
+over-long functions, 23 missing doc backticks and 19 inlinable `format!` args.
+
+Re-measure with:
+
+```bash
+cargo clippy --all-targets --all-features -- \
+  -W clippy::pedantic \
+  -W clippy::arithmetic_side_effects \
+  -W clippy::shadow_reuse -W clippy::shadow_same -W clippy::shadow_unrelated
+```
+
+The `--` separator is required: lint flags belong to `clippy-driver`, and Cargo
+rejects them without it. Run `make setup` first — `metadata.scale` and
+`static/index.html` are generated inputs, absent from a clean checkout, and the
+daemon aborts before finishing the lint pass without them ([#339](https://github.com/Kalapaja/Kalatori/issues/339)).
+
+### `#[expect]` on a lint nothing enables
+
+`#[expect(clippy::too_many_lines)]` and friends sit in the tree without tripping
+`unfulfilled_lint_expectations`, even though `pedantic` is off. Of the 122
+clippy expectations in first-party code, **28 name a lint nothing enables**,
+across six of them: `arithmetic_side_effects` (13), `too_many_lines` and
+`cast_sign_loss` (4 each), `struct_field_names` and `module_name_repetitions`
+(3 each), and `unused_self`.
+
+That works because `#[expect]` is a *scoped lint level* ([RFC 2383](https://rust-lang.github.io/rfcs/2383-lint-reasons.html)):
+it raises the lint's level for its scope, so the lint runs there even though
+nothing enables it globally, and the genuine violation fulfils the expectation.
+Clippy does not evaluate disabled lints and discard the output — many never run
+at all. Adding an expectation where the code does *not* violate the lint still
+warns.
+
+So these annotations mark real violations of lints nothing enforces. Useful as
+documentation; not evidence that anything is checking.
 
 ## Panic Gate
 
@@ -129,17 +223,17 @@ In order of preference:
   typed error over extending the marker to new code.
 
 - **Arithmetic is not gated.** `clippy::arithmetic_side_effects` would catch
-  overflow, division by zero and `Decimal` panics; roughly two dozen daemon
-  sites trip it today. Division by zero panics unconditionally; overflow
-  currently *wraps silently* in release, which for a daemon computing payment
-  amounts is arguably worse than panicking.
+  overflow, division by zero and `Decimal` panics; 32 sites trip it today (see
+  the measurement above), plus 13 already carrying an `#[expect]`. Division by
+  zero panics unconditionally; overflow currently *wraps silently* in release,
+  which for a daemon computing payment amounts is arguably worse than panicking.
 
 - **`[profile.release]` is in `daemon/Cargo.toml`, a workspace member, so Cargo
   ignores it** — it prints `profiles for the non root package will be ignored`
   on every build. `panic = "abort"`, `overflow-checks`, `lto`, `strip` and
   `codegen-units` are therefore *not* in effect. Moving the block to the
   workspace root should be sequenced **after** the arithmetic gate above:
-  enabling `overflow-checks` while two dozen unguarded sites remain would turn
+  enabling `overflow-checks` while those sites remain unguarded would turn
   silent wrapping into live panics, i.e. create the very DoS class this gate
   exists to close.
 
