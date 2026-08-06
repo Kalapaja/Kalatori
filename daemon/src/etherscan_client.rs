@@ -8,6 +8,10 @@ use governor::{
     Quota,
     RateLimiter,
 };
+use secrecy::{
+    ExposeSecret,
+    SecretString,
+};
 use uuid::Uuid;
 
 use crate::configs::EtherscanClientConfig;
@@ -50,7 +54,7 @@ impl From<reqwest::Error> for EtherscanClientError {
 #[derive(Clone)]
 pub struct EtherscanClient {
     client: reqwest::Client,
-    api_key: String,
+    api_key: SecretString,
     rate_limiter: Arc<DefaultDirectRateLimiter>,
 }
 
@@ -82,7 +86,7 @@ impl EtherscanClient {
             chain_id,
             contract_address,
             address,
-            api_key: &self.api_key,
+            api_key: self.api_key.expose_secret(),
         };
 
         let raw_response = self
@@ -93,20 +97,28 @@ impl EtherscanClient {
             .send()
             .await
             .inspect_err(|e| {
+                // Never format a `reqwest::Error` from this client with `{:?}` or `{}`:
+                // it carries the request URL, and the API key is a query parameter.
+                // `status()` is deliberately absent: a send() failure is `Kind::Request`
+                // and `Error::status()` answers `Some` only for `Kind::Status`.
                 tracing::warn!(
-                    error.source = ?e,
+                    timeout = e.is_timeout(),
+                    connect = e.is_connect(),
                     "Etherscan request failed"
                 )
             })?
             .text()
             .await
             .inspect_err(|e| {
+                // Same rule as above. Body errors carry no URL at reqwest 0.13.2, but
+                // 0.13.4 attaches it in `do_bytes`, so this arm must not print `e` either.
                 tracing::warn!(
-                    error.source = ?e,
-                    "Etherscan response body could not be read"
+                    timeout = e.is_timeout(),
+                    body = e.is_body(),
+                    decode = e.is_decode(),
+                    "Etherscan response body failed"
                 )
-            })
-            .map_err(|_| EtherscanClientError::RequestFailed)?;
+            })?;
 
         tracing::trace!(
             text = %raw_response,
