@@ -5,8 +5,46 @@ updates:
     labels: ["dependabot"]
     schedule:
       interval: "weekly"
+    # Minor and patch updates are batched into a single PR: individually they
+    # are almost always trivial, and one PR per crate per week is what let 8 of
+    # them pile up unreviewed for two months. Major updates stay ungrouped --
+    # they can carry breaking API changes and deserve their own review.
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # alloy 2.2.0 requires Rust 1.94.1, above our rust-version = "1.91".
+      # Dependabot classifies 2.1.x -> 2.2.0 as a minor update, so without this
+      # the cargo-minor-patch group would silently batch an MSRV-breaking bump
+      # in with the weekly trivia. Drop this entry once the declared MSRV moves
+      # past 1.94.1.
+      - dependency-name: "alloy"
+        versions: [">= 2.2.0"]
+      # subxt and subxt-signer must move in lockstep with each other and with
+      # the subxt-cli pin in the Makefile (AGENTS.md, Critical Pitfalls). A
+      # signer-only bump (#381) mixes runtime versions from two subxt releases
+      # and fails to build. The 0.44 -> 0.5x upgrade is its own project:
+      # bump all three together, reinstall subxt-cli, regenerate metadata.
+      # Drop both entries when that upgrade lands.
+      - dependency-name: "subxt"
+        versions: [">= 0.45"]
+      - dependency-name: "subxt-signer"
+        versions: [">= 0.45"]
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # Dependabot only discovers workflow files under the listed directories:
+    # "/" covers .github/workflows/, and the glob covers the composite actions
+    # in .github/actions/*/action.yml, which would otherwise never be updated.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     labels: ["dependabot-ci"]
     schedule:
       interval: "weekly"
+    # Action pins are SHA-based and reviewed as a set; batching minor and patch
+    # updates keeps the queue to one PR per week. Majors stay ungrouped, same
+    # rule as cargo: the docker and codecov actions run in jobs holding
+    # release-publishing and token secrets.
+    groups:
+      github-actions:
+        update-types: ["minor", "patch"]
+        patterns: ["*"]

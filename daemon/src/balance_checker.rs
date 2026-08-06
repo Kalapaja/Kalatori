@@ -478,7 +478,7 @@ mod tests {
             MockBlockChainClient::<PolygonChainConfig>::default(),
             EtherscanClient::new(EtherscanClientConfig {
                 requests_per_second: NonZeroU32::MIN,
-                api_key: String::new(),
+                api_key: String::new().into(),
             }),
             TransactionsRecorder::<MockDaoInterface>::default(),
         )
@@ -567,7 +567,7 @@ mod tests {
             MockBlockChainClient::<PolygonChainConfig>::default(),
             EtherscanClient::new(EtherscanClientConfig {
                 requests_per_second: NonZeroU32::MIN,
-                api_key: String::new(),
+                api_key: String::new().into(),
             }),
             recorder,
         );
@@ -655,7 +655,7 @@ mod tests {
             MockBlockChainClient::<PolygonChainConfig>::default(),
             EtherscanClient::new(EtherscanClientConfig {
                 requests_per_second: NonZeroU32::MIN,
-                api_key: String::new(),
+                api_key: String::new().into(),
             }),
             recorder,
         );

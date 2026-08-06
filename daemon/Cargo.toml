@@ -5,7 +5,7 @@ edition = "2024"
 description = "A non-custodial crypto payment-gateway daemon."
 homepage = "https://github.com/Kalapaja/Kalatori"
 documentation = "https://docs.rs/Kalatori"
-rust-version = "1.91"
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 readme.workspace = true
@@ -18,7 +18,9 @@ kalatori-client = { path = "../client", features = ["axum-middleware", "sqlx-typ
 
 # Types and data serialization utils
 uuid = { version = "1", features = ["v4", "serde"] }
-rust_decimal = { version = "1", features = ["serde", "macros"] }
+# 1.42.1 is a floor, not a preference: 1.41.0 and 1.42.0 lose the borrow when
+# subtracting rescaled operands (paupino/rust-decimal#804) and are not yanked.
+rust_decimal = { version = "1.42.1", features = ["serde", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
@@ -67,7 +69,7 @@ subxt = "0.44"
 subxt-signer = "0.44"
 
 # Polygon chain
-alloy = { version = "1.8", features = [
+alloy = { version = "2.0", features = [
     "provider-ws",
     "rpc-types-eth",
     "contract",
@@ -124,7 +126,7 @@ loki-transport-roots = { package = "reqwest", version = "0.12", default-features
 
 # Utils
 config = "0.15"
-hkdf = "0.12"
+hkdf = "0.13"
 chacha20poly1305 = "0.10"
 base64 = "0.22"
 pasetors = { version = "0.7", default-features = false, features = ["v4", "paserk", "std"] }
@@ -140,7 +142,7 @@ zeroize = "1"
 shadow-rs = { version = "0.36", default-features = false }
 thiserror = "2"
 trait-variant = "0.1"
-sha2 = "0.10"
+sha2 = "0.11"
 # Let's add some random and fun to financial operations :) (it's a joke, we don't really do anything like that)
 rand = "0.10"
 governor = "0.10"

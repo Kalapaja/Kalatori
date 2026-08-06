@@ -654,7 +654,7 @@ fn default_etherscan_limit_per_second() -> NonZeroU32 {
 pub struct EtherscanClientConfig {
     #[serde(default = "default_etherscan_limit_per_second")]
     pub requests_per_second: NonZeroU32,
-    pub api_key: String,
+    pub api_key: SecretString,
 }
 
 // --- Auth config ---

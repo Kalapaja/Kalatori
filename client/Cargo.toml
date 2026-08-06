@@ -3,6 +3,7 @@ name = "kalatori-client"
 version = "0.1.0"
 edition = "2024"
 description = "A client for non-castodial crypto payment-gateway Kalatori."
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 readme.workspace = true
@@ -12,13 +13,16 @@ repository.workspace = true
 
 [dependencies]
 # Signature
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 const-hex = "1"
 
 # Types
 uuid = { version = "1", features = ["v4", "serde"] }
-rust_decimal = "1"
+# Floor, not a preference -- see the note in daemon/Cargo.toml. Consumers of
+# this crate resolve their own lockfile, so the broken versions have to be
+# excluded here, not just locked out of ours.
+rust_decimal = "1.42.1"
 chrono = { version = "0.4", features = ["serde"] }
 serde_json = "1"
 secrecy = "0.10"

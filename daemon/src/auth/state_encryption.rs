@@ -218,4 +218,20 @@ mod tests {
         let k2 = derive_state_key(b"secret", "daemon-01");
         assert_eq!(k1.expose_secret(), k2.expose_secret());
     }
+
+    /// Known-answer test: a key derived under one hkdf/sha2 version must come
+    /// out identical under the next, or every in-flight OAuth state blob
+    /// becomes undecryptable across a daemon upgrade.
+    ///
+    /// Provenance: RFC 5869 HKDF-SHA256 recomputed from scratch with Python's
+    /// stdlib (`hmac` + `hashlib` only) for IKM `b"secret"`, salt
+    /// `b"daemon-01"`, info `b"kalatori-state-v1"`, L=32.
+    #[test]
+    fn test_hkdf_matches_known_answer() {
+        let key = derive_state_key(b"secret", "daemon-01");
+        assert_eq!(
+            const_hex::encode(key.expose_secret()),
+            "848f806597427f2587b79e22fa1d444d5af59f07ab927894e935dad781797478",
+        );
+    }
 }

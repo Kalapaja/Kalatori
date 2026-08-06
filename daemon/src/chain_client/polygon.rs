@@ -161,6 +161,28 @@ impl ConfirmationBuffer {
     }
 }
 
+/// Reconnect budget handed to alloy, rather than inherited from it.
+///
+/// alloy retries the *same* URL internally. Only our own layer can rotate to
+/// another endpoint: `TransfersTracker` reacts to a dead stream by calling
+/// `recreate()`, which re-picks from the configured endpoints. So every second
+/// alloy spends retrying is a second we cannot spend moving away from a bad
+/// node, which is the failure in #333 -- three months on a public endpoint that
+/// dropped every 60s.
+///
+/// The upstream defaults are 10 retries at 3s. Under alloy 1.x that is a flat
+/// 27s; alloy 2.x kept the same two numbers but reads them as the base of a
+/// capped exponential backoff (cap 30s), making the same defaults 195s. Same
+/// call, same configuration, ~7x the outage -- which is exactly why these are
+/// now stated here instead of inherited. They will drift again.
+///
+/// 3 retries from a 2s base is 6s under 2.x semantics and 4s under 1.x, both
+/// comfortably inside `WS_MESSAGES_TIMEOUT_DURATION`, so alloy gives up while
+/// our own supervision is still waiting rather than after it has given up.
+/// `ws_reconnect_budget_stays_within_our_own_timeout` pins that relationship.
+const WS_RECONNECT_MAX_RETRIES: u32 = 3;
+const WS_RECONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
 // ============================================================================
 // ERC-20 Interface Definition
 // ============================================================================
@@ -427,7 +449,9 @@ impl PolygonClient {
         );
 
         // Test connection and get chain ID
-        let ws_connect = WsConnect::new(&endpoint);
+        let ws_connect = WsConnect::new(&endpoint)
+            .with_max_retries(WS_RECONNECT_MAX_RETRIES)
+            .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
         let provider = ProviderBuilder::new()
             .connect_ws(ws_connect)
             .await
@@ -469,7 +493,9 @@ impl PolygonClient {
             })?;
 
         // Test connection and get chain ID
-        let ws_connect = WsConnect::new(&endpoint);
+        let ws_connect = WsConnect::new(&endpoint)
+            .with_max_retries(WS_RECONNECT_MAX_RETRIES)
+            .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
         let subscription_provider = ProviderBuilder::new()
             .connect_ws(ws_connect)
             .await
@@ -558,8 +584,9 @@ impl PolygonClient {
         })
     }
 
+    // Takes no `self`: the digest depends only on its arguments and the module
+    // constants, which is what lets the known-answer tests call it directly.
     fn build_permit_hash(
-        &self,
         sender: &Address,
         nonce: U256,
     ) -> B256 {
@@ -652,8 +679,8 @@ impl PolygonClient {
         .concat()
     }
 
+    // See the note on `build_permit_hash`: no `self`, so tests can pin the hash.
     fn compute_user_op_hash(
-        &self,
         transaction: &PolygonUnsignedTransaction,
         paymaster_data: &[u8],
     ) -> B256 {
@@ -998,20 +1025,26 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                                         buffer.insert(block_number, transaction_hash, log_index, transfer);
                                     },
                                     Err(e) => {
-                                        tracing::warn!(
+                                        // The log decoded, so this is one of our Transfer
+                                        // events: failing to record it means a payment we
+                                        // will not see again until the invoice expires.
+                                        tracing::error!(
                                             error = ?e,
-                                            "Failed to process transfer event"
+                                            tx_hash = ?log.transaction_hash,
+                                            "Failed to process transfer event, skipping it"
                                         );
-                                        break
+                                        continue
                                     },
                                 }
                             },
                             Err(e) => {
+                                // One log we cannot decode must not take down tracking for
+                                // every other asset on this subscription.
                                 tracing::debug!(
                                     error = ?e,
-                                    "Failed to decode Transfer event from log"
+                                    "Failed to decode Transfer event from log, skipping it"
                                 );
-                                break
+                                continue
                             },
                         }
                     },
@@ -1139,7 +1172,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         // use dummy gas params for now, for calculation of real params we need to have
         // a real signed permit which we can get only on signing step
         let gas_params = GasParams::dummy();
-        let permit_hash = self.build_permit_hash(&sender, permit_nonce);
+        let permit_hash = Self::build_permit_hash(&sender, permit_nonce);
         let call_data = self.build_call(recipient, amount_wei, asset_id);
 
         let authorization = Authorization {
@@ -1235,7 +1268,10 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             .as_bytes();
 
         let paymaster_data = self.build_paymaster_data(inner.asset_id, &signed_permit);
-        inner.op_hash = Some(self.compute_user_op_hash(&inner, &paymaster_data));
+        inner.op_hash = Some(Self::compute_user_op_hash(
+            &inner,
+            &paymaster_data,
+        ));
         let encoded_paymaster_data = const_hex::encode_prefixed(paymaster_data.clone());
         inner.paymaster_data = Some(encoded_paymaster_data.clone());
 
@@ -1319,7 +1355,7 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             inner.asset_id,
         );
         inner.call_data = call_data;
-        let op_hash = self.compute_user_op_hash(&inner, &paymaster_data);
+        let op_hash = Self::compute_user_op_hash(&inner, &paymaster_data);
 
         if amount_wei.is_zero() {
             return Err(TransactionError::InsufficientBalance {
@@ -1437,7 +1473,86 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
 
 #[cfg(test)]
 mod tests {
+    use alloy::primitives::{
+        address,
+        b256,
+    };
+
     use super::*;
+
+    // Known-answer tests for the hashes that money depends on.
+    //
+    // `alloy-primitives` picks its Keccak backend at build time, and on aarch64
+    // `sha3`/`keccak` select an assembly path at runtime via `cpufeatures`. A
+    // silently substituted backend would change permit digests, user operation
+    // hashes and address derivation without failing to compile. These vectors are
+    // hardcoded on purpose: they must fail on any change of result, including one
+    // that looks like an upgrade.
+    //
+    // Provenance matters more than the values here: a vector generated by the code
+    // it guards locks in whatever bug that code has. Every constant below was
+    // obtained independently of this implementation, and each one records how. Do
+    // not refresh a failing value from the new output -- re-derive it the way the
+    // comment says it was derived.
+
+    /// Canonical Keccak-256 vectors. Note these are Keccak, not SHA3-256 --
+    /// SHA3-256("") is `a7ffc6f8...`, which is what a padding regression looks
+    /// like.
+    ///
+    /// Provenance: recomputed from a from-scratch Keccak-f[1600]
+    /// implementation, cross-checked against CPython `hashlib.sha3_256` for
+    /// the SHA3 counterpart.
+    #[test]
+    fn keccak256_matches_known_vectors() {
+        assert_eq!(
+            keccak256([]),
+            b256!("0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"),
+        );
+        assert_eq!(
+            keccak256(b"abc"),
+            b256!("0x4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45"),
+        );
+    }
+
+    /// EIP-712 digest signed to let the paymaster spend USDC. A change here
+    /// means permits stop being accepted, or are accepted for something we
+    /// did not intend.
+    ///
+    /// Provenance: the two inputs this digest is built from were read off-chain
+    /// rather than taken from this code -- USDC's `DOMAIN_SEPARATOR()` on
+    /// Polygon mainnet matches the `eip712_domain!` block, and its
+    /// `PERMIT_TYPEHASH()` matches the literal, both exactly.
+    #[test]
+    fn permit_hash_matches_known_answer() {
+        assert_eq!(
+            PolygonClient::build_permit_hash(
+                &address!("0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7"),
+                U256::from(7u64),
+            ),
+            b256!("0xbc14b20455c000bfec66c92ab17ec39d14d8af591451fcf80437489af2a33a9e"),
+        );
+    }
+
+    /// ERC-4337 `PackedUserOperation` hash, signed and sent to the bundler.
+    ///
+    /// Provenance: a live `eth_call` to `getUserOpHash()` on EntryPoint v0.8
+    /// (`0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108`, Polygon mainnet) with
+    /// this exact fixture returned this value byte-for-byte.
+    ///
+    /// That address is v0.8, and the code hashes under its `("ERC4337", "1")`
+    /// EIP-712 domain. Confirming the pair is the point: a v0.6-style
+    /// construction applied to a v0.7+ EntryPoint passes its own test happily
+    /// and gets every userOp rejected in production.
+    #[test]
+    fn user_op_hash_matches_known_answer() {
+        assert_eq!(
+            PolygonClient::compute_user_op_hash(
+                &default_polygon_unsigned_transaction(),
+                &[0xde, 0xad, 0xbe, 0xef],
+            ),
+            b256!("0xadcbc48bfdb2401ec19ac83775527235c635fa609de423e3130c436a35dc1853"),
+        );
+    }
 
     #[test]
     fn test_u256_decimal_conversion() {
@@ -1555,5 +1670,45 @@ mod tests {
         assert_eq!(released.len(), 2);
         assert_eq!(released[0].amount, Decimal::new(1, 6));
         assert_eq!(released[1].amount, Decimal::new(2, 6));
+    }
+
+    /// The budget we hand alloy has to run out while our own supervision is
+    /// still waiting, not after it has given up. alloy retries one URL;
+    /// `TransfersTracker::recreate()` is the only thing that can rotate to
+    /// another endpoint, and it cannot start until alloy stops.
+    ///
+    /// This duplicates alloy 2.x's backoff formula deliberately. It is the
+    /// assumption our two constants were chosen against, and alloy has already
+    /// changed it once -- 1.x read the same two numbers as a flat delay, which
+    /// is what turned the shared defaults from 27s into 195s. If it changes
+    /// again, this is where the stale assumption is written down, and this test
+    /// is what fails instead of a payment going unnoticed in production.
+    #[test]
+    fn ws_reconnect_budget_stays_within_our_own_timeout() {
+        // `MAX_RECONNECT_RETRY_INTERVAL` in alloy-pubsub 2.x.
+        const ALLOY_BACKOFF_CAP: Duration = Duration::from_secs(30);
+
+        let cap = WS_RECONNECT_RETRY_INTERVAL.max(ALLOY_BACKOFF_CAP);
+
+        // alloy sleeps after every failed attempt except the last, which gives
+        // up instead of sleeping.
+        let worst_case: Duration = (1..WS_RECONNECT_MAX_RETRIES)
+            .map(|retry_count| {
+                let multiplier = 1u32
+                    .checked_shl(retry_count.saturating_sub(1))
+                    .unwrap_or(u32::MAX);
+
+                WS_RECONNECT_RETRY_INTERVAL
+                    .saturating_mul(multiplier)
+                    .min(cap)
+            })
+            .sum();
+
+        assert_eq!(worst_case, Duration::from_secs(6));
+        assert!(
+            worst_case < WS_MESSAGES_TIMEOUT_DURATION,
+            "alloy would still be retrying after {worst_case:?}, past our own \
+             {WS_MESSAGES_TIMEOUT_DURATION:?} timeout, blocking endpoint rotation",
+        );
     }
 }
