@@ -61,8 +61,10 @@ fails that job.
 
 The build, test, coverage, integration-test and release jobs do **not** set it,
 so a warning that only surfaces during a `cargo build` fails nothing.
-Dependencies are capped at `warn` regardless (`--cap-lints warn`), so nothing in
-the dependency graph can fail the build whatever the flag says.
+Dependencies are capped regardless, so nothing in the dependency graph can fail
+the build whatever the flag says. Nothing in this repo configures that — Cargo
+passes `--cap-lints warn` to every non-path dependency on its own, which is why
+`RUSTFLAGS` reaching the whole graph is harmless.
 
 Note also that `-Dwarnings` escalates lints that are *already enabled*. It
 cannot turn on a lint that is off — which is why the list above, not the flag,
