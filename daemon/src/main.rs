@@ -210,6 +210,20 @@ fn validate_and_extend_configs(
 
 #[expect(clippy::too_many_lines)]
 async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
+    // This must stay the first statement in the function, and in particular
+    // must precede `logger::initialize` below. rustls allows exactly one
+    // process-wide default provider: whoever installs first wins, and every
+    // later attempt fails.
+    //
+    // Every money path -- Asset Hub, Polygon, Pimlico, Etherscan, merchant
+    // webhooks -- runs on this provider, so it has to be the one we chose.
+    // Log shipping is the only other TLS user in the process, and it does not
+    // get to decide: tracing-loki resolves reqwest 0.12, whose rustls feature
+    // set pulls the ring backend. Initialising the logger first would let it
+    // install ring, and this `unwrap` would then panic -- which, with the panic
+    // gate cancelling the shutdown token, means the daemon refuses to start.
+    //
+    // The `#[expect]` reason below is only true because of this ordering.
     #[expect(
         clippy::unwrap_used,
         reason = "startup: this is the first install of the process-wide crypto provider, so it cannot already be set"
