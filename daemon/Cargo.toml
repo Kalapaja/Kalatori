@@ -95,7 +95,7 @@ tracing-loki = "0.2"
 
 # Utils
 config = "0.15"
-hkdf = "0.12"
+hkdf = "0.13"
 chacha20poly1305 = "0.10"
 base64 = "0.22"
 pasetors = { version = "0.7", default-features = false, features = ["v4", "paserk", "std"] }
@@ -111,7 +111,7 @@ zeroize = "1"
 shadow-rs = { version = "0.36", default-features = false }
 thiserror = "2"
 trait-variant = "0.1"
-sha2 = "0.10"
+sha2 = "0.11"
 # Let's add some random and fun to financial operations :) (it's a joke, we don't really do anything like that)
 rand = "0.10"
 governor = "0.10"

@@ -630,6 +630,8 @@ mod client {
 
 #[cfg(test)]
 mod tests {
+    use alloy::primitives::address;
+
     use super::*;
     use crate::chain_client::default_polygon_unsigned_transaction;
 
@@ -637,6 +639,44 @@ mod tests {
 
     fn keyring() -> Keyring {
         Keyring::new(SecretString::from(TEST_MNEMONIC))
+    }
+
+    /// Known-answer test for the whole Polygon derivation chain: SHA-256 over
+    /// the derivation params selects the HD path, then BIP-39/BIP-32 under
+    /// that path yields the payment address. A change in any link — including
+    /// a botched `sha2` upgrade altering how the digest is sliced — would
+    /// silently derive *different payment addresses* for the same invoices.
+    ///
+    /// Provenance: both addresses were re-derived from scratch, independently
+    /// of alloy and of this code, with a stdlib-only Python implementation of
+    /// PBKDF2-BIP39, BIP-32 (HMAC-SHA512 + secp256k1 double-and-add) and
+    /// Keccak-f[1600], itself sanity-checked against the well-known account 0
+    /// of this mnemonic (`0xf39F…2266` at m/44'/60'/0'/0/0). Do not refresh a
+    /// failing value from new output — re-derive it the same way.
+    #[test]
+    fn polygon_derivation_matches_known_answers() {
+        let keyring = keyring();
+
+        let signer = keyring
+            .generate_polygon_derived_signer(vec!["invoice-id".to_string()])
+            .expect("derivation succeeds");
+        assert_eq!(
+            signer.address(),
+            address!("0x29DEFD4c45F4758DACF004AdCef50570cE5f3864"),
+            "params [\"invoice-id\"] must map to m/44'/60'/713502361'/0/2953570289"
+        );
+
+        let signer = keyring
+            .generate_polygon_derived_signer(vec![
+                "order-123".to_string(),
+                "attempt-1".to_string(),
+            ])
+            .expect("derivation succeeds");
+        assert_eq!(
+            signer.address(),
+            address!("0x5cBd243fE41E43909C066BDE92DAe4816fEefBC7"),
+            "params [\"order-123\", \"attempt-1\"] must map to m/44'/60'/404548222'/0/3709641316"
+        );
     }
 
     #[test]

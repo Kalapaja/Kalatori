@@ -3856,6 +3856,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hkdf"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
+dependencies = [
+ "hmac 0.13.0",
+]
+
+[[package]]
 name = "hmac"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4654,7 +4663,7 @@ dependencies = [
  "const-hex",
  "futures",
  "governor",
- "hkdf",
+ "hkdf 0.13.0",
  "httpmock",
  "indoc",
  "insta",
@@ -4671,7 +4680,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "shadow-rs",
  "sqlx",
  "subxt",
@@ -4699,14 +4708,14 @@ dependencies = [
  "axum",
  "chrono",
  "const-hex",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "http 1.5.0",
  "reqwest 0.13.4",
  "rust_decimal",
  "secrecy",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "sqlx",
  "strum",
  "tokio",
@@ -7787,7 +7796,7 @@ dependencies = [
  "futures-util",
  "generic-array",
  "hex",
- "hkdf",
+ "hkdf 0.12.4",
  "hmac 0.12.1",
  "itoa",
  "log",
@@ -7827,7 +7836,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "hex",
- "hkdf",
+ "hkdf 0.12.4",
  "hmac 0.12.1",
  "home",
  "itoa",

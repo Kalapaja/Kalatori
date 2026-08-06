@@ -1,5 +1,6 @@
 use hmac::{
     Hmac,
+    KeyInit,
     Mac,
 };
 use http::{
