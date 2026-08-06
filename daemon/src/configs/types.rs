@@ -767,6 +767,41 @@ mod tests {
         });
     }
 
+    /// Counterpart of `fallback_warnings_for` for the swaps branch. The
+    /// negative case goes through this too: `!logs_contain(..)` would also be
+    /// satisfied by the warning being emitted at the wrong level, which is the
+    /// failure this pair is supposed to catch.
+    fn swaps_fallback_warnings(logs: &[&str]) -> usize {
+        logs.iter()
+            .filter(|log| log.contains(" WARN ") && log.contains(SWAPS_FALLBACK_MESSAGE))
+            .count()
+    }
+
+    fn assert_swaps_warnings(
+        logs: &[&str],
+        expected: usize,
+    ) -> Result<(), String> {
+        let found = swaps_fallback_warnings(logs);
+
+        if found == expected {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected exactly {expected} swaps fallback WARN, found {found}"
+            ))
+        }
+    }
+
+    fn private_swaps_config() -> SwapsConfig {
+        SwapsConfig {
+            zero_ex: ZeroExApiConfig {
+                api_key: "not-a-real-key".into(),
+                rpc_url: "https://polygon.example.internal".to_string(),
+            },
+            ..SwapsConfig::default()
+        }
+    }
+
     /// Swaps are the sibling fallback: `SwapsClients` is always constructed, so
     /// an operator who configured both payment chains and left `swaps.zero_ex`
     /// alone is still on a free public node.
@@ -775,37 +810,35 @@ mod tests {
     fn the_default_swaps_rpc_is_announced() {
         SwapsConfig::default().warn_if_zero_ex_rpc_is_public_default();
 
-        logs_assert(|logs| {
-            let count = logs
-                .iter()
-                .filter(|log| log.contains(" WARN ") && log.contains(SWAPS_FALLBACK_MESSAGE))
-                .count();
-
-            if count == 1 {
-                Ok(())
-            } else {
-                Err(format!(
-                    "expected exactly one swaps fallback WARN, found {count}"
-                ))
-            }
-        });
+        logs_assert(|logs| assert_swaps_warnings(logs, 1));
         assert!(logs_contain(DEFAULT_ZERO_EX_RPC_URL));
     }
 
     #[test]
     #[tracing_test::traced_test]
     fn a_configured_swaps_rpc_is_not_announced() {
-        let config = SwapsConfig {
-            zero_ex: ZeroExApiConfig {
-                api_key: "not-a-real-key".into(),
-                rpc_url: "https://polygon.example.internal".to_string(),
-            },
-            ..SwapsConfig::default()
-        };
+        private_swaps_config().warn_if_zero_ex_rpc_is_public_default();
 
-        config.warn_if_zero_ex_rpc_is_public_default();
+        logs_assert(|logs| assert_swaps_warnings(logs, 0));
+    }
 
-        assert!(!logs_contain(SWAPS_FALLBACK_MESSAGE));
+    /// The method being right is not the same as it being wired up. This goes
+    /// through `swaps_config_with_prefix`, the only caller, so deleting the
+    /// call in `configs.rs` fails a test rather than silently restoring the
+    /// unannounced fallback.
+    #[test]
+    #[tracing_test::traced_test]
+    fn the_swaps_loader_announces_the_public_default_too() {
+        let config = crate::configs::swaps_config_with_prefix(
+            "no-such-config-dir",
+            "KALATORI_TEST_SWAPS_FALLBACK",
+        );
+
+        assert_eq!(
+            config.zero_ex.rpc_url,
+            DEFAULT_ZERO_EX_RPC_URL
+        );
+        logs_assert(|logs| assert_swaps_warnings(logs, 1));
     }
 }
 
