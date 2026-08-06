@@ -161,6 +161,28 @@ impl ConfirmationBuffer {
     }
 }
 
+/// Reconnect budget handed to alloy, rather than inherited from it.
+///
+/// alloy retries the *same* URL internally. Only our own layer can rotate to
+/// another endpoint: `TransfersTracker` reacts to a dead stream by calling
+/// `recreate()`, which re-picks from the configured endpoints. So every second
+/// alloy spends retrying is a second we cannot spend moving away from a bad
+/// node, which is the failure in #333 -- three months on a public endpoint that
+/// dropped every 60s.
+///
+/// The upstream defaults are 10 retries at 3s. Under alloy 1.x that is a flat
+/// 27s; alloy 2.x kept the same two numbers but reads them as the base of a
+/// capped exponential backoff (cap 30s), making the same defaults 195s. Same
+/// call, same configuration, ~7x the outage -- which is exactly why these are
+/// now stated here instead of inherited. They will drift again.
+///
+/// 3 retries from a 2s base is 6s under 2.x semantics and 4s under 1.x, both
+/// comfortably inside `WS_MESSAGES_TIMEOUT_DURATION`, so alloy gives up while
+/// our own supervision is still waiting rather than after it has given up.
+/// `ws_reconnect_budget_stays_within_our_own_timeout` pins that relationship.
+const WS_RECONNECT_MAX_RETRIES: u32 = 3;
+const WS_RECONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
 // ============================================================================
 // ERC-20 Interface Definition
 // ============================================================================
@@ -427,7 +449,9 @@ impl PolygonClient {
         );
 
         // Test connection and get chain ID
-        let ws_connect = WsConnect::new(&endpoint);
+        let ws_connect = WsConnect::new(&endpoint)
+            .with_max_retries(WS_RECONNECT_MAX_RETRIES)
+            .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
         let provider = ProviderBuilder::new()
             .connect_ws(ws_connect)
             .await
@@ -469,7 +493,9 @@ impl PolygonClient {
             })?;
 
         // Test connection and get chain ID
-        let ws_connect = WsConnect::new(&endpoint);
+        let ws_connect = WsConnect::new(&endpoint)
+            .with_max_retries(WS_RECONNECT_MAX_RETRIES)
+            .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
         let subscription_provider = ProviderBuilder::new()
             .connect_ws(ws_connect)
             .await
@@ -1644,5 +1670,45 @@ mod tests {
         assert_eq!(released.len(), 2);
         assert_eq!(released[0].amount, Decimal::new(1, 6));
         assert_eq!(released[1].amount, Decimal::new(2, 6));
+    }
+
+    /// The budget we hand alloy has to run out while our own supervision is
+    /// still waiting, not after it has given up. alloy retries one URL;
+    /// `TransfersTracker::recreate()` is the only thing that can rotate to
+    /// another endpoint, and it cannot start until alloy stops.
+    ///
+    /// This duplicates alloy 2.x's backoff formula deliberately. It is the
+    /// assumption our two constants were chosen against, and alloy has already
+    /// changed it once -- 1.x read the same two numbers as a flat delay, which
+    /// is what turned the shared defaults from 27s into 195s. If it changes
+    /// again, this is where the stale assumption is written down, and this test
+    /// is what fails instead of a payment going unnoticed in production.
+    #[test]
+    fn ws_reconnect_budget_stays_within_our_own_timeout() {
+        // `MAX_RECONNECT_RETRY_INTERVAL` in alloy-pubsub 2.x.
+        const ALLOY_BACKOFF_CAP: Duration = Duration::from_secs(30);
+
+        let cap = WS_RECONNECT_RETRY_INTERVAL.max(ALLOY_BACKOFF_CAP);
+
+        // alloy sleeps after every failed attempt except the last, which gives
+        // up instead of sleeping.
+        let worst_case: Duration = (1..WS_RECONNECT_MAX_RETRIES)
+            .map(|retry_count| {
+                let multiplier = 1u32
+                    .checked_shl(retry_count.saturating_sub(1))
+                    .unwrap_or(u32::MAX);
+
+                WS_RECONNECT_RETRY_INTERVAL
+                    .saturating_mul(multiplier)
+                    .min(cap)
+            })
+            .sum();
+
+        assert_eq!(worst_case, Duration::from_secs(6));
+        assert!(
+            worst_case < WS_MESSAGES_TIMEOUT_DURATION,
+            "alloy would still be retrying after {worst_case:?}, past our own \
+             {WS_MESSAGES_TIMEOUT_DURATION:?} timeout, blocking endpoint rotation",
+        );
     }
 }

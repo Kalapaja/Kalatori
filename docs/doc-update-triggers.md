@@ -13,7 +13,7 @@ After completing code changes, check this table and update any affected docs. Al
 | **New test pattern or tool** | `docs/testing-strategy.md` |
 | **Clippy lint changes** | `docs/conventions.md` lints section |
 | **New chain support** | `AGENTS.md`, `docs/architecture.md` throughout |
-| **MSRV or toolchain change** | `AGENTS.md` tech stack, `docs/conventions.md` code style |
+| **MSRV or toolchain change** | `rust-version` in root `Cargo.toml` `[workspace.package]` (single source, inherited by all members), then `AGENTS.md` tech stack, `docs/conventions.md` code style, `CONTRIBUTING.md` prerequisites |
 | **New dependency (major)** | `AGENTS.md` tech stack |
 | **subxt/sqlx version bump** | `AGENTS.md` pitfalls (version sync), `Makefile` version pins |
 | **MCP config changes** | `docs/mcp-tooling.md` |

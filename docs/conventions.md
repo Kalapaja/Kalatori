@@ -2,8 +2,8 @@
 
 ## Code Style
 
-- **Rust edition 2024**, MSRV 1.91 (`daemon/Cargo.toml`; the other workspace
-  members declare none, so this is the effective floor)
+- **Rust edition 2024**, MSRV 1.91 (`rust-version` in root `Cargo.toml`
+  `[workspace.package]`; every member inherits it)
 - **rustfmt**: Nightly required (`cargo +nightly fmt --all`)
 - Self-named modules only (e.g., `chain.rs` + `chain/` directory) — **never `mod.rs`** (enforced by `mod_module_files` clippy lint). Rationale: better Git history, avoids file renaming issues.
 
