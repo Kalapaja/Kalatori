@@ -20,6 +20,16 @@ updates:
       # past 1.94.1.
       - dependency-name: "alloy"
         versions: [">= 2.2.0"]
+      # subxt and subxt-signer must move in lockstep with each other and with
+      # the subxt-cli pin in the Makefile (AGENTS.md, Critical Pitfalls). A
+      # signer-only bump (#381) mixes runtime versions from two subxt releases
+      # and fails to build. The 0.44 -> 0.5x upgrade is its own project:
+      # bump all three together, reinstall subxt-cli, regenerate metadata.
+      # Drop both entries when that upgrade lands.
+      - dependency-name: "subxt"
+        versions: [">= 0.45"]
+      - dependency-name: "subxt-signer"
+        versions: [">= 0.45"]
   - package-ecosystem: "github-actions"
     # Dependabot only discovers workflow files under the listed directories:
     # "/" covers .github/workflows/, and the glob covers the composite actions
