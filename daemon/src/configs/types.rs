@@ -39,6 +39,7 @@ use super::consts::{
     DEFAULT_PORT,
     DEFAULT_SIGNATURE_MAX_AGE_SECS,
     DEFAULT_UNDERPAYMENT_TOLERANCE,
+    DEFAULT_ZERO_EX_RPC_URL,
 };
 
 #[derive(Deserialize)]
@@ -581,6 +582,231 @@ mod tests {
             vec![USDC_CHECKSUMMED.to_string(), USDT_CHECKSUMMED.to_string(),]
         );
     }
+
+    // --- Public-default endpoint visibility ---
+
+    const FALLBACK_MESSAGE: &str = "falling back to free public defaults";
+    const SWAPS_FALLBACK_MESSAGE: &str = "Swaps are using a free public RPC endpoint";
+
+    /// Count fallback warnings naming `chain`. Matching on level, message and
+    /// the `chain` field together is deliberate: a substring search over the
+    /// whole buffer would be satisfied by a single ambiguous INFO event, and
+    /// would not notice a warning fired for the wrong chain.
+    fn fallback_warnings_for(
+        logs: &[&str],
+        chain: ChainType,
+    ) -> usize {
+        let field = format!("chain={chain}");
+
+        logs.iter()
+            .filter(|log| {
+                log.contains(" WARN ") && log.contains(FALLBACK_MESSAGE) && log.contains(&field)
+            })
+            .count()
+    }
+
+    fn assert_warned_once(
+        logs: &[&str],
+        chain: ChainType,
+    ) -> Result<(), String> {
+        match fallback_warnings_for(logs, chain) {
+            1 => Ok(()),
+            other => Err(format!(
+                "expected exactly one fallback WARN naming {chain}, found {other}"
+            )),
+        }
+    }
+
+    fn assert_not_warned(
+        logs: &[&str],
+        chain: ChainType,
+    ) -> Result<(), String> {
+        match fallback_warnings_for(logs, chain) {
+            0 => Ok(()),
+            other => Err(format!(
+                "expected no fallback WARN naming {chain}, found {other}"
+            )),
+        }
+    }
+
+    fn chains_config_from_json(json: &str) -> ChainsConfig {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn configured(url: &str) -> ChainConfig {
+        ChainConfig {
+            endpoints: vec![ChainEndpoint::Universal(url.to_string())],
+            ..ChainConfig::default()
+        }
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn every_unconfigured_chain_is_announced_exactly_once() {
+        let mut config = chains_config_from_json(r#"{"chains":{}}"#);
+
+        config.set_default_chains_if_missing();
+
+        for chain in ChainType::iter() {
+            assert!(
+                config.chains[&chain]
+                    .get_random_requests_endpoint()
+                    .is_some(),
+                "{chain} was left without endpoints"
+            );
+        }
+
+        logs_assert(|logs| {
+            assert_warned_once(logs, ChainType::Polygon)?;
+            assert_warned_once(logs, ChainType::PolkadotAssetHub)
+        });
+
+        // The endpoints themselves have to be in the line — naming the chain
+        // without naming the node leaves the operator no better off.
+        assert!(logs_contain(
+            "wss://polygon-bor-rpc.publicnode.com"
+        ));
+        assert!(logs_contain(
+            "wss://asset-hub-polkadot-rpc.n.dwellir.com"
+        ));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn configuring_polygon_silences_polygon_only() {
+        let url = "wss://polygon.example.internal";
+        let mut config = chains_config_from_json(r#"{"chains":{}}"#);
+        config
+            .chains
+            .insert(ChainType::Polygon, configured(url));
+
+        config.set_default_chains_if_missing();
+
+        assert_eq!(
+            config.chains[&ChainType::Polygon].get_random_requests_endpoint(),
+            Some(url.to_string()),
+        );
+        logs_assert(|logs| {
+            assert_not_warned(logs, ChainType::Polygon)?;
+            assert_warned_once(logs, ChainType::PolkadotAssetHub)
+        });
+    }
+
+    /// The mirror of the above. Asymmetric bugs — a loop that only ever reports
+    /// the first chain, say — pass one direction and fail the other.
+    #[test]
+    #[tracing_test::traced_test]
+    fn configuring_asset_hub_silences_asset_hub_only() {
+        let url = "wss://asset-hub.example.internal";
+        let mut config = chains_config_from_json(r#"{"chains":{}}"#);
+        config.chains.insert(
+            ChainType::PolkadotAssetHub,
+            configured(url),
+        );
+
+        config.set_default_chains_if_missing();
+
+        assert_eq!(
+            config.chains[&ChainType::PolkadotAssetHub].get_random_requests_endpoint(),
+            Some(url.to_string()),
+        );
+        logs_assert(|logs| {
+            assert_not_warned(logs, ChainType::PolkadotAssetHub)?;
+            assert_warned_once(logs, ChainType::Polygon)
+        });
+    }
+
+    /// `endpoints: []` and an absent `endpoints` key reach `ChainConfig`
+    /// through different serde paths — an explicit empty sequence versus the
+    /// `#[serde(default)]` — but both mean "unconfigured" and must both warn.
+    #[test]
+    #[tracing_test::traced_test]
+    fn an_explicitly_empty_endpoint_list_counts_as_unconfigured() {
+        let mut config =
+            chains_config_from_json(r#"{"chains":{"Polygon":{"endpoints":[],"assets":[]}}}"#);
+
+        assert!(
+            config.chains[&ChainType::Polygon]
+                .endpoints
+                .is_empty()
+        );
+
+        config.set_default_chains_if_missing();
+
+        assert!(
+            config.chains[&ChainType::Polygon]
+                .get_random_requests_endpoint()
+                .is_some()
+        );
+        logs_assert(|logs| assert_warned_once(logs, ChainType::Polygon));
+    }
+
+    /// Exercise the loader rather than the method directly, so the file/env
+    /// precedence layer is covered too. The prefix is unique to this test and
+    /// the directory does not exist, so nothing external can influence it.
+    #[test]
+    #[tracing_test::traced_test]
+    fn the_loader_announces_defaults_too() {
+        let config = crate::configs::chains_config_with_prefix(
+            "no-such-config-dir",
+            "KALATORI_TEST_ENDPOINT_FALLBACK",
+        );
+
+        for chain in ChainType::iter() {
+            assert!(
+                config.chains[&chain]
+                    .get_random_requests_endpoint()
+                    .is_some(),
+                "{chain} was left without endpoints"
+            );
+        }
+
+        logs_assert(|logs| {
+            assert_warned_once(logs, ChainType::Polygon)?;
+            assert_warned_once(logs, ChainType::PolkadotAssetHub)
+        });
+    }
+
+    /// Swaps are the sibling fallback: `SwapsClients` is always constructed, so
+    /// an operator who configured both payment chains and left `swaps.zero_ex`
+    /// alone is still on a free public node.
+    #[test]
+    #[tracing_test::traced_test]
+    fn the_default_swaps_rpc_is_announced() {
+        SwapsConfig::default().warn_if_zero_ex_rpc_is_public_default();
+
+        logs_assert(|logs| {
+            let count = logs
+                .iter()
+                .filter(|log| log.contains(" WARN ") && log.contains(SWAPS_FALLBACK_MESSAGE))
+                .count();
+
+            if count == 1 {
+                Ok(())
+            } else {
+                Err(format!(
+                    "expected exactly one swaps fallback WARN, found {count}"
+                ))
+            }
+        });
+        assert!(logs_contain(DEFAULT_ZERO_EX_RPC_URL));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_configured_swaps_rpc_is_not_announced() {
+        let config = SwapsConfig {
+            zero_ex: ZeroExApiConfig {
+                api_key: "not-a-real-key".into(),
+                rpc_url: "https://polygon.example.internal".to_string(),
+            },
+            ..SwapsConfig::default()
+        };
+
+        config.warn_if_zero_ex_rpc_is_public_default();
+
+        assert!(!logs_contain(SWAPS_FALLBACK_MESSAGE));
+    }
 }
 
 fn default_host() -> IpAddr {
@@ -820,7 +1046,27 @@ impl Default for ZeroExApiConfig {
     fn default() -> Self {
         Self {
             api_key: "".into(),
-            rpc_url: "https://polygon-bor-rpc.publicnode.com".to_string(),
+            rpc_url: DEFAULT_ZERO_EX_RPC_URL.to_string(),
+        }
+    }
+}
+
+impl SwapsConfig {
+    /// Announce a public-default swaps RPC the same way
+    /// `set_default_chains_if_missing` announces the chain endpoints.
+    ///
+    /// Startup always constructs `SwapsClients`, so omitting `swaps.zero_ex`
+    /// puts the daemon on a free public node. Without this, an operator who
+    /// configured both payment chains properly reads a clean log and concludes
+    /// they are fully configured — which is the exact condition the chain
+    /// warning exists to abolish.
+    pub(super) fn warn_if_zero_ex_rpc_is_public_default(&self) {
+        if self.zero_ex.rpc_url == DEFAULT_ZERO_EX_RPC_URL {
+            tracing::warn!(
+                rpc_url = %self.zero_ex.rpc_url,
+                "Swaps are using a free public RPC endpoint. \
+                 Set swaps.zero_ex.rpc_url to your own endpoint for production use."
+            );
         }
     }
 }
@@ -833,72 +1079,4 @@ pub struct SwapsConfig {
     pub zero_ex: ZeroExApiConfig,
     #[serde(default)]
     pub fees: Option<IntegratorFees>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn empty_chains_config() -> ChainsConfig {
-        ChainsConfig {
-            chains: HashMap::new(),
-        }
-    }
-
-    #[test]
-    #[tracing_test::traced_test]
-    fn default_endpoints_are_announced_when_none_configured() {
-        let mut config = empty_chains_config();
-
-        config.set_default_chains_if_missing();
-
-        for chain in ChainType::iter() {
-            assert!(
-                config.chains[&chain]
-                    .get_random_requests_endpoint()
-                    .is_some(),
-                "{chain} was left without endpoints"
-            );
-        }
-
-        // The point of the warning is that an operator who configured nothing
-        // can still tell from the log which node their payments depend on.
-        assert!(logs_contain(
-            "falling back to free public defaults"
-        ));
-        assert!(logs_contain(
-            "wss://polygon-bor-rpc.publicnode.com"
-        ));
-        assert!(logs_contain(
-            "wss://asset-hub-polkadot-rpc.n.dwellir.com"
-        ));
-    }
-
-    #[test]
-    #[tracing_test::traced_test]
-    fn configured_endpoints_are_left_alone_and_unannounced() {
-        let configured = "wss://polygon.example.internal";
-        let mut config = empty_chains_config();
-        config.chains.insert(
-            ChainType::Polygon,
-            ChainConfig {
-                endpoints: vec![ChainEndpoint::Universal(configured.to_string())],
-                ..ChainConfig::default()
-            },
-        );
-
-        config.set_default_chains_if_missing();
-
-        assert_eq!(
-            config.chains[&ChainType::Polygon].get_random_requests_endpoint(),
-            Some(configured.to_string()),
-        );
-        assert!(!logs_contain(
-            "wss://polygon-bor-rpc.publicnode.com"
-        ));
-        // Asset Hub was still unconfigured, so it does get the warning.
-        assert!(logs_contain(
-            "wss://asset-hub-polkadot-rpc.n.dwellir.com"
-        ));
-    }
 }

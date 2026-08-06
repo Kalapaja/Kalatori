@@ -23,6 +23,11 @@ pub const DEFAULT_POLYGON_ENDPOINTS: &[&str] = &[
     "wss://polygon.drpc.org",
 ];
 
+/// Same host as the first entry of `DEFAULT_POLYGON_ENDPOINTS`, over https
+/// instead of wss. A free public node with no availability guarantee; swaps
+/// fall back to it whenever `swaps.zero_ex.rpc_url` is left unset.
+pub const DEFAULT_ZERO_EX_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
+
 /// Native USDC on Polygon PoS (Circle's official deployment)
 pub const DEFAULT_POLYGON_USDC_ADDRESS: &str = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
 
