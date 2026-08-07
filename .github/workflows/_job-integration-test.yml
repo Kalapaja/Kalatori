@@ -43,12 +43,19 @@ jobs:
       - name: Start chopsticks
         run: make start-chopsticks
 
-      - name: Wait for chopsticks to accept connections
+      # `system_chain` is answered from static metadata while the fork is still
+      # loading, so it went green ~10s in and the daemon then met a WebSocket
+      # reset. `chain_getBlockHash` can only answer once a block exists, which
+      # is the condition the daemon actually depends on. Note the daemon dials
+      # `ws://`, and this probe is HTTP on the same port — chopsticks serves
+      # both, but that is why the check must assert real chain state rather
+      # than mere reachability.
+      - name: Wait for chopsticks to serve the forked chain
         run: |
-          timeout 300 bash -c 'until curl -sf -o /dev/null \
+          timeout 300 bash -c 'until curl -sf \
             -H "Content-Type: application/json" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system_chain\",\"params\":[]}" \
-            http://localhost:9000; do sleep 2; done'
+            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"chain_getBlockHash\",\"params\":[]}" \
+            http://localhost:9000 | grep -q "\"result\":\"0x"; do sleep 2; done'
 
       # Redirected rather than backgrounded bare: `make run &` sends the
       # daemon's output nowhere the job can reach, so a daemon that fails to
