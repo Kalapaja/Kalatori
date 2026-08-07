@@ -20,6 +20,10 @@ use crate::types::{
     ChainType,
     DetectedShopPlatform,
 };
+use crate::utils::logging::{
+    category,
+    operation,
+};
 
 use super::consts::{
     DEFAULT_ALLOW_INSECURE_ENDPOINTS,
@@ -39,6 +43,7 @@ use super::consts::{
     DEFAULT_PORT,
     DEFAULT_SIGNATURE_MAX_AGE_SECS,
     DEFAULT_UNDERPAYMENT_TOLERANCE,
+    DEFAULT_ZERO_EX_RPC_URL,
 };
 
 #[derive(Deserialize)]
@@ -263,6 +268,30 @@ impl ChainsConfig {
                     ChainType::PolkadotAssetHub => DEFAULT_POLKADOT_ASSET_HUB_ENDPOINTS,
                     ChainType::Polygon => DEFAULT_POLYGON_ENDPOINTS,
                 };
+
+                // These are free public endpoints with no availability guarantee.
+                // An operator who never configured any has no other way to find
+                // out which node their payments depend on.
+                //
+                // WARN rather than ERROR is a deliberate choice: this is the
+                // documented dev-mode default and the daemon runs correctly on
+                // it, so it is degraded state rather than a critical failure —
+                // the WARN row of the level table in docs/conventions.md. An
+                // operator who wants it to be fatal can promote it downstream
+                // on `error.category = "config"`.
+                //
+                // `endpoints` is the hardcoded default slice, never the
+                // operator's own value: configured endpoint URLs can carry
+                // credentials in userinfo or the path, so only compiled-in
+                // constants are ever printed here. Tests pin this down.
+                tracing::warn!(
+                    error.category = category::CONFIG,
+                    error.operation = operation::LOAD_CHAIN_ENDPOINTS,
+                    chain = %chain,
+                    endpoints = ?endpoints,
+                    "No endpoints configured, falling back to free public defaults. \
+                     Configure your own endpoints for production use."
+                );
 
                 chain_config.endpoints = endpoints
                     .iter()
@@ -571,6 +600,326 @@ mod tests {
             vec![USDC_CHECKSUMMED.to_string(), USDT_CHECKSUMMED.to_string(),]
         );
     }
+
+    // --- Public-default endpoint visibility ---
+
+    const FALLBACK_MESSAGE: &str = "falling back to free public defaults";
+    const SWAPS_FALLBACK_MESSAGE: &str = "Swaps are using a free public RPC endpoint";
+
+    /// Count fallback warnings naming `chain`. Matching on level, message and
+    /// the `chain` field together is deliberate: a substring search over the
+    /// whole buffer would be satisfied by a single ambiguous INFO event, and
+    /// would not notice a warning fired for the wrong chain.
+    fn fallback_warnings_for(
+        logs: &[&str],
+        chain: ChainType,
+    ) -> usize {
+        let field = format!("chain={chain}");
+
+        logs.iter()
+            .filter(|log| {
+                log.contains(" WARN ") && log.contains(FALLBACK_MESSAGE) && log.contains(&field)
+            })
+            .count()
+    }
+
+    fn assert_warned_once(
+        logs: &[&str],
+        chain: ChainType,
+    ) -> Result<(), String> {
+        match fallback_warnings_for(logs, chain) {
+            1 => Ok(()),
+            other => Err(format!(
+                "expected exactly one fallback WARN naming {chain}, found {other}"
+            )),
+        }
+    }
+
+    fn assert_not_warned(
+        logs: &[&str],
+        chain: ChainType,
+    ) -> Result<(), String> {
+        match fallback_warnings_for(logs, chain) {
+            0 => Ok(()),
+            other => Err(format!(
+                "expected no fallback WARN naming {chain}, found {other}"
+            )),
+        }
+    }
+
+    fn chains_config_from_json(json: &str) -> ChainsConfig {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn configured(url: &str) -> ChainConfig {
+        ChainConfig {
+            endpoints: vec![ChainEndpoint::Universal(url.to_string())],
+            ..ChainConfig::default()
+        }
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn every_unconfigured_chain_is_announced_exactly_once() {
+        let mut config = chains_config_from_json(r#"{"chains":{}}"#);
+
+        config.set_default_chains_if_missing();
+
+        for chain in ChainType::iter() {
+            assert!(
+                config.chains[&chain]
+                    .get_random_requests_endpoint()
+                    .is_some(),
+                "{chain} was left without endpoints"
+            );
+        }
+
+        logs_assert(|logs| {
+            assert_warned_once(logs, ChainType::Polygon)?;
+            assert_warned_once(logs, ChainType::PolkadotAssetHub)
+        });
+
+        // The endpoints themselves have to be in the line — naming the chain
+        // without naming the node leaves the operator no better off.
+        assert!(logs_contain(
+            "wss://polygon-bor-rpc.publicnode.com"
+        ));
+        assert!(logs_contain(
+            "wss://asset-hub-polkadot-rpc.n.dwellir.com"
+        ));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn configuring_polygon_silences_polygon_only() {
+        let url = "wss://polygon.example.internal";
+        let mut config = chains_config_from_json(r#"{"chains":{}}"#);
+        config
+            .chains
+            .insert(ChainType::Polygon, configured(url));
+
+        config.set_default_chains_if_missing();
+
+        assert_eq!(
+            config.chains[&ChainType::Polygon].get_random_requests_endpoint(),
+            Some(url.to_string()),
+        );
+        logs_assert(|logs| {
+            assert_not_warned(logs, ChainType::Polygon)?;
+            assert_warned_once(logs, ChainType::PolkadotAssetHub)
+        });
+    }
+
+    /// The mirror of the above. Asymmetric bugs — a loop that only ever reports
+    /// the first chain, say — pass one direction and fail the other.
+    #[test]
+    #[tracing_test::traced_test]
+    fn configuring_asset_hub_silences_asset_hub_only() {
+        let url = "wss://asset-hub.example.internal";
+        let mut config = chains_config_from_json(r#"{"chains":{}}"#);
+        config.chains.insert(
+            ChainType::PolkadotAssetHub,
+            configured(url),
+        );
+
+        config.set_default_chains_if_missing();
+
+        assert_eq!(
+            config.chains[&ChainType::PolkadotAssetHub].get_random_requests_endpoint(),
+            Some(url.to_string()),
+        );
+        logs_assert(|logs| {
+            assert_not_warned(logs, ChainType::PolkadotAssetHub)?;
+            assert_warned_once(logs, ChainType::Polygon)
+        });
+    }
+
+    /// `endpoints: []` and an absent `endpoints` key reach `ChainConfig`
+    /// through different serde paths — an explicit empty sequence versus the
+    /// `#[serde(default)]` — but both mean "unconfigured" and must both warn.
+    #[test]
+    #[tracing_test::traced_test]
+    fn an_explicitly_empty_endpoint_list_counts_as_unconfigured() {
+        let mut config =
+            chains_config_from_json(r#"{"chains":{"Polygon":{"endpoints":[],"assets":[]}}}"#);
+
+        assert!(
+            config.chains[&ChainType::Polygon]
+                .endpoints
+                .is_empty()
+        );
+
+        config.set_default_chains_if_missing();
+
+        assert!(
+            config.chains[&ChainType::Polygon]
+                .get_random_requests_endpoint()
+                .is_some()
+        );
+        logs_assert(|logs| assert_warned_once(logs, ChainType::Polygon));
+    }
+
+    /// Exercise the loader rather than the method directly, so the file/env
+    /// precedence layer is covered too. The prefix is unique to this test and
+    /// the directory does not exist, so nothing external can influence it.
+    #[test]
+    #[tracing_test::traced_test]
+    fn the_loader_announces_defaults_too() {
+        let config = crate::configs::chains_config_with_prefix(
+            "no-such-config-dir",
+            "KALATORI_TEST_ENDPOINT_FALLBACK",
+        );
+
+        for chain in ChainType::iter() {
+            assert!(
+                config.chains[&chain]
+                    .get_random_requests_endpoint()
+                    .is_some(),
+                "{chain} was left without endpoints"
+            );
+        }
+
+        logs_assert(|logs| {
+            assert_warned_once(logs, ChainType::Polygon)?;
+            assert_warned_once(logs, ChainType::PolkadotAssetHub)
+        });
+    }
+
+    /// Counterpart of `fallback_warnings_for` for the swaps branch. The
+    /// negative case goes through this too: `!logs_contain(..)` would also be
+    /// satisfied by the warning being emitted at the wrong level, which is the
+    /// failure this pair is supposed to catch.
+    fn swaps_fallback_warnings(logs: &[&str]) -> usize {
+        logs.iter()
+            .filter(|log| log.contains(" WARN ") && log.contains(SWAPS_FALLBACK_MESSAGE))
+            .count()
+    }
+
+    fn assert_swaps_warnings(
+        logs: &[&str],
+        expected: usize,
+    ) -> Result<(), String> {
+        let found = swaps_fallback_warnings(logs);
+
+        if found == expected {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected exactly {expected} swaps fallback WARN, found {found}"
+            ))
+        }
+    }
+
+    fn private_swaps_config() -> SwapsConfig {
+        SwapsConfig {
+            zero_ex: ZeroExApiConfig {
+                api_key: "not-a-real-key".into(),
+                rpc_url: "https://polygon.example.internal".to_string(),
+            },
+            ..SwapsConfig::default()
+        }
+    }
+
+    /// Swaps are the sibling fallback: `SwapsClients` is always constructed, so
+    /// an operator who configured both payment chains and left `swaps.zero_ex`
+    /// alone is still on a free public node.
+    #[test]
+    #[tracing_test::traced_test]
+    fn the_default_swaps_rpc_is_announced() {
+        SwapsConfig::default().warn_if_zero_ex_rpc_is_public_default();
+
+        logs_assert(|logs| assert_swaps_warnings(logs, 1));
+        assert!(logs_contain(DEFAULT_ZERO_EX_RPC_URL));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_configured_swaps_rpc_is_not_announced() {
+        private_swaps_config().warn_if_zero_ex_rpc_is_public_default();
+
+        logs_assert(|logs| assert_swaps_warnings(logs, 0));
+    }
+
+    /// The method being right is not the same as it being wired up. This goes
+    /// through `swaps_config_with_prefix`, the only caller, so deleting the
+    /// call in `configs.rs` fails a test rather than silently restoring the
+    /// unannounced fallback.
+    #[test]
+    #[tracing_test::traced_test]
+    fn the_swaps_loader_announces_the_public_default_too() {
+        let config = crate::configs::swaps_config_with_prefix(
+            "no-such-config-dir",
+            "KALATORI_TEST_SWAPS_FALLBACK",
+        );
+
+        assert_eq!(
+            config.zero_ex.rpc_url,
+            DEFAULT_ZERO_EX_RPC_URL
+        );
+        logs_assert(|logs| assert_swaps_warnings(logs, 1));
+    }
+
+    /// A URL an operator configured is theirs, and can carry credentials in
+    /// userinfo or in the path. The rule these warnings follow is that only
+    /// compiled-in constants are ever printed — this pair is what holds the
+    /// rule in place, since every other test here asserts on what *is* logged
+    /// and would stay green while a secret leaked alongside it.
+    ///
+    /// Only URL-borne secrets need a runtime check. `ZeroExApiConfig::api_key`
+    /// is a `SecretBox<str>`, so logging it is a compile error and its `Debug`
+    /// is redacted — a test for it could never fail. `rpc_url` beside it is a
+    /// plain `String`, which is why `?self.zero_ex` would still leak and why
+    /// the swaps case below is worth pinning.
+    const CREDENTIAL_SENTINELS: &[&str] = &["hunter2", "s3cr3t-path"];
+
+    fn assert_no_sentinel_leaked(logs: &[&str]) -> Result<(), String> {
+        for sentinel in CREDENTIAL_SENTINELS {
+            if logs
+                .iter()
+                .any(|log| log.contains(sentinel))
+            {
+                return Err(format!(
+                    "configured value `{sentinel}` reached the log"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_configured_chain_endpoint_never_reaches_the_log() {
+        let mut config = chains_config_from_json(r#"{"chains":{}}"#);
+        config.chains.insert(
+            ChainType::Polygon,
+            configured("wss://operator:hunter2@polygon.example.internal/s3cr3t-path"),
+        );
+
+        config.set_default_chains_if_missing();
+
+        logs_assert(|logs| {
+            // Asset Hub still fell back, so the warning path really did run.
+            assert_warned_once(logs, ChainType::PolkadotAssetHub)?;
+            assert_no_sentinel_leaked(logs)
+        });
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_configured_swaps_rpc_never_reaches_the_log() {
+        let config = SwapsConfig {
+            zero_ex: ZeroExApiConfig {
+                api_key: "not-a-real-key".into(),
+                rpc_url: "https://operator:hunter2@rpc.example.internal/s3cr3t-path".to_string(),
+            },
+            ..SwapsConfig::default()
+        };
+
+        config.warn_if_zero_ex_rpc_is_public_default();
+
+        logs_assert(assert_no_sentinel_leaked);
+    }
 }
 
 fn default_host() -> IpAddr {
@@ -810,7 +1159,37 @@ impl Default for ZeroExApiConfig {
     fn default() -> Self {
         Self {
             api_key: "".into(),
-            rpc_url: "https://polygon-bor-rpc.publicnode.com".to_string(),
+            rpc_url: DEFAULT_ZERO_EX_RPC_URL.to_string(),
+        }
+    }
+}
+
+impl SwapsConfig {
+    /// Announce a public-default swaps RPC the same way
+    /// `set_default_chains_if_missing` announces the chain endpoints.
+    ///
+    /// Startup always constructs `SwapsClients`, so omitting `swaps.zero_ex`
+    /// puts the daemon on a free public node. Without this, an operator who
+    /// configured both payment chains properly reads a clean log and concludes
+    /// they are fully configured — which is the exact condition the chain
+    /// warning exists to abolish.
+    pub(super) fn warn_if_zero_ex_rpc_is_public_default(&self) {
+        if self.zero_ex.rpc_url == DEFAULT_ZERO_EX_RPC_URL {
+            // Logs the constant, not `self.zero_ex.rpc_url`. The guard makes
+            // the two equal today, so this reads as a pointless substitution —
+            // it is not. Printing the field would mean the leak is prevented
+            // only by the guard's exact-equality, and any later loosening of
+            // that guard (to a host match, say) would start printing operator
+            // URLs, which can carry credentials in userinfo or the path.
+            // Sourcing the value from the constant makes that impossible by
+            // construction rather than by careful reading.
+            tracing::warn!(
+                error.category = category::CONFIG,
+                error.operation = operation::LOAD_SWAPS_RPC,
+                rpc_url = DEFAULT_ZERO_EX_RPC_URL,
+                "Swaps are using a free public RPC endpoint. \
+                 Set swaps.zero_ex.rpc_url to your own endpoint for production use."
+            );
         }
     }
 }

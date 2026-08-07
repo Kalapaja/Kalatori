@@ -131,7 +131,9 @@ pub fn swaps_config_with_prefix(
 ) -> SwapsConfig {
     let config_path = format_config_path(config_dir_path, "swaps.json");
     let env_prefix = format_prefix(prefix, "SWAPS");
-    config_from_file_or_env(&config_path, &env_prefix)
+    let config: SwapsConfig = config_from_file_or_env(&config_path, &env_prefix);
+    config.warn_if_zero_ex_rpc_is_public_default();
+    config
 }
 
 // #[cfg(test)]
