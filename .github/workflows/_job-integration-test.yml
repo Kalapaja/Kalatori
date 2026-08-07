@@ -36,6 +36,20 @@ jobs:
       - name: Build daemon
         run: cargo build --bin kalatori
 
+      # Chopsticks builds its own image (it npm-installs the binary) and then
+      # forks Asset Hub from a live RPC. Both belong outside the readiness poll
+      # below, for the same reason the build does — the poll is there to catch a
+      # stuck daemon, and it cannot do that while it is really timing docker.
+      - name: Start chopsticks
+        run: make start-chopsticks
+
+      - name: Wait for chopsticks to accept connections
+        run: |
+          timeout 300 bash -c 'until curl -sf -o /dev/null \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system_chain\",\"params\":[]}" \
+            http://localhost:9000; do sleep 2; done'
+
       - name: Run daemon and chopsticks in background
         run: make run &
 
