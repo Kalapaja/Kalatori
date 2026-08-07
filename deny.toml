@@ -3,6 +3,9 @@
 # output a note when they are encountered.
 
 ignore = [
+    # paste unmaintained. Build-time transitive dep via alloy-primitives,
+    # ark-ff and syn-solidity; not a vulnerability. Drop once alloy completes
+    # its move to the maintained pastey fork.
     "RUSTSEC-2024-0436",
     # proc-macro-error2 unmaintained. Build-time transitive dep via
     # subxt-macro; no safe upgrade available and not a vulnerability.

@@ -7,8 +7,8 @@ You can find issues waiting to be solved or create a new one in the [issues](htt
 - Rust: stable version (MSRV 1.91), nightly for rustfmt
 - SQLite: >= 3.47.0 (see README.md for build-from-source instructions on Linux)
 - Docker: to run tests and spawn Chopsticks instances
-- subxt-cli: install via `make install-subxt-cli`
-- sqlx-cli: install via `make install-sqlx-cli`
+- subxt-cli, sqlx-cli and the test tooling: install via `make setup-utils`, which
+  installs every pin in `[workspace.metadata.bin]` at once
 
 For AI agents and detailed architecture, see [AGENTS.md](AGENTS.md) and `docs/`.
 

@@ -21,7 +21,7 @@ updates:
       - dependency-name: "alloy"
         versions: [">= 2.2.0"]
       # subxt and subxt-signer must move in lockstep with each other and with
-      # the subxt-cli pin in the Makefile (AGENTS.md, Critical Pitfalls). A
+      # the subxt-cli pins in [workspace.metadata.bin] and the Dockerfile. A
       # signer-only bump (#381) mixes runtime versions from two subxt releases
       # and fails to build. The 0.44 -> 0.5x upgrade is its own project:
       # bump all three together, reinstall subxt-cli, regenerate metadata.
@@ -46,5 +46,19 @@ updates:
     # release-publishing and token secrets.
     groups:
       github-actions:
+        update-types: ["minor", "patch"]
+        patterns: ["*"]
+  # Nothing watched the container images until now, which is how the chopsticks
+  # base image sat on node:20-alpine for three months past its 2026-04-30 EOL.
+  # "/" is the release Dockerfile, "/chopsticks" the test-simulator one.
+  - package-ecosystem: "docker"
+    directories:
+      - "/"
+      - "/chopsticks"
+    labels: ["dependabot-ci"]
+    schedule:
+      interval: "weekly"
+    groups:
+      docker:
         update-types: ["minor", "patch"]
         patterns: ["*"]
