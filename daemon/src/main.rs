@@ -21,6 +21,8 @@ use std::collections::{
 };
 use std::process::ExitCode;
 
+use futures::future::OptionFuture;
+use kalatori_client::strum::IntoEnumIterator;
 use kalatori_client::types::ChainType;
 use kalatori_client::utils::HmacConfig;
 use secrecy::ExposeSecret;
@@ -217,6 +219,129 @@ fn validate_and_extend_configs(
     Ok(())
 }
 
+/// Bring one chain client up, or report the chain as unavailable.
+///
+/// Failing to reach a chain is degraded state, not a fatal one: the daemon
+/// keeps serving every chain that did come up. Deciding whether what came up
+/// is enough to run on is [`report_chain_availability`]'s job, not this one's.
+async fn init_chain_client<T, C>(
+    chain_config: &configs::ChainConfig,
+    assets: &[String],
+) -> Option<C>
+where
+    T: chain_client::ChainConfig,
+    C: BlockChainClient<T>,
+{
+    let chain = T::CHAIN_TYPE;
+
+    match C::new(chain_config).await {
+        Ok(client) => finish_chain_client(client, assets).await,
+        Err(error) => {
+            tracing::warn!(
+                error.category = utils::logging::category::CHAIN_CLIENT,
+                error.operation = utils::logging::operation::CONNECT_CLIENT,
+                error.source = ?error,
+                %chain,
+                "Failed to connect the chain client, continuing without this chain"
+            );
+
+            None
+        },
+    }
+}
+
+/// The half of chain-client startup that runs once a connection exists.
+///
+/// A client whose asset metadata cannot be read is as unusable as one that
+/// never connected — transfers on it could not be priced or matched — so it
+/// degrades the chain the same way.
+async fn finish_chain_client<T, C>(
+    client: C,
+    assets: &[String],
+) -> Option<C>
+where
+    T: chain_client::ChainConfig,
+    C: BlockChainClient<T>,
+{
+    let chain = T::CHAIN_TYPE;
+
+    if let Err(error) = client.init_asset_info(assets).await {
+        tracing::warn!(
+            error.category = utils::logging::category::CHAIN_CLIENT,
+            error.operation = utils::logging::operation::FETCH_ASSET_INFO,
+            error.source = ?error,
+            %chain,
+            "Failed to initialize chain asset info, continuing without this chain"
+        );
+
+        return None
+    }
+
+    tracing::info!(%chain, "Chain client initialized");
+
+    Some(client)
+}
+
+/// Report which chains came up, and decide whether that is enough to run on.
+///
+/// Two cases are fatal, and only two:
+///
+/// - **No chain came up.** There is nothing to serve; a gateway that cannot
+///   reach any chain is not usefully running.
+/// - **The default chain did not come up.** Every invoice is created on
+///   `default_chain` and every swap settles there, so the daemon could accept
+///   no payment at all — it would answer requests while being unable to do the
+///   one thing it exists for.
+///
+/// Anything else is degraded: the chains that came up are served normally, and
+/// the ones that did not are reported by name. There is no reconnection path —
+/// a chain that failed here stays unavailable until the daemon is restarted —
+/// so the warnings say that outright rather than implying a recovery that does
+/// not exist.
+fn report_chain_availability(
+    available_chains: &HashSet<ChainType>,
+    default_chain: ChainType,
+    chains_with_active_invoices: &HashSet<ChainType>,
+) -> Result<(), Error> {
+    if available_chains.is_empty() {
+        tracing::error!("No chain client could be initialized, refusing to start");
+
+        return Err(Error::Fatal)
+    }
+
+    if !available_chains.contains(&default_chain) {
+        tracing::error!(
+            chain = %default_chain,
+            "The configured default chain is unavailable, refusing to start: \
+             every invoice would be created on a chain this daemon cannot reach"
+        );
+
+        return Err(Error::Fatal)
+    }
+
+    for chain in ChainType::iter() {
+        if available_chains.contains(&chain) {
+            continue
+        }
+
+        tracing::warn!(
+            %chain,
+            "Running without this chain: no transfers will be tracked and no payouts or \
+             refunds will be submitted on it until the daemon is restarted"
+        );
+
+        if chains_with_active_invoices.contains(&chain) {
+            tracing::warn!(
+                %chain,
+                "Active invoices restored from the database are on this unavailable chain; \
+                 payments to them will not be detected until the daemon is restarted"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 #[expect(clippy::too_many_lines)]
 async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
     // This must stay the first statement in the function, and in particular
@@ -326,11 +451,20 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let invoice_registry = init_invoice_registry(&dao).await?;
 
+    let restored_asset_ids = invoice_registry.used_asset_ids().await;
+    // Kept for the availability report below: an operator whose restored
+    // invoices sit on a chain that did not come up needs to be told so by
+    // name, not left to infer it.
+    let restored_chains: HashSet<ChainType> = restored_asset_ids
+        .keys()
+        .copied()
+        .collect();
+
     validate_and_extend_configs(
         &mut chains_config,
         &mut payments_config,
         &shop_config,
-        invoice_registry.used_asset_ids().await,
+        restored_asset_ids,
     )?;
 
     // Initialize Asset Hub client
@@ -354,20 +488,8 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let asset_hub_client = AssetHubClient::new(asset_hub_chain_config)
-        .await
-        .map_err(|_| {
-            tracing::warn!("Failed to initialize Asset Hub client, continuing without it");
-            Error::Fatal
-        })?;
-
-    asset_hub_client
-        .init_asset_info(asset_hub_assets)
-        .await
-        .map_err(|_| {
-            tracing::warn!("Failed to initialize Asset Hub asset info");
-            Error::Fatal
-        })?;
+    let asset_hub_client =
+        init_chain_client::<_, AssetHubClient>(asset_hub_chain_config, asset_hub_assets).await;
 
     // Initialize Polygon client
     #[expect(
@@ -390,52 +512,48 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         .assets
         .as_ref();
 
-    let polygon_client = PolygonClient::new(polygon_chain_config)
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = ?e, "Failed to initialize Polygon client, continuing without it");
-            Error::Fatal
-        })?;
+    let polygon_client =
+        init_chain_client::<_, PolygonClient>(polygon_chain_config, polygon_assets).await;
 
-    polygon_client
-        .init_asset_info(polygon_assets)
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = ?e, "Failed to initialize Polygon asset info");
-            Error::Fatal
-        })?;
+    let mut available_chains = HashSet::new();
+    if asset_hub_client.is_some() {
+        available_chains.insert(ChainType::PolkadotAssetHub);
+    }
+    if polygon_client.is_some() {
+        available_chains.insert(ChainType::Polygon);
+    }
 
-    // Collect asset names from both chains
-    let mut asset_names_map = asset_hub_client
-        .asset_info_store()
-        .asset_names_map()
-        .await;
+    report_chain_availability(
+        &available_chains,
+        payments_config.default_chain,
+        &restored_chains,
+    )?;
 
-    asset_names_map.extend(
-        polygon_client
-            .asset_info_store()
-            .asset_names_map()
-            .await,
-    );
+    // Collect asset names from the chains that came up. An unavailable chain
+    // contributes nothing, which is why the default chain has to be available:
+    // invoice creation reads its asset name and decimals from these maps.
+    let mut asset_names_map = HashMap::new();
+    let mut asset_decimals_map = HashMap::new();
 
-    // Collect asset decimals per chain (used to convert invoice amounts to
-    // smallest units for swaps)
-    let asset_decimals_map = HashMap::from([
-        (
+    if let Some(client) = asset_hub_client.as_ref() {
+        let store = client.asset_info_store();
+
+        asset_names_map.extend(store.asset_names_map().await);
+        asset_decimals_map.insert(
             ChainType::PolkadotAssetHub,
-            asset_hub_client
-                .asset_info_store()
-                .asset_decimals_map()
-                .await,
-        ),
-        (
+            store.asset_decimals_map().await,
+        );
+    }
+
+    if let Some(client) = polygon_client.as_ref() {
+        let store = client.asset_info_store();
+
+        asset_names_map.extend(store.asset_names_map().await);
+        asset_decimals_map.insert(
             ChainType::Polygon,
-            polygon_client
-                .asset_info_store()
-                .asset_decimals_map()
-                .await,
-        ),
-    ]);
+            store.asset_decimals_map().await,
+        );
+    }
 
     let keyring = Keyring::new(secrets_config.seed);
     // Please don't keep keyring_client in this scope, it must be moved in order to
@@ -469,29 +587,31 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let expiration_detector_handle =
         expiration_detector.ignite(shutdown_notification.token.clone());
 
-    // Start Asset Hub transfers tracker
-    let asset_hub_tracker = TransfersTracker::new(
-        asset_hub_client.clone(),
-        invoice_registry.clone(),
-        transactions_recorder.clone(),
-    );
+    // Start a transfers tracker per available chain. A chain that did not come
+    // up gets no tracker at all rather than one that can never subscribe.
+    let asset_hub_tracker_handle = asset_hub_client.clone().map(|client| {
+        TransfersTracker::new(
+            client,
+            invoice_registry.clone(),
+            transactions_recorder.clone(),
+        )
+        .ignite(
+            asset_hub_assets,
+            shutdown_notification.token.clone(),
+        )
+    });
 
-    let asset_hub_tracker_handle = asset_hub_tracker.ignite(
-        asset_hub_assets,
-        shutdown_notification.token.clone(),
-    );
-
-    // Start Polygon transfers tracker
-    let polygon_tracker = TransfersTracker::new(
-        polygon_client.clone(),
-        invoice_registry.clone(),
-        transactions_recorder,
-    );
-
-    let polygon_tracker_handle = polygon_tracker.ignite(
-        polygon_assets,
-        shutdown_notification.token.clone(),
-    );
+    let polygon_tracker_handle = polygon_client.clone().map(|client| {
+        TransfersTracker::new(
+            client,
+            invoice_registry.clone(),
+            transactions_recorder,
+        )
+        .ignite(
+            polygon_assets,
+            shutdown_notification.token.clone(),
+        )
+    });
 
     let swaps_clients = SwapsClients::new(swaps_config).await;
 
@@ -579,8 +699,8 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
                 keyring_handle,
                 transfer_executor_handle,
                 expiration_detector_handle,
-                asset_hub_tracker_handle,
-                polygon_tracker_handle,
+                OptionFuture::from(asset_hub_tracker_handle),
+                OptionFuture::from(polygon_tracker_handle),
                 webhook_sender_handle,
                 swaps_tracker_handle,
                 api_handle,
@@ -609,4 +729,125 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use chain_client::{
+        ClientError,
+        MockBlockChainClient,
+        PolygonChainConfig,
+    };
+
+    use super::*;
+
+    fn chains(chains: &[ChainType]) -> HashSet<ChainType> {
+        chains.iter().copied().collect()
+    }
+
+    #[test]
+    fn no_chain_at_all_is_fatal() {
+        assert!(matches!(
+            report_chain_availability(
+                &HashSet::new(),
+                ChainType::Polygon,
+                &HashSet::new()
+            ),
+            Err(Error::Fatal)
+        ));
+    }
+
+    #[test]
+    fn an_unavailable_default_chain_is_fatal() {
+        assert!(matches!(
+            report_chain_availability(
+                &chains(&[ChainType::PolkadotAssetHub]),
+                ChainType::Polygon,
+                &HashSet::new()
+            ),
+            Err(Error::Fatal)
+        ));
+    }
+
+    /// The defect this replaced: the daemon logged "continuing without it" and
+    /// then returned `Error::Fatal`, so a Polygon-only merchant could not boot
+    /// while Polkadot RPC was down. One healthy chain — the default one — is
+    /// enough to run on.
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_non_default_chain_going_missing_is_degraded_not_fatal() {
+        assert!(
+            report_chain_availability(
+                &chains(&[ChainType::Polygon]),
+                ChainType::Polygon,
+                &HashSet::new()
+            )
+            .is_ok()
+        );
+
+        // Naming the missing chain is the point of the line, and so is not
+        // promising a reconnection the daemon does not implement.
+        assert!(logs_contain(
+            "Running without this chain"
+        ));
+        assert!(logs_contain("PolkadotAssetHub"));
+        assert!(logs_contain(
+            "until the daemon is restarted"
+        ));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn restored_invoices_on_an_unavailable_chain_are_called_out_by_chain() {
+        assert!(
+            report_chain_availability(
+                &chains(&[ChainType::Polygon]),
+                ChainType::Polygon,
+                &chains(&[ChainType::PolkadotAssetHub])
+            )
+            .is_ok()
+        );
+
+        assert!(logs_contain(
+            "Active invoices restored from the database are on this unavailable chain"
+        ));
+    }
+
+    /// A chain reachable enough to connect but not to answer for its assets is
+    /// no more usable than one that never connected, so it degrades the same
+    /// way instead of aborting startup.
+    #[tokio::test]
+    async fn a_client_whose_asset_info_fails_degrades_the_chain() {
+        let mut client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+        client
+            .expect_init_asset_info()
+            .once()
+            .returning(|_| Err(ClientError::MetadataFetchFailed));
+
+        assert!(
+            finish_chain_client::<PolygonChainConfig, _>(
+                client,
+                &["0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359".to_string()]
+            )
+            .await
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_that_comes_up_is_kept() {
+        let mut client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+        client
+            .expect_init_asset_info()
+            .once()
+            .returning(|_| Ok(()));
+
+        assert!(
+            finish_chain_client::<PolygonChainConfig, _>(client, &[])
+                .await
+                .is_some()
+        );
+    }
 }

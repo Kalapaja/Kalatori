@@ -232,34 +232,59 @@ impl AssetHubClient {
         // TODO: implement circuit breaker for endpoints
         // (should be another wrapper structure with endpoints hidden behind sync
         // primitives with error counters and usage timeouts)
-        let endpoint = config
-            .get_random_requests_endpoint()
-            .ok_or(ClientError::InvalidConfiguration {
+        let endpoints = config.shuffled_requests_endpoints();
+
+        if endpoints.is_empty() {
+            return Err(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
-            })?;
-
-        tracing::debug!(
-            url = endpoint,
-            chain = %Self::chain_type(),
-            "Trying to connect to endpoint...",
-        );
-
-        let client = if config.allow_insecure_endpoints {
-            SubxtAssetHubClient::from_insecure_url(&endpoint).await
-        } else {
-            SubxtAssetHubClient::from_url(&endpoint).await
+            })
         }
-        .inspect_err(|e| {
+
+        // Walk every configured endpoint before declaring the chain
+        // unreachable: one node restarting is an outage of that node, not of
+        // the chain, and `AllEndpointsUnreachable` has to mean what it says.
+        let mut client = None;
+
+        for endpoint in &endpoints {
             tracing::debug!(
+                url = endpoint,
+                chain = %Self::chain_type(),
+                "Trying to connect to endpoint...",
+            );
+
+            let connected = if config.allow_insecure_endpoints {
+                SubxtAssetHubClient::from_insecure_url(endpoint).await
+            } else {
+                SubxtAssetHubClient::from_url(endpoint).await
+            };
+
+            match connected {
+                Ok(connected) => {
+                    client = Some(connected);
+                    break
+                },
+                Err(e) => tracing::debug!(
+                    error.category = crate::utils::logging::category::CHAIN_CLIENT,
+                    error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
+                    error.source = ?e,
+                    chain = %Self::chain_type(),
+                    endpoint = %endpoint,
+                    "Failed to connect to Asset Hub RPC endpoint"
+                ),
+            }
+        }
+
+        let client = client.ok_or_else(|| {
+            tracing::warn!(
                 error.category = crate::utils::logging::category::CHAIN_CLIENT,
                 error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
-                error.source = ?e,
                 chain = %Self::chain_type(),
-                endpoint = %endpoint,
-                "Failed to connect to Asset Hub RPC endpoint"
+                tried_endpoints = endpoints.len(),
+                "Every configured Asset Hub RPC endpoint is unreachable"
             );
-        })
-        .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+
+            ClientError::AllEndpointsUnreachable
+        })?;
 
         Ok(AssetHubClient {
             config: config.clone(),

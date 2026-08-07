@@ -430,28 +430,18 @@ pub struct PolygonClient {
 }
 
 impl PolygonClient {
-    /// Create a new Polygon client from configuration
-    #[instrument(skip(config, asset_info_store))]
-    async fn from_config(
-        config: &crate::configs::ChainConfig,
-        asset_info_store: AssetInfoStore<PolygonChainConfig>,
-    ) -> Result<Self, ClientError> {
-        let endpoint = config
-            .get_random_requests_endpoint()
-            .ok_or(ClientError::InvalidConfiguration {
-                field: "endpoints".to_string(),
-            })?;
-
-        tracing::debug!(
-            url = endpoint,
-            chain = %Self::chain_type(),
-            "Trying to connect to endpoint...",
-        );
-
-        // Test connection and get chain ID
-        let ws_connect = WsConnect::new(&endpoint)
+    /// Connect to one request endpoint and read its chain id.
+    ///
+    /// The chain id read doubles as a liveness probe: a socket that accepts
+    /// the connection but cannot answer `eth_chainId` is not a usable
+    /// endpoint, so both steps have to pass before we keep it. Returns `None`
+    /// when this endpoint is unusable, leaving the caller free to try the
+    /// next one.
+    async fn connect_and_identify(endpoint: &str) -> Option<(PolygonProvider, u64)> {
+        let ws_connect = WsConnect::new(endpoint)
             .with_max_retries(WS_RECONNECT_MAX_RETRIES)
             .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
+
         let provider = ProviderBuilder::new()
             .connect_ws(ws_connect)
             .await
@@ -465,7 +455,7 @@ impl PolygonClient {
                     "Failed to connect to Polygon RPC endpoint"
                 );
             })
-            .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+            .ok()?;
 
         tracing::debug!(
             url = endpoint,
@@ -473,7 +463,6 @@ impl PolygonClient {
             "Connection successful"
         );
 
-        // Get chain ID for transaction signing
         let chain_id = provider
             .get_chain_id()
             .await
@@ -481,41 +470,113 @@ impl PolygonClient {
                 tracing::debug!(
                     error.category = CHAIN_CLIENT,
                     error.source = ?e,
+                    endpoint = %endpoint,
                     "Failed to get chain ID"
                 );
             })
-            .map_err(|_| ClientError::MetadataFetchFailed)?;
+            .ok()?;
 
-        let endpoint = config
-            .get_random_subscriptions_endpoint()
-            .ok_or(ClientError::InvalidConfiguration {
+        Some((provider, chain_id))
+    }
+
+    /// Create a new Polygon client from configuration
+    #[instrument(skip(config, asset_info_store))]
+    async fn from_config(
+        config: &crate::configs::ChainConfig,
+        asset_info_store: AssetInfoStore<PolygonChainConfig>,
+    ) -> Result<Self, ClientError> {
+        // Walk every configured endpoint before declaring the chain
+        // unreachable: one node restarting is an outage of that node, not of
+        // the chain, and `AllEndpointsUnreachable` has to mean what it says.
+        let request_endpoints = config.shuffled_requests_endpoints();
+
+        if request_endpoints.is_empty() {
+            return Err(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
-            })?;
+            })
+        }
 
-        // Test connection and get chain ID
-        let ws_connect = WsConnect::new(&endpoint)
-            .with_max_retries(WS_RECONNECT_MAX_RETRIES)
-            .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
-        let subscription_provider = ProviderBuilder::new()
-            .connect_ws(ws_connect)
-            .await
-            .inspect_err(|e| {
-                tracing::debug!(
+        let mut connected = None;
+
+        for endpoint in &request_endpoints {
+            tracing::debug!(
+                url = endpoint,
+                chain = %Self::chain_type(),
+                "Trying to connect to endpoint...",
+            );
+
+            match Self::connect_and_identify(endpoint).await {
+                Some(provider_and_chain_id) => {
+                    connected = Some(provider_and_chain_id);
+                    break
+                },
+                None => continue,
+            }
+        }
+
+        let (provider, chain_id) = connected.ok_or_else(|| {
+            tracing::warn!(
+                error.category = CHAIN_CLIENT,
+                error.operation = "connect_client",
+                chain = %Self::chain_type(),
+                tried_endpoints = request_endpoints.len(),
+                "Every configured Polygon RPC endpoint is unreachable"
+            );
+
+            ClientError::AllEndpointsUnreachable
+        })?;
+
+        let subscription_endpoints = config.shuffled_subscriptions_endpoints();
+
+        if subscription_endpoints.is_empty() {
+            return Err(ClientError::InvalidConfiguration {
+                field: "endpoints".to_string(),
+            })
+        }
+
+        let mut subscription_provider = None;
+
+        for endpoint in &subscription_endpoints {
+            let ws_connect = WsConnect::new(endpoint)
+                .with_max_retries(WS_RECONNECT_MAX_RETRIES)
+                .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
+
+            match ProviderBuilder::new()
+                .connect_ws(ws_connect)
+                .await
+            {
+                Ok(provider) => {
+                    tracing::info!(
+                        chain_id = chain_id,
+                        endpoint = %endpoint,
+                        "Connected to Polygon network"
+                    );
+
+                    subscription_provider = Some(provider);
+                    break
+                },
+                Err(e) => tracing::debug!(
                     error.category = CHAIN_CLIENT,
                     error.operation = "connect_client",
                     error.source = ?e,
                     endpoint = %endpoint,
                     chain = %Self::chain_type(),
                     "Failed to connect to Polygon RPC endpoint"
-                );
-            })
-            .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+                ),
+            }
+        }
 
-        tracing::info!(
-            chain_id = chain_id,
-            endpoint = %endpoint,
-            "Connected to Polygon network"
-        );
+        let subscription_provider = subscription_provider.ok_or_else(|| {
+            tracing::warn!(
+                error.category = CHAIN_CLIENT,
+                error.operation = "connect_client",
+                chain = %Self::chain_type(),
+                tried_endpoints = subscription_endpoints.len(),
+                "Every configured Polygon subscription endpoint is unreachable"
+            );
+
+            ClientError::AllEndpointsUnreachable
+        })?;
 
         Ok(Self {
             config: config.clone(),

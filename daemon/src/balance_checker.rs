@@ -47,8 +47,10 @@ pub struct BalanceChecker<
 > {
     dao: D,
     registry: InvoiceRegistry,
-    asset_hub_client: AH,
-    polygon_client: PG,
+    /// `None` when the chain's client did not come up at startup. See the
+    /// degraded-chain section of [`docs/architecture.md`].
+    asset_hub_client: Option<AH>,
+    polygon_client: Option<PG>,
     etherscan_client: EtherscanClient,
     transactions_recorder: TransactionsRecorder<D>,
 }
@@ -62,8 +64,8 @@ impl<
     pub fn new(
         dao: D,
         registry: InvoiceRegistry,
-        asset_hub_client: AH,
-        polygon_client: PG,
+        asset_hub_client: Option<AH>,
+        polygon_client: Option<PG>,
         etherscan_client: EtherscanClient,
         transactions_recorder: TransactionsRecorder<D>,
     ) -> Self {
@@ -99,9 +101,27 @@ impl<
             BalanceCheckerError::FetchBalanceFailed
         };
 
+        // A chain whose client did not come up at startup has no balances to
+        // report for the rest of this run. Both callers already treat a failed
+        // fetch as "leave the invoice alone and look again later", which is
+        // the right thing to do here too, so this needs no variant of its own
+        // — only a log line that says which of the two it was.
+        let unavailable = || {
+            tracing::warn!(
+                error.category = category::BALANCE_CHECKER,
+                error.operation = operation::FETCH_BALANCE,
+                %chain,
+                "Balance fetch skipped: this chain's client is unavailable for the lifetime of this daemon run"
+            );
+
+            BalanceCheckerError::FetchBalanceFailed
+        };
+
         match chain {
             ChainType::PolkadotAssetHub => {
                 self.asset_hub_client
+                    .as_ref()
+                    .ok_or_else(unavailable)?
                     .fetch_asset_balance(
                         asset_id
                             .parse()
@@ -114,6 +134,8 @@ impl<
             },
             ChainType::Polygon => {
                 self.polygon_client
+                    .as_ref()
+                    .ok_or_else(unavailable)?
                     .fetch_asset_balance(
                         asset_id
                             .parse()
@@ -474,8 +496,10 @@ mod tests {
         BalanceChecker::new(
             MockDaoInterface::default(),
             InvoiceRegistry::new(),
-            MockBlockChainClient::<AssetHubChainConfig>::default(),
-            MockBlockChainClient::<PolygonChainConfig>::default(),
+            Some(MockBlockChainClient::<
+                AssetHubChainConfig,
+            >::default()),
+            Some(MockBlockChainClient::<PolygonChainConfig>::default()),
             EtherscanClient::new(EtherscanClientConfig {
                 requests_per_second: NonZeroU32::MIN,
                 api_key: String::new().into(),
@@ -521,6 +545,54 @@ mod tests {
         }
     }
 
+    /// A chain that never came up has no balance to report for the rest of the
+    /// run, and must not be asked. The chain that did come up answers as
+    /// usual — one missing client degrades one chain, not the checker.
+    #[tokio::test]
+    async fn an_unavailable_chain_reports_no_balance_without_calling_rpc() {
+        let mut asset_hub_client = MockBlockChainClient::<AssetHubChainConfig>::default();
+
+        asset_hub_client
+            .expect_fetch_asset_balance()
+            .once()
+            .returning(|_, _| Ok(Decimal::TEN));
+
+        let checker = BalanceChecker::new(
+            MockDaoInterface::default(),
+            InvoiceRegistry::new(),
+            Some(asset_hub_client),
+            None::<MockBlockChainClient<PolygonChainConfig>>,
+            EtherscanClient::new(EtherscanClientConfig {
+                requests_per_second: NonZeroU32::MIN,
+                api_key: String::new().into(),
+            }),
+            TransactionsRecorder::<MockDaoInterface>::default(),
+        );
+
+        assert!(matches!(
+            checker
+                .get_account_balance(
+                    ChainType::Polygon,
+                    "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+                    "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7",
+                )
+                .await,
+            Err(BalanceCheckerError::FetchBalanceFailed)
+        ));
+
+        assert_eq!(
+            checker
+                .get_account_balance(
+                    ChainType::PolkadotAssetHub,
+                    "1337",
+                    "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty",
+                )
+                .await
+                .expect("the available chain still answers"),
+            Decimal::TEN
+        );
+    }
+
     #[tokio::test]
     async fn asset_hub_reconciliation_observes_transfer_committed_after_balance_fetch() {
         let mut stale_invoice = default_invoice().with_amount(Decimal::ZERO);
@@ -563,8 +635,10 @@ mod tests {
         let checker = BalanceChecker::new(
             dao,
             InvoiceRegistry::new(),
-            MockBlockChainClient::<AssetHubChainConfig>::default(),
-            MockBlockChainClient::<PolygonChainConfig>::default(),
+            Some(MockBlockChainClient::<
+                AssetHubChainConfig,
+            >::default()),
+            Some(MockBlockChainClient::<PolygonChainConfig>::default()),
             EtherscanClient::new(EtherscanClientConfig {
                 requests_per_second: NonZeroU32::MIN,
                 api_key: String::new().into(),
@@ -651,8 +725,10 @@ mod tests {
         let checker = BalanceChecker::new(
             dao,
             InvoiceRegistry::new(),
-            MockBlockChainClient::<AssetHubChainConfig>::default(),
-            MockBlockChainClient::<PolygonChainConfig>::default(),
+            Some(MockBlockChainClient::<
+                AssetHubChainConfig,
+            >::default()),
+            Some(MockBlockChainClient::<PolygonChainConfig>::default()),
             EtherscanClient::new(EtherscanClientConfig {
                 requests_per_second: NonZeroU32::MIN,
                 api_key: String::new().into(),
