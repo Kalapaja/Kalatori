@@ -127,6 +127,34 @@ impl crate::api::ApiErrorExt for DaoPayoutError {
 }
 
 pub trait DaoPayoutMethods: DaoExecutor + 'static {
+    /// Reset payouts left claimed by a previous daemon process.
+    ///
+    /// This recovery is safe only while a single daemon instance owns the
+    /// database. A concurrent instance could have live `InProgress` work reset.
+    async fn recover_in_progress_payouts(&self) -> Result<usize, DaoPayoutError> {
+        let query = sqlx::query_as::<_, (Uuid,)>(
+            "UPDATE payouts
+            SET status = 'FailedRetriable',
+                next_retry_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE status = 'InProgress'
+            RETURNING id",
+        );
+
+        self.fetch_all::<_, (Uuid,)>(query)
+            .await
+            .map(|rows| rows.len())
+            .map_err(|e| {
+                tracing::debug!(
+                    error.category = "dao.payout",
+                    error.operation = "recover_in_progress_payouts",
+                    error.source = ?e,
+                    "Failed to recover in-progress payouts"
+                );
+                DaoPayoutError::DatabaseError
+            })
+    }
+
     async fn create_payout(
         &self,
         payout: Payout,
@@ -635,6 +663,88 @@ mod tests {
         assert_eq!(
             pending_all[1].status,
             PayoutStatus::InProgress
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recover_in_progress_payouts() {
+        let dao = create_test_dao().await;
+        let invoice = dao
+            .create_invoice(default_create_invoice_data())
+            .await
+            .unwrap();
+
+        let mut in_progress = default_payout(invoice.id);
+        in_progress.status = PayoutStatus::InProgress;
+        in_progress.updated_at = Utc::now() - chrono::Duration::hours(1);
+        let in_progress = dao
+            .create_payout(in_progress)
+            .await
+            .unwrap();
+
+        let waiting = dao
+            .create_payout(default_payout(invoice.id))
+            .await
+            .unwrap();
+
+        let mut completed = default_payout(invoice.id);
+        completed.status = PayoutStatus::Completed;
+        let completed = dao
+            .create_payout(completed)
+            .await
+            .unwrap();
+
+        let mut failed = default_payout(invoice.id);
+        failed.status = PayoutStatus::Failed;
+        let failed = dao.create_payout(failed).await.unwrap();
+
+        assert_eq!(
+            dao.recover_in_progress_payouts()
+                .await
+                .unwrap(),
+            1
+        );
+
+        let all = dao.get_all_payouts().await.unwrap();
+        let recovered = all
+            .iter()
+            .find(|payout| payout.id == in_progress.id)
+            .unwrap();
+        assert_eq!(
+            recovered.status,
+            PayoutStatus::FailedRetriable
+        );
+        assert!(
+            recovered
+                .retry_meta
+                .next_retry_at
+                .is_some()
+        );
+        assert!(recovered.updated_at > in_progress.updated_at);
+        assert_eq!(
+            all.iter()
+                .find(|payout| payout.id == waiting.id),
+            Some(&waiting)
+        );
+        assert_eq!(
+            all.iter()
+                .find(|payout| payout.id == completed.id),
+            Some(&completed)
+        );
+        assert_eq!(
+            all.iter()
+                .find(|payout| payout.id == failed.id),
+            Some(&failed)
+        );
+
+        let pending = dao
+            .get_pending_payouts(10)
+            .await
+            .unwrap();
+        assert!(
+            pending
+                .iter()
+                .any(|payout| payout.id == in_progress.id)
         );
     }
 

@@ -469,6 +469,13 @@ impl<D: DaoInterface> AppState<D> {
     }
 
     #[tracing::instrument(skip_all)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "admin payout initiation is deferred until follow-up work defines the correct amount semantics"
+        )
+    )]
     pub async fn initiate_payout(
         &self,
         invoice_id: Uuid,
