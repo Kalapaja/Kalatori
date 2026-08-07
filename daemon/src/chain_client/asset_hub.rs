@@ -229,37 +229,97 @@ impl AssetHubClient {
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<AssetHubChainConfig>,
     ) -> Result<Self, ClientError> {
+        Self::from_config_with_timeout(
+            config,
+            asset_info_store,
+            super::ENDPOINT_CONNECT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// The endpoint walk, with the per-attempt budget as a parameter.
+    ///
+    /// Only the timeout is injected, and only so a test can drive the
+    /// give-up path against a peer that stalls mid-handshake without waiting
+    /// out the production budget. Everything else — endpoint selection, the
+    /// loop, the give-up condition — is the real code path, exercised against
+    /// real sockets.
+    async fn from_config_with_timeout(
+        config: &crate::configs::ChainConfig,
+        asset_info_store: AssetInfoStore<AssetHubChainConfig>,
+        connect_timeout: std::time::Duration,
+    ) -> Result<Self, ClientError> {
         // TODO: implement circuit breaker for endpoints
         // (should be another wrapper structure with endpoints hidden behind sync
         // primitives with error counters and usage timeouts)
-        let endpoint = config
-            .get_random_requests_endpoint()
-            .ok_or(ClientError::InvalidConfiguration {
+        let endpoints = config.shuffled_requests_endpoints();
+
+        if endpoints.is_empty() {
+            return Err(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
-            })?;
-
-        tracing::debug!(
-            url = endpoint,
-            chain = %Self::chain_type(),
-            "Trying to connect to endpoint...",
-        );
-
-        let client = if config.allow_insecure_endpoints {
-            SubxtAssetHubClient::from_insecure_url(&endpoint).await
-        } else {
-            SubxtAssetHubClient::from_url(&endpoint).await
+            })
         }
-        .inspect_err(|e| {
+
+        // Walk every configured endpoint before declaring the chain
+        // unreachable: one node restarting is an outage of that node, not of
+        // the chain, and `AllEndpointsUnreachable` has to mean what it says.
+        let mut client = None;
+
+        for endpoint in &endpoints {
             tracing::debug!(
+                url = endpoint,
+                chain = %Self::chain_type(),
+                "Trying to connect to endpoint...",
+            );
+
+            // jsonrpsee's own 10s budget covers `TcpStream::connect` and
+            // nothing else, so a peer that completes the TCP handshake and
+            // then stalls the TLS or WebSocket upgrade would hang here and
+            // never let the loop reach the remaining endpoints.
+            let connected = tokio::time::timeout(connect_timeout, async {
+                if config.allow_insecure_endpoints {
+                    SubxtAssetHubClient::from_insecure_url(endpoint).await
+                } else {
+                    SubxtAssetHubClient::from_url(endpoint).await
+                }
+            })
+            .await;
+
+            match connected {
+                Ok(Ok(connected)) => {
+                    client = Some(connected);
+                    break
+                },
+                Ok(Err(e)) => tracing::debug!(
+                    error.category = crate::utils::logging::category::CHAIN_CLIENT,
+                    error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
+                    error.source = ?e,
+                    chain = %Self::chain_type(),
+                    endpoint = %endpoint,
+                    "Failed to connect to Asset Hub RPC endpoint"
+                ),
+                Err(_elapsed) => tracing::warn!(
+                    error.category = crate::utils::logging::category::CHAIN_CLIENT,
+                    error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
+                    chain = %Self::chain_type(),
+                    endpoint = %endpoint,
+                    timeout_seconds = connect_timeout.as_secs(),
+                    "Asset Hub RPC endpoint did not finish connecting in time, moving on"
+                ),
+            }
+        }
+
+        let client = client.ok_or_else(|| {
+            tracing::warn!(
                 error.category = crate::utils::logging::category::CHAIN_CLIENT,
                 error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
-                error.source = ?e,
                 chain = %Self::chain_type(),
-                endpoint = %endpoint,
-                "Failed to connect to Asset Hub RPC endpoint"
+                tried_endpoints = endpoints.len(),
+                "Every configured Asset Hub RPC endpoint is unreachable"
             );
-        })
-        .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+
+            ClientError::AllEndpointsUnreachable
+        })?;
 
         Ok(AssetHubClient {
             config: config.clone(),
@@ -1008,5 +1068,128 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
             #[expect(clippy::cast_sign_loss)]
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         })
+    }
+}
+
+#[cfg(test)]
+mod endpoint_loop_tests {
+    use std::time::Duration;
+
+    use crate::configs::{
+        ChainConfig as ChainEndpointsConfig,
+        ChainEndpoint,
+        EndpointAllowedOperation,
+    };
+
+    use super::*;
+
+    /// A bound-but-never-accepted port. The OS completes the TCP handshake from
+    /// the backlog, so the peer looks alive and then stalls mid-handshake —
+    /// the case neither jsonrpsee's connect budget nor alloy's retry budget
+    /// covers, and the one `ENDPOINT_CONNECT_TIMEOUT` exists for. The listener
+    /// is returned so the caller keeps the port bound for the test's duration.
+    fn stalling_endpoint() -> (std::net::TcpListener, String) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        (
+            listener,
+            format!("ws://127.0.0.1:{port}"),
+        )
+    }
+
+    fn config(urls: &[&str]) -> ChainEndpointsConfig {
+        ChainEndpointsConfig {
+            endpoints: urls
+                .iter()
+                .map(|url| ChainEndpoint::Universal((*url).to_string()))
+                .collect(),
+            allow_insecure_endpoints: true,
+            ..ChainEndpointsConfig::default()
+        }
+    }
+
+    /// The failover loop against real sockets: two closed ports must both be
+    /// tried, and the result must be `AllEndpointsUnreachable` rather than a
+    /// hang. Before the endpoint walk landed, one unlucky pick decided this.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn every_endpoint_is_tried_before_the_chain_is_called_unreachable() {
+        // Port 1 and 2 are privileged and never bound by a normal process, so
+        // both refuse immediately and deterministically.
+        let result = AssetHubClient::from_config(
+            &config(&["ws://127.0.0.1:1", "ws://127.0.0.1:2"]),
+            AssetInfoStore::new(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ClientError::AllEndpointsUnreachable)
+        ));
+        // The verdict alone does not prove the walk happened — returning it
+        // after trying nothing would look identical. Both endpoints have to
+        // appear in the attempt log.
+        assert!(logs_contain("127.0.0.1:1"));
+        assert!(logs_contain("127.0.0.1:2"));
+    }
+
+    /// No endpoint at all is a configuration error, not an outage: retrying
+    /// will never fix it, so it must not be reported as unreachable.
+    #[tokio::test]
+    async fn an_empty_endpoint_list_is_a_configuration_error() {
+        let result = AssetHubClient::from_config(&config(&[]), AssetInfoStore::new()).await;
+
+        assert!(matches!(
+            result,
+            Err(ClientError::InvalidConfiguration { field }) if field == "endpoints"
+        ));
+    }
+
+    /// An endpoint list that exists but allows only subscriptions leaves the
+    /// request connect with nothing to try — also configuration, not outage.
+    #[tokio::test]
+    async fn endpoints_that_forbid_requests_are_a_configuration_error() {
+        let chain_config = ChainEndpointsConfig {
+            endpoints: vec![ChainEndpoint::Specific {
+                url: "ws://127.0.0.1:1".to_string(),
+                operations: vec![EndpointAllowedOperation::Subscriptions],
+            }],
+            allow_insecure_endpoints: true,
+            ..ChainEndpointsConfig::default()
+        };
+
+        let result = AssetHubClient::from_config(&chain_config, AssetInfoStore::new()).await;
+
+        assert!(matches!(
+            result,
+            Err(ClientError::InvalidConfiguration { field }) if field == "endpoints"
+        ));
+    }
+
+    /// A peer that accepts and then goes mute must not hold startup open. This
+    /// is the half-open case: without our own budget the connect hangs
+    /// indefinitely and the loop never reaches the remaining endpoints.
+    #[tokio::test]
+    async fn a_stalled_handshake_gives_up_and_moves_on() {
+        let (_first, first_url) = stalling_endpoint();
+        let (_second, second_url) = stalling_endpoint();
+
+        let started = tokio::time::Instant::now();
+        let result = AssetHubClient::from_config_with_timeout(
+            &config(&[&first_url, &second_url]),
+            AssetInfoStore::new(),
+            Duration::from_millis(150),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ClientError::AllEndpointsUnreachable)
+        ));
+        // Both endpoints were waited on and both gave up: at least two budgets
+        // elapsed, and the whole walk stayed bounded rather than hanging.
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }

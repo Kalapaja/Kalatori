@@ -55,6 +55,7 @@ use super::{
     ChainConfig,
     ChainTransfer,
     ClientError,
+    ENDPOINT_CONNECT_TIMEOUT,
     GeneralTransactionId,
     KeyringClient,
     QueryError,
@@ -180,6 +181,13 @@ impl ConfirmationBuffer {
 /// comfortably inside `WS_MESSAGES_TIMEOUT_DURATION`, so alloy gives up while
 /// our own supervision is still waiting rather than after it has given up.
 /// `ws_reconnect_budget_stays_within_our_own_timeout` pins that relationship.
+///
+/// **This budget bounds reconnects only.** Verified against alloy 2.1.1:
+/// `alloy-pubsub`'s initial `connect` is a single attempt, and these two
+/// numbers are merely stored on the returned handle for
+/// `reconnect_with_retries` to consume once a connection already exists. The
+/// initial connect is bounded by `ENDPOINT_CONNECT_TIMEOUT` instead — do not
+/// read the 6s figure as a startup cost.
 const WS_RECONNECT_MAX_RETRIES: u32 = 3;
 const WS_RECONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -430,92 +438,207 @@ pub struct PolygonClient {
 }
 
 impl PolygonClient {
+    /// Connect to one request endpoint and read its chain id.
+    ///
+    /// The chain id read doubles as a liveness probe: a socket that accepts
+    /// the connection but cannot answer `eth_chainId` is not a usable
+    /// endpoint, so both steps have to pass before we keep it. Returns `None`
+    /// when this endpoint is unusable, leaving the caller free to try the
+    /// next one.
+    async fn connect_and_identify(
+        endpoint: &str,
+        connect_timeout: Duration,
+    ) -> Option<(PolygonProvider, u64)> {
+        // One budget covers the connect and the probe together: both are
+        // unbounded on their own — alloy's retry budget applies to reconnects
+        // of an established socket, not to this first connect, and the RPC
+        // client sets no request timeout — so either could hang the endpoint
+        // loop before it reaches the remaining endpoints.
+        let connected = tokio::time::timeout(connect_timeout, async {
+            let provider = Self::connect_provider(endpoint).await?;
+
+            tracing::debug!(
+                url = endpoint,
+                chain = %Self::chain_type(),
+                "Connection successful"
+            );
+
+            let chain_id = provider
+                .get_chain_id()
+                .await
+                .inspect_err(|e| {
+                    tracing::debug!(
+                        error.category = CHAIN_CLIENT,
+                        error.source = ?e,
+                        endpoint = %endpoint,
+                        "Failed to get chain ID"
+                    );
+                })
+                .ok()?;
+
+            Some((provider, chain_id))
+        })
+        .await;
+
+        match connected {
+            Ok(connected) => connected,
+            Err(_elapsed) => {
+                Self::warn_connect_timed_out(endpoint, connect_timeout);
+
+                None
+            },
+        }
+    }
+
+    /// Open one WebSocket provider. `Ok` from alloy means the full TCP, TLS
+    /// and WebSocket handshake completed, so a returned provider is a live
+    /// endpoint rather than a lazily-connecting handle.
+    async fn connect_provider(endpoint: &str) -> Option<PolygonProvider> {
+        let ws_connect = WsConnect::new(endpoint)
+            .with_max_retries(WS_RECONNECT_MAX_RETRIES)
+            .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
+
+        ProviderBuilder::new()
+            .connect_ws(ws_connect)
+            .await
+            .inspect_err(|e| {
+                tracing::debug!(
+                    error.category = CHAIN_CLIENT,
+                    error.operation = "connect_client",
+                    error.source = ?e,
+                    endpoint = %endpoint,
+                    chain = %Self::chain_type(),
+                    "Failed to connect to Polygon RPC endpoint"
+                );
+            })
+            .ok()
+    }
+
+    fn warn_connect_timed_out(
+        endpoint: &str,
+        connect_timeout: Duration,
+    ) {
+        tracing::warn!(
+            error.category = CHAIN_CLIENT,
+            error.operation = "connect_client",
+            chain = %Self::chain_type(),
+            endpoint = %endpoint,
+            timeout_seconds = connect_timeout.as_secs(),
+            "Polygon RPC endpoint did not finish connecting in time, moving on"
+        );
+    }
+
     /// Create a new Polygon client from configuration
     #[instrument(skip(config, asset_info_store))]
     async fn from_config(
         config: &crate::configs::ChainConfig,
         asset_info_store: AssetInfoStore<PolygonChainConfig>,
     ) -> Result<Self, ClientError> {
-        let endpoint = config
-            .get_random_requests_endpoint()
-            .ok_or(ClientError::InvalidConfiguration {
+        Self::from_config_with_timeout(
+            config,
+            asset_info_store,
+            ENDPOINT_CONNECT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// The endpoint walk, with the per-attempt budget as a parameter.
+    ///
+    /// Only the timeout is injected, and only so a test can drive the give-up
+    /// path against a peer that stalls mid-handshake without waiting out the
+    /// production budget. Everything else — endpoint selection, both loops,
+    /// the give-up conditions — is the real code path, exercised against real
+    /// sockets.
+    async fn from_config_with_timeout(
+        config: &crate::configs::ChainConfig,
+        asset_info_store: AssetInfoStore<PolygonChainConfig>,
+        connect_timeout: Duration,
+    ) -> Result<Self, ClientError> {
+        // Walk every configured endpoint before declaring the chain
+        // unreachable: one node restarting is an outage of that node, not of
+        // the chain, and `AllEndpointsUnreachable` has to mean what it says.
+        let request_endpoints = config.shuffled_requests_endpoints();
+
+        if request_endpoints.is_empty() {
+            return Err(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
-            })?;
-
-        tracing::debug!(
-            url = endpoint,
-            chain = %Self::chain_type(),
-            "Trying to connect to endpoint...",
-        );
-
-        // Test connection and get chain ID
-        let ws_connect = WsConnect::new(&endpoint)
-            .with_max_retries(WS_RECONNECT_MAX_RETRIES)
-            .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
-        let provider = ProviderBuilder::new()
-            .connect_ws(ws_connect)
-            .await
-            .inspect_err(|e| {
-                tracing::debug!(
-                    error.category = CHAIN_CLIENT,
-                    error.operation = "connect_client",
-                    error.source = ?e,
-                    endpoint = %endpoint,
-                    chain = %Self::chain_type(),
-                    "Failed to connect to Polygon RPC endpoint"
-                );
             })
-            .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+        }
 
-        tracing::debug!(
-            url = endpoint,
-            chain = %Self::chain_type(),
-            "Connection successful"
-        );
+        let mut connected = None;
 
-        // Get chain ID for transaction signing
-        let chain_id = provider
-            .get_chain_id()
-            .await
-            .inspect_err(|e| {
-                tracing::debug!(
-                    error.category = CHAIN_CLIENT,
-                    error.source = ?e,
-                    "Failed to get chain ID"
-                );
-            })
-            .map_err(|_| ClientError::MetadataFetchFailed)?;
+        for endpoint in &request_endpoints {
+            tracing::debug!(
+                url = endpoint,
+                chain = %Self::chain_type(),
+                "Trying to connect to endpoint...",
+            );
 
-        let endpoint = config
-            .get_random_subscriptions_endpoint()
-            .ok_or(ClientError::InvalidConfiguration {
+            match Self::connect_and_identify(endpoint, connect_timeout).await {
+                Some(provider_and_chain_id) => {
+                    connected = Some(provider_and_chain_id);
+                    break
+                },
+                None => continue,
+            }
+        }
+
+        let (provider, chain_id) = connected.ok_or_else(|| {
+            tracing::warn!(
+                error.category = CHAIN_CLIENT,
+                error.operation = "connect_client",
+                chain = %Self::chain_type(),
+                tried_endpoints = request_endpoints.len(),
+                "Every configured Polygon RPC endpoint is unreachable"
+            );
+
+            ClientError::AllEndpointsUnreachable
+        })?;
+
+        let subscription_endpoints = config.shuffled_subscriptions_endpoints();
+
+        if subscription_endpoints.is_empty() {
+            return Err(ClientError::InvalidConfiguration {
                 field: "endpoints".to_string(),
-            })?;
-
-        // Test connection and get chain ID
-        let ws_connect = WsConnect::new(&endpoint)
-            .with_max_retries(WS_RECONNECT_MAX_RETRIES)
-            .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
-        let subscription_provider = ProviderBuilder::new()
-            .connect_ws(ws_connect)
-            .await
-            .inspect_err(|e| {
-                tracing::debug!(
-                    error.category = CHAIN_CLIENT,
-                    error.operation = "connect_client",
-                    error.source = ?e,
-                    endpoint = %endpoint,
-                    chain = %Self::chain_type(),
-                    "Failed to connect to Polygon RPC endpoint"
-                );
             })
-            .map_err(|_| ClientError::AllEndpointsUnreachable)?;
+        }
 
-        tracing::info!(
-            chain_id = chain_id,
-            endpoint = %endpoint,
-            "Connected to Polygon network"
-        );
+        let mut subscription_provider = None;
+
+        for endpoint in &subscription_endpoints {
+            match tokio::time::timeout(
+                connect_timeout,
+                Self::connect_provider(endpoint),
+            )
+            .await
+            {
+                Ok(Some(provider)) => {
+                    tracing::info!(
+                        chain_id = chain_id,
+                        endpoint = %endpoint,
+                        "Connected to Polygon network"
+                    );
+
+                    subscription_provider = Some(provider);
+                    break
+                },
+                // `connect_provider` already logged why.
+                Ok(None) => {},
+                Err(_elapsed) => Self::warn_connect_timed_out(endpoint, connect_timeout),
+            }
+        }
+
+        let subscription_provider = subscription_provider.ok_or_else(|| {
+            tracing::warn!(
+                error.category = CHAIN_CLIENT,
+                error.operation = "connect_client",
+                chain = %Self::chain_type(),
+                tried_endpoints = subscription_endpoints.len(),
+                "Every configured Polygon subscription endpoint is unreachable"
+            );
+
+            ClientError::AllEndpointsUnreachable
+        })?;
 
         Ok(Self {
             config: config.clone(),
@@ -1710,5 +1833,120 @@ mod tests {
             "alloy would still be retrying after {worst_case:?}, past our own \
              {WS_MESSAGES_TIMEOUT_DURATION:?} timeout, blocking endpoint rotation",
         );
+    }
+}
+
+#[cfg(test)]
+mod endpoint_loop_tests {
+    use crate::configs::{
+        ChainConfig as ChainEndpointsConfig,
+        ChainEndpoint,
+        EndpointAllowedOperation,
+    };
+
+    use super::*;
+
+    /// See the twin module in `asset_hub.rs`: a bound-but-never-accepted port
+    /// completes the TCP handshake from the backlog and then goes mute, which
+    /// is the half-open case alloy's retry budget does not cover — it governs
+    /// reconnects of an established socket, not the initial connect.
+    fn stalling_endpoint() -> (std::net::TcpListener, String) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        (
+            listener,
+            format!("ws://127.0.0.1:{port}"),
+        )
+    }
+
+    fn config(urls: &[&str]) -> ChainEndpointsConfig {
+        ChainEndpointsConfig {
+            endpoints: urls
+                .iter()
+                .map(|url| ChainEndpoint::Universal((*url).to_string()))
+                .collect(),
+            allow_insecure_endpoints: true,
+            ..ChainEndpointsConfig::default()
+        }
+    }
+
+    /// Port 1 and 2 are privileged and never bound by a normal process, so both
+    /// refuse immediately: the walk covers every endpoint and reports the chain
+    /// unreachable rather than letting one unlucky pick decide.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn every_endpoint_is_tried_before_the_chain_is_called_unreachable() {
+        let result = PolygonClient::from_config(
+            &config(&["ws://127.0.0.1:1", "ws://127.0.0.1:2"]),
+            AssetInfoStore::new(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ClientError::AllEndpointsUnreachable)
+        ));
+        // The verdict alone does not prove the walk happened — returning it
+        // after trying nothing would look identical. Both endpoints have to
+        // appear in the attempt log.
+        assert!(logs_contain("127.0.0.1:1"));
+        assert!(logs_contain("127.0.0.1:2"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_endpoint_list_is_a_configuration_error() {
+        let result = PolygonClient::from_config(&config(&[]), AssetInfoStore::new()).await;
+
+        assert!(matches!(
+            result,
+            Err(ClientError::InvalidConfiguration { field }) if field == "endpoints"
+        ));
+    }
+
+    /// Polygon connects twice — request providers then subscription providers.
+    /// An endpoint list that allows only subscriptions leaves the request phase
+    /// with nothing to try, which is configuration rather than an outage.
+    #[tokio::test]
+    async fn endpoints_that_forbid_requests_are_a_configuration_error() {
+        let chain_config = ChainEndpointsConfig {
+            endpoints: vec![ChainEndpoint::Specific {
+                url: "ws://127.0.0.1:1".to_string(),
+                operations: vec![EndpointAllowedOperation::Subscriptions],
+            }],
+            allow_insecure_endpoints: true,
+            ..ChainEndpointsConfig::default()
+        };
+
+        let result = PolygonClient::from_config(&chain_config, AssetInfoStore::new()).await;
+
+        assert!(matches!(
+            result,
+            Err(ClientError::InvalidConfiguration { field }) if field == "endpoints"
+        ));
+    }
+
+    /// A peer that accepts and then goes mute must not hold startup open.
+    #[tokio::test]
+    async fn a_stalled_handshake_gives_up_and_moves_on() {
+        let (_first, first_url) = stalling_endpoint();
+        let (_second, second_url) = stalling_endpoint();
+
+        let started = tokio::time::Instant::now();
+        let result = PolygonClient::from_config_with_timeout(
+            &config(&[&first_url, &second_url]),
+            AssetInfoStore::new(),
+            Duration::from_millis(150),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ClientError::AllEndpointsUnreachable)
+        ));
+        // Both endpoints were waited on and both gave up, and the walk stayed
+        // bounded rather than hanging on the first mute peer.
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }
