@@ -35,6 +35,12 @@ Axum server with four namespaces:
 - `/public` — Publicly accessible, no auth, sanitized responses
 - `/private` — HMAC-authenticated merchant endpoints
 - `/internal` — Internal operations
+- `/admin` — OAuth-session authenticated admin UI and API. Owner-only routes are
+  `/api/integration-settings` and `/api/get-plugin`, because both disclose the
+  merchant HMAC secret (the plugin embeds it). Read-only settings, identity,
+  invoice, payout, transaction, and swap routes are available to Owner,
+  Operator, Viewer, and Support. `/api/payout/initiate` is out of service while
+  its hardcoded amount is replaced with product-defined amount semantics.
 - `/dev` — Development/debug endpoints (feature-gated via `dev_api`)
 
 `ApiErrorExt` trait in `api.rs` provides `category()`, `code()`, `message()`, `http_status_code()` for structured error responses. Request IDs via `x-request-id` header (UUID, auto-generated).

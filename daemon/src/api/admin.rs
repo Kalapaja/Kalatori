@@ -1,19 +1,20 @@
 //! Admin namespace — protected by session middleware + CSRF middleware when
 //! auth is enabled.
 
-use axum::extract::State;
+use axum::extract::{
+    Request,
+    State,
+};
 use axum::http::StatusCode;
 use axum::response::{
     IntoResponse,
     Response,
 };
-use axum::routing::{
-    get,
-    post,
-};
+use axum::routing::get;
 use axum::{
     Extension,
     Router,
+    middleware,
 };
 use serde::{
     Deserialize,
@@ -28,6 +29,7 @@ use uuid::Uuid;
 use kalatori_client::types::ApiResultStructured;
 
 use crate::api::utils::ErrorWrapper;
+use crate::auth::errors::SessionError;
 use crate::auth::session::AuthenticatedUser;
 use crate::auth::token::Role;
 use crate::dao::{
@@ -54,10 +56,12 @@ use crate::types::{
 use super::ApiState;
 use super::utils::{
     ApiResult,
-    AppJson,
     AppQuery,
     SuccessWrapper,
 };
+
+const INTEGRATION_SETTINGS_PATH: &str = "/integration-settings";
+const GET_PLUGIN_PATH: &str = "/get-plugin";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct InvoiceIdParam {
@@ -153,25 +157,6 @@ async fn get_payout_handler(
         .ok_or(DaoPayoutError::NotFound {
             payout_id,
         })?;
-
-    Ok(payout.into())
-}
-
-// ============================================================================
-// POST /admin/payouts/initiate
-// ============================================================================
-
-#[tracing::instrument(skip_all)]
-async fn initiate_payout_handler(
-    State(state): State<ApiState>,
-    Extension(_user): Extension<AuthenticatedUser>,
-    AppJson(param): AppJson<InvoiceIdParam>,
-) -> ApiResult<Payout, DaoInvoiceError> {
-    let invoice_id = param.invoice_id;
-
-    let payout = state
-        .initiate_payout(invoice_id)
-        .await?;
 
     Ok(payout.into())
 }
@@ -290,10 +275,21 @@ async fn kalatori_integration_settings_handler(
     State(state): State<ApiState>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> SuccessWrapper<KalatoriIntegrationSettings> {
-    // TODO: restrict visibility by user's role
     state
         .get_kalatori_integration_settings()
         .into()
+}
+
+async fn require_owner(
+    Extension(user): Extension<AuthenticatedUser>,
+    request: Request,
+    next: middleware::Next,
+) -> Result<Response, ErrorWrapper<SessionError>> {
+    if user.claims.role != Role::Owner {
+        return Err(SessionError::InsufficientRole.into());
+    }
+
+    Ok(next.run(request).await)
 }
 
 #[tracing::instrument(skip_all)]
@@ -335,53 +331,51 @@ async fn get_plugin_handler(
 
 /// Admin routes.
 pub fn routes() -> Router<ApiState> {
-    Router::new()
-        .route("/api/whoami", get(whoami_handler))
+    let owner_routes = Router::new()
         .route(
-            "/api/invoice/list",
+            INTEGRATION_SETTINGS_PATH,
+            get(kalatori_integration_settings_handler),
+        )
+        .route(GET_PLUGIN_PATH, get(get_plugin_handler))
+        .route_layer(middleware::from_fn(require_owner));
+
+    let api_routes = Router::new()
+        .route("/whoami", get(whoami_handler))
+        .route(
+            "/invoice/list",
             get(list_invoices_handler),
         )
+        .route("/invoice/get", get(get_invoice_handler))
         .route(
-            "/api/invoice/get",
-            get(get_invoice_handler),
-        )
-        .route(
-            "/api/payout/list",
+            "/payout/list",
             get(list_payouts_handler),
         )
+        .route("/payout/get", get(get_payout_handler))
+        // Payout initiation is intentionally out of service: it uses a hardcoded
+        // amount, and the correct amount semantics are deferred to follow-up work.
         .route(
-            "/api/payout/get",
-            get(get_payout_handler),
-        )
-        .route(
-            "/api/payout/initiate",
-            post(initiate_payout_handler),
-        )
-        .route(
-            "/api/transaction/list",
+            "/transaction/list",
             get(list_transactions_handler),
         )
         .route(
-            "/api/transaction/get",
+            "/transaction/get",
             get(get_transaction_handler),
         )
+        .route("/swap/list", get(list_swaps_handler))
+        .route("/swap/get", get(get_swap_handler))
         .route(
-            "/api/swap/list",
-            get(list_swaps_handler),
-        )
-        .route("/api/swap/get", get(get_swap_handler))
-        .route(
-            "/api/settings",
+            "/settings",
             get(kalatori_settings_handler),
         )
-        .route(
-            "/api/integration-settings",
-            get(kalatori_integration_settings_handler),
-        )
-        .route(
-            "/api/get-plugin",
-            get(get_plugin_handler),
-        )
+        .merge(owner_routes)
+        // A nested router inherits the outer fallback unless it sets its own,
+        // so without this an unknown `/admin/api/*` path — `payout/initiate`
+        // included — would be answered with the admin SPA's index.html and a
+        // 200. An API path that does not exist must say so.
+        .fallback(|| async { StatusCode::NOT_FOUND });
+
+    Router::new()
+        .nest("/api", api_routes)
         .route_service(
             "/",
             ServeFile::new("static/admin/index.html"),
@@ -393,4 +387,148 @@ pub fn routes() -> Router<ApiState> {
             "/assets",
             ServeDir::new("static/admin/assets"),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::{
+        Body,
+        to_bytes,
+    };
+    use axum::http::Request;
+    use chrono::{
+        Duration,
+        Utc,
+    };
+    use tower::ServiceExt;
+
+    use crate::auth::token::TokenClaims;
+
+    use super::*;
+
+    const VIEWER_PATHS: &[&str] = &[
+        "/whoami",
+        "/invoice/list",
+        "/invoice/get",
+        "/payout/list",
+        "/payout/get",
+        "/transaction/list",
+        "/transaction/get",
+        "/swap/list",
+        "/swap/get",
+        "/settings",
+    ];
+
+    fn user(role: Role) -> AuthenticatedUser {
+        let now = Utc::now();
+        AuthenticatedUser {
+            claims: TokenClaims {
+                iss: "https://auth.example.com".to_string(),
+                sub: "user".to_string(),
+                email: "user@example.com".to_string(),
+                picture: None,
+                aud: "kalatori".to_string(),
+                role,
+                iat: now,
+                exp: now + Duration::hours(1),
+                raw_token: "token".to_string(),
+            },
+        }
+    }
+
+    fn authorization_test_router() -> Router {
+        let owner_routes = Router::new()
+            .route(
+                INTEGRATION_SETTINGS_PATH,
+                get(|| async { StatusCode::OK }),
+            )
+            .route(
+                GET_PLUGIN_PATH,
+                get(|| async { StatusCode::OK }),
+            )
+            .route_layer(middleware::from_fn(require_owner));
+
+        let api_routes = VIEWER_PATHS
+            .iter()
+            .fold(owner_routes, |router, path| {
+                router.route(path, get(|| async { StatusCode::OK }))
+            })
+            .fallback(|| async { StatusCode::NOT_FOUND });
+
+        // Stands in for the SPA fallback the real router carries, but with a
+        // status the API never returns. `ServeFile` would be useless here:
+        // `static/admin/` is a build artefact absent from a source checkout,
+        // so it 404s too and the assertion below could not tell a real 404
+        // from the fallback swallowing the request.
+        Router::new()
+            .nest("/api", api_routes)
+            .fallback(|| async { StatusCode::IM_A_TEAPOT })
+    }
+
+    async fn request(
+        path: &str,
+        role: Role,
+    ) -> Response {
+        authorization_test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .extension(user(role))
+                    .body(Body::empty())
+                    .expect("request uses a valid URI"),
+            )
+            .await
+            .expect("router always responds")
+    }
+
+    #[tokio::test]
+    async fn secret_routes_are_owner_only() {
+        for path in [INTEGRATION_SETTINGS_PATH, GET_PLUGIN_PATH] {
+            let path = format!("/api{path}");
+            assert_eq!(
+                request(&path, Role::Owner)
+                    .await
+                    .status(),
+                StatusCode::OK
+            );
+
+            for role in [Role::Operator, Role::Viewer, Role::Support] {
+                let response = request(&path, role).await;
+                assert_eq!(response.status(), StatusCode::FORBIDDEN);
+                let body = to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("response body collects");
+                let json: serde_json::Value =
+                    serde_json::from_slice(&body).expect("error response is JSON");
+                assert_eq!(
+                    json["error"]["code"],
+                    "INSUFFICIENT_ROLE"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn every_authenticated_role_can_reach_non_gated_admin_api_routes() {
+        for path in VIEWER_PATHS {
+            let path = format!("/api{path}");
+            for role in [Role::Owner, Role::Operator, Role::Viewer, Role::Support] {
+                assert_eq!(
+                    request(&path, role).await.status(),
+                    StatusCode::OK,
+                    "{role:?} should retain access to {path}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn payout_initiate_route_is_absent() {
+        assert_eq!(
+            request("/api/payout/initiate", Role::Owner)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
 }
