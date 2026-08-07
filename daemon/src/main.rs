@@ -293,7 +293,13 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let recovered_payouts = dao
         .recover_in_progress_payouts()
         .await
-        .map_err(|_| Error::Fatal)?;
+        .map_err(|error| {
+            tracing::error!(
+                error.source = ?error,
+                "Could not recover in-progress payouts, refusing to start"
+            );
+            Error::Fatal
+        })?;
     if recovered_payouts > 0 {
         tracing::info!(
             count = recovered_payouts,
@@ -304,7 +310,13 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     let recovered_refunds = dao
         .recover_in_progress_refunds()
         .await
-        .map_err(|_| Error::Fatal)?;
+        .map_err(|error| {
+            tracing::error!(
+                error.source = ?error,
+                "Could not recover in-progress refunds, refusing to start"
+            );
+            Error::Fatal
+        })?;
     if recovered_refunds > 0 {
         tracing::info!(
             count = recovered_refunds,

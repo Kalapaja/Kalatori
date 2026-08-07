@@ -448,11 +448,17 @@ mod tests {
             )
             .route_layer(middleware::from_fn(require_owner));
 
+        // Built the way production builds it — viewer routes first, then
+        // `.merge(owner_routes)` — rather than folding them onto the
+        // already-layered owner router. Otherwise the harness would depend on
+        // `route_layer` not reaching routes added after it, and could start
+        // gating viewer paths, or stop gating owner ones, on an axum upgrade.
         let api_routes = VIEWER_PATHS
             .iter()
-            .fold(owner_routes, |router, path| {
+            .fold(Router::new(), |router, path| {
                 router.route(path, get(|| async { StatusCode::OK }))
             })
+            .merge(owner_routes)
             .fallback(|| async { StatusCode::NOT_FOUND });
 
         // Stands in for the SPA fallback the real router carries, but with a
