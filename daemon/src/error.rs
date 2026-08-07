@@ -538,7 +538,7 @@ mod pretty_cause {
                 print_cause(
                     f,
                     another_cause,
-                    shadow_rs::formatcp!(">{OVERLOAD}"),
+                    format_args!(">{OVERLOAD}"),
                 )?;
 
                 if let Some(one_more_cause) = another_cause.source() {

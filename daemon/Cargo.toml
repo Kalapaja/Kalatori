@@ -129,7 +129,12 @@ loki-transport-roots = { package = "reqwest", version = "0.12", default-features
 config = "0.15"
 hkdf = "0.13"
 chacha20poly1305 = "0.11"
-base64 = "0.23"
+# `simd-unsafe` is default-on in 0.23 and is the crate's only `unsafe`; without
+# it base64 is `#![forbid(unsafe_code)]`. It also buys us nothing here: our
+# engine is `general_purpose::URL_SAFE_NO_PAD`, whose encode/decode are
+# unconditionally scalar — the SIMD engines are separate types we never
+# construct. `std` reproduces the 0.22 default feature set exactly.
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 pasetors = { version = "0.7", default-features = false, features = ["v4", "paserk", "std"] }
 url = "2"
 # Please keep reqwest version in sync with the one in kalatori-client
@@ -139,8 +144,6 @@ reqwest = { version = "0.13", features = ["json", "form"] }
 # See details here: https://docs.rs/rustls/latest/rustls/crypto/struct.CryptoProvider.html#using-the-per-process-default-cryptoprovider
 rustls = "0.23"
 zeroize = "1"
-# Don't forget to update me in `[build-dependencies]`!
-shadow-rs = { version = "0.36", default-features = false }
 thiserror = "2"
 trait-variant = "0.1"
 sha2 = "0.11"
@@ -157,10 +160,6 @@ httpmock = "0.8"
 indoc = "2"
 tracing-test = "0.2"
 insta = { version = "1", features = ["json", "yaml", "redactions"] }
-
-[build-dependencies]
-# Don't forget to update me in `[dependencies]`!
-shadow-rs = { version = "0.36", default-features = false }
 
 [features]
 default = []

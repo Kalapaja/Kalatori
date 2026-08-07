@@ -95,12 +95,15 @@ pub fn decrypt_state(
     }
 
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
-    let nonce = chacha20poly1305::XNonce::try_from(nonce_bytes)
+    // `Array::from_slice` is deprecated in hybrid-array and panics on a length
+    // mismatch. `TryFrom` gives the same zero-copy view without the panic.
+    let nonce: &chacha20poly1305::XNonce = nonce_bytes
+        .try_into()
         .map_err(|_| OAuthError::StateDecryptionFailed)?;
 
     let cipher = XChaCha20Poly1305::new(key.expose_secret().into());
     let plaintext = cipher
-        .decrypt(&nonce, ciphertext)
+        .decrypt(nonce, ciphertext)
         .map_err(|_| OAuthError::StateDecryptionFailed)?;
 
     String::from_utf8(plaintext).map_err(|_| OAuthError::StateDecryptionFailed)
