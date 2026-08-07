@@ -1660,6 +1660,10 @@ mod tests {
             let asset_id = 1337;
 
             let mut request: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+            // `default_payout` is a Polygon payout. Without this the request
+            // dispatches to the Polygon client left installed by test case 1
+            // and the Asset Hub path is never exercised at all.
+            request.chain = ChainType::PolkadotAssetHub;
             request.source_address = source_address.to_string();
             request
                 .destination_params
@@ -1668,6 +1672,7 @@ mod tests {
 
             asset_hub_client
                 .expect_build_transfer()
+                .once()
                 .with(
                     eq(source_address),
                     eq(destination_address),
