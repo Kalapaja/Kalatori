@@ -4,6 +4,38 @@ Decision records and behavioral notes for the swaps subsystem
 (`daemon/src/swaps/`, `daemon/src/clients/swaps/`). Not yet a full subsystem
 overview — see [architecture.md](architecture.md) for the component map.
 
+## A completed swap does not choose a refund destination (2026-08-07)
+
+`RefundDestinationDetector` used to prefer the earliest completed incoming
+swap's `from_address` when a refund carried no explicit destination. The
+reasoning was sound — a swap-routed payment arrives from a bridge or router, so
+the on-chain sender is the wrong address to refund — but nothing tied the swap
+to the payment it claimed.
+
+`/public/swap/create` and `/public/swap/submitted` are unauthenticated,
+`from_address` is whatever the caller sent, and the submission path binds a
+caller-supplied transaction hash to any swap id with no ownership check and no
+status precondition. Knowing an invoice id — payment links carry it — was
+therefore enough to register a swap pointing at an attacker's address and
+collect that invoice's refund.
+
+Swaps are still loaded, and still used to exclude their own transactions from
+the fallback, so a bridge or router address cannot become a destination either.
+But they no longer select one. An invoice paid through a swap now resolves to
+`NoAvailableDestination` and is refunded by hand.
+
+That is a deliberate trade: manual handling for swap-routed refunds, in
+exchange for removing a path that paid out on evidence nobody verified. It is
+also not the end state. Verifying settlement on the destination chain was
+attempted in [#392](https://github.com/Kalapaja/Kalatori/pull/392) and did not
+hold up — checking that *some* transfer of the right token reached the invoice's
+payment address is satisfied by the victim's own payment transaction, and by a
+zero-value transfer. Restoring automatic selection needs evidence attributable
+to the payer: the settlement transaction's sender bound to `from_address`, a
+delivered amount meeting `expected_to_amount_units`, and Across resolved through
+the `fillTxnRef` it already returns. That PR's discussion carries the full
+analysis.
+
 ## Payer signatures are validated and claimed atomically (2026-08-04)
 
 A gasless 0x quote can require two signatures — the trade and a token approval
