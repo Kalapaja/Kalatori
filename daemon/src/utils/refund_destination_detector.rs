@@ -45,6 +45,19 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
         }
     }
 
+    /// Drop transactions that a swap may have produced, so none of them can be
+    /// refunded to.
+    ///
+    /// Matching on `from_address` alone is not enough. A swap settles through a
+    /// bridge or router, so the transfer that actually lands on the payment
+    /// address comes *from that contract*, not from the payer's claimed
+    /// address — refunding there would send the money to a contract that has no
+    /// idea what to do with it. The recorded settlement hash is what identifies
+    /// that transfer.
+    ///
+    /// Both identifiers are caller-supplied and neither is trustworthy on its
+    /// own, so this excludes on either. Over-excluding costs a refund an
+    /// operator has to place by hand; under-excluding costs the money.
     fn filter_out_swap_transactions(
         &self,
         transactions: &mut Vec<Transaction>,
@@ -55,13 +68,31 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
             .map(|swap| swap.request.from_address.to_lowercase())
             .collect();
 
+        let swap_transaction_hashes: Vec<_> = swaps
+            .iter()
+            .filter_map(|swap| {
+                swap.swap_details
+                    .transaction_hash
+                    .as_ref()
+                    .map(|hash| hash.to_lowercase())
+            })
+            .collect();
+
         transactions.retain(|trans| {
-            !swaps_addresses.contains(
+            let from_swap_address = swaps_addresses.contains(
                 &trans
                     .transfer_info
                     .source_address
                     .to_lowercase(),
-            )
+            );
+
+            let is_swap_settlement = trans
+                .transaction_id
+                .tx_hash
+                .as_ref()
+                .is_some_and(|hash| swap_transaction_hashes.contains(&hash.to_lowercase()));
+
+            !from_swap_address && !is_swap_settlement
         });
     }
 
@@ -343,6 +374,40 @@ mod tests {
 
         assert_eq!(transactions.len(), 1);
         assert!(transactions.contains(&transaction_3));
+    }
+
+    #[test]
+    fn swap_settlement_is_excluded_even_when_it_arrives_from_a_router() {
+        let dao = MockDaoInterface::default();
+        let detector = RefundDestinationDetector::new(dao);
+
+        // A real swap settles through a bridge or router, so the transfer that
+        // lands on the payment address comes from the router's address, which
+        // never matches the payer's claimed `from_address`. Only the recorded
+        // settlement hash identifies it.
+        let mut swap = default_swap(Uuid::new_v4());
+        swap.request.from_address = "0xpayer".to_string();
+        swap.swap_details.transaction_hash = Some("0xSettlementHash".to_string());
+
+        let mut router_settlement = default_transaction(Uuid::new_v4());
+        router_settlement
+            .transfer_info
+            .source_address = "0xrouter".to_string();
+        router_settlement.transaction_id.tx_hash = Some("0xsettlementhash".to_string());
+
+        let mut direct_payment = default_transaction(Uuid::new_v4());
+        direct_payment
+            .transfer_info
+            .source_address = "0xsomeone".to_string();
+        direct_payment.transaction_id.tx_hash = Some("0xunrelated".to_string());
+
+        let mut transactions = vec![router_settlement, direct_payment.clone()];
+
+        detector.filter_out_swap_transactions(&mut transactions, &[swap]);
+
+        // Without hash matching the router's transfer survives and becomes the
+        // refund destination — sending the money to a contract.
+        assert_eq!(transactions, vec![direct_payment]);
     }
 
     #[tokio::test]
