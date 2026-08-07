@@ -102,13 +102,20 @@ crypto backends live in one process, Loki on ring and every payment on aws-lc.
 Nothing else in the tree calls `install_default`, which is what lets the call
 site `unwrap` its result. The comment there records the same thing.
 
-**Trust store: the operating system's, everywhere.** Two reqwest majors are in
+**Trust store: the operating system's, everywhere.** Three HTTP stacks are in
 the tree and they reach that answer differently:
 
-| Consumer | reqwest | How roots are chosen |
+| Consumer | Client | How roots are chosen |
 |---|---|---|
-| Money paths — Asset Hub, Polygon, Pimlico, Etherscan, merchant webhooks | 0.13 | `rustls` feature → `rustls-platform-verifier` → OS store |
-| Log shipping — `tracing-loki` | 0.12 | `rustls-tls` → bundled webpki roots, **plus** `rustls-tls-native-roots` enabled explicitly in `daemon/Cargo.toml` → OS store as well |
+| Money paths — Polygon, Pimlico, Etherscan, merchant webhooks | reqwest 0.13 | `rustls` feature → `rustls-platform-verifier` 0.7 → OS store |
+| Money paths — Asset Hub | `subxt` → `jsonrpsee` 0.24 | `jsonrpsee-client-transport` → `rustls-platform-verifier` **0.5** → OS store |
+| Log shipping — `tracing-loki` | reqwest 0.12 | `rustls-tls` → bundled webpki roots, **plus** `rustls-tls-native-roots` enabled explicitly in `daemon/Cargo.toml` → OS store as well |
+
+Asset Hub does not go through reqwest at all: `subxt` talks WebSocket via
+`jsonrpsee`, which carries its own `rustls-platform-verifier` at a different
+major. That is why the crate appears twice in `cargo tree --duplicates`, and it
+is upstream-bound — jsonrpsee still requires `rustls-platform-verifier ^0.5`
+even at 0.26, so the subxt 0.44 → 0.50 upgrade will not collapse the pair.
 
 reqwest 0.12's `rustls-tls` is hard-wired to the bundled `webpki-roots`, so
 without that explicit feature Loki would be the one subsystem in the daemon
