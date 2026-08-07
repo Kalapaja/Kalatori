@@ -72,8 +72,13 @@ mod_module_files = "warn"
 [profile.dev]
 debug = "line-tables-only"
 
-[profile.dev.package."*"]
-opt-level = 3
+# There is deliberately no `[profile.dev.package."*"] opt-level = 3` here. It sat
+# in the daemon manifest, where Cargo ignored it, so nothing has ever actually
+# built that way; switching it on with this move cost about nine minutes per cold
+# build — every CI run, every clean checkout — to speed up a daemon that spends
+# its time waiting on chains and a database. Nothing above depends on it, and no
+# check loses fidelity without it: `overflow-checks` and the rest of the release
+# profile below are what this move exists for.
 
 [profile.release]
 strip = true
