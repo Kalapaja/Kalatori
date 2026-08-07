@@ -45,26 +45,6 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
         }
     }
 
-    fn find_destination_in_swaps(
-        &self,
-        swaps: &[Swap],
-        same_chain: bool,
-    ) -> Option<TransferDestinationParams> {
-        for swap in swaps {
-            if (swap.request.from_chain == swap.request.to_chain) == same_chain {
-                let destination_params = TransferDestinationParams {
-                    destination_address: swap.request.from_address.clone(),
-                    destination_asset_id: swap.request.from_token_address.clone(),
-                    destination_chain: swap.request.from_chain,
-                };
-
-                return Some(destination_params)
-            }
-        }
-
-        None
-    }
-
     fn filter_out_swap_transactions(
         &self,
         transactions: &mut Vec<Transaction>,
@@ -96,10 +76,16 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
         // but from CEX hot wallet, swap pool etc. If we'll send refund to such
         // address, money might be lost. Also we suppose that user can make
         // multiple payment transaction, from different sources.
-        // The most reliable way to detect money source is our internal swap
-        // records so prefer refunding to the swap source address if found.
-        // Otherwise check incoming transactions using arkhm to detect if it's
-        // user's wallet or something else.
+        //
+        // Swaps are still loaded, but only to exclude their transactions below
+        // — a completed swap must NOT choose the destination. `/public/swap/*`
+        // is unauthenticated and a swap's `from_address` is whatever the caller
+        // sent, while nothing ties the swap to the payment it claims: knowing an
+        // invoice id (payment links carry it) was enough to register a swap
+        // pointing at an attacker's address and collect the refund. Until
+        // settlement can be independently attributed to the payer, an invoice
+        // paid through a swap resolves to no destination and is refunded by
+        // hand. See https://github.com/Kalapaja/Kalatori/pull/392.
         let swaps = self
             .dao
             .get_completed_incoming_swaps_by_invoice(refund.invoice_id)
@@ -113,11 +99,13 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
                 RefundDestinationDetectorError::DatabaseError
             })?;
 
-        if let Some(params) = self.find_destination_in_swaps(&swaps, true) {
-            return Ok(params)
+        if !swaps.is_empty() {
+            tracing::info!(
+                invoice_id = %refund.invoice_id,
+                swap_count = swaps.len(),
+                "Invoice has completed incoming swaps, which are not trusted to choose a refund destination"
+            );
         }
-
-        // TODO: add search for cross-chain swap when it will be supported
 
         let mut transactions = self
             .dao
@@ -322,72 +310,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_find_destination_in_swaps() {
-        let dao = MockDaoInterface::default();
-        let detector = RefundDestinationDetector::new(dao);
-
-        let mut swap_1 = default_swap(Uuid::new_v4());
-        swap_1.request.from_chain = SwapChainType::Polygon;
-        swap_1.request.to_chain = SwapChainType::Polygon;
-        swap_1.request.from_token_address = "swap1_address".to_string();
-
-        let swap_1_destination = TransferDestinationParams {
-            destination_address: swap_1.request.from_address.clone(),
-            destination_chain: swap_1.request.from_chain,
-            destination_asset_id: swap_1
-                .request
-                .from_token_address
-                .clone(),
-        };
-
-        let mut swap_2 = default_swap(Uuid::new_v4());
-        swap_2.request.from_chain = SwapChainType::Polygon;
-        swap_2.request.to_chain = SwapChainType::Polygon;
-        swap_2.request.from_token_address = "swap2_address".to_string();
-
-        let swap_2_destination = TransferDestinationParams {
-            destination_address: swap_2.request.from_address.clone(),
-            destination_chain: swap_2.request.from_chain,
-            destination_asset_id: swap_2
-                .request
-                .from_token_address
-                .clone(),
-        };
-
-        let mut swap_3 = default_swap(Uuid::new_v4());
-        swap_3.request.from_chain = SwapChainType::Polygon;
-        swap_3.request.to_chain = SwapChainType::Base;
-        swap_3.request.from_token_address = "swap3_address".to_string();
-
-        let swap_3_destination = TransferDestinationParams {
-            destination_address: swap_3.request.from_address.clone(),
-            destination_chain: swap_3.request.from_chain,
-            destination_asset_id: swap_3
-                .request
-                .from_token_address
-                .clone(),
-        };
-
-        let mut swaps = vec![swap_1, swap_2, swap_3];
-
-        let result = detector.find_destination_in_swaps(&swaps, true);
-        assert_eq!(result, Some(swap_1_destination));
-
-        let result = detector.find_destination_in_swaps(&swaps, false);
-        assert_eq!(result, Some(swap_3_destination));
-
-        swaps.remove(0);
-
-        let result = detector.find_destination_in_swaps(&swaps, true);
-        assert_eq!(result, Some(swap_2_destination));
-
-        swaps.remove(1);
-
-        let result = detector.find_destination_in_swaps(&swaps, false);
-        assert!(result.is_none());
-    }
-
-    #[test]
     fn test_filter_out_swap_transactions() {
         let dao = MockDaoInterface::default();
         let detector = RefundDestinationDetector::new(dao);
@@ -431,24 +353,34 @@ mod tests {
         let refund = default_refund(invoice_id);
 
         // Test case 1:
-        // - Successful flow
-        // - Destination found in swaps
+        // - A completed swap must not choose the destination
         // Expectations:
-        // - Single dao call, get swaps by invoice
-        // - First returned swap return params
+        // - The swap's `from_address` is never returned, even though it is the only
+        //   same-chain swap on the invoice and would have won before
+        // - The destination comes from a real on-chain transfer instead
         {
-            let mut returned_swap = default_swap(invoice_id);
-            returned_swap.request.to_chain = returned_swap.request.from_chain;
+            let mut attacker_swap = default_swap(invoice_id);
+            attacker_swap.request.to_chain = attacker_swap.request.from_chain;
+            attacker_swap.request.from_address = "0xattacker".to_string();
+            let attacker_address = attacker_swap
+                .request
+                .from_address
+                .clone();
+
+            let mut transaction = default_transaction(invoice_id);
+            transaction.transfer_info.chain = ChainType::Polygon;
+            transaction.transfer_info.source_address = "0xrealpayer".to_string();
 
             let expected_destination_params = TransferDestinationParams {
-                destination_address: returned_swap
-                    .request
-                    .from_address
+                destination_address: transaction
+                    .transfer_info
+                    .source_address
                     .clone(),
-                destination_chain: returned_swap.request.to_chain,
-                destination_asset_id: returned_swap
-                    .request
-                    .from_token_address
+                destination_chain: SwapChainType::try_from(transaction.transfer_info.chain)
+                    .expect("Polygon is a swap chain"),
+                destination_asset_id: transaction
+                    .transfer_info
+                    .asset_id
                     .clone(),
             };
 
@@ -457,7 +389,14 @@ mod tests {
                 .expect_get_completed_incoming_swaps_by_invoice()
                 .once()
                 .with(eq(invoice_id))
-                .returning(move |_| Ok(vec![returned_swap.clone()]));
+                .returning(move |_| Ok(vec![attacker_swap.clone()]));
+
+            detector
+                .dao
+                .expect_get_completed_transactions_by_invoice()
+                .once()
+                .with(eq(invoice_id))
+                .returning(move |_| Ok(vec![transaction.clone()]));
 
             let result = detector
                 .find_refund_destination(&refund)
@@ -465,6 +404,45 @@ mod tests {
                 .unwrap();
 
             assert_eq!(result, expected_destination_params);
+            assert_ne!(
+                result.destination_address,
+                attacker_address
+            );
+        }
+
+        // Test case 1.1:
+        // - An invoice paid only through a swap has no destination at all
+        // Expectations:
+        // - `NoAvailableDestination`, routing the refund to manual handling, rather
+        //   than paying out to a caller-supplied swap address
+        {
+            let mut attacker_swap = default_swap(invoice_id);
+            attacker_swap.request.to_chain = attacker_swap.request.from_chain;
+            attacker_swap.request.from_address = "0xattacker".to_string();
+
+            detector
+                .dao
+                .expect_get_completed_incoming_swaps_by_invoice()
+                .once()
+                .with(eq(invoice_id))
+                .returning(move |_| Ok(vec![attacker_swap.clone()]));
+
+            detector
+                .dao
+                .expect_get_completed_transactions_by_invoice()
+                .once()
+                .with(eq(invoice_id))
+                .returning(move |_| Ok(vec![]));
+
+            let result = detector
+                .find_refund_destination(&refund)
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                result,
+                RefundDestinationDetectorError::NoAvailableDestination
+            );
         }
 
         // Test case 2:
