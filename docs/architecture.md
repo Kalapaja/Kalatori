@@ -237,9 +237,31 @@ connects but cannot answer is not a usable endpoint.
 | Subsystem | Behaviour without the chain's client |
 |---|---|
 | `TransfersTracker` | Not started for that chain — no subscription, no incoming transfers detected |
-| `TransfersExecutor` | `ChainExecutorError::ChainUnavailable`, **retriable**: the payout/refund row goes back to `FailedRetriable` with the usual backoff rather than being failed for good over an RPC outage |
+| `TransfersExecutor` | **Direct transfers only**: `ChainExecutorError::ChainUnavailable`, **retriable**, so the payout/refund row goes back to `FailedRetriable` with the usual backoff rather than being failed for good over an RPC outage. **Provider-routed swaps are not blocked** — see below |
 | `BalanceChecker` | `FetchBalanceFailed` without calling any RPC. Both callers (`ExpirationDetector`, `SwapsTracker`) already treat that as "leave the invoice alone and look again later", so it needs no variant of its own — only a distinguishing log line |
 | `AppState` / HTTP API | Unchanged. `asset_names_map` and `asset_decimals_map` simply carry no entries for the chain |
+
+**The swap carve-out.** `TransfersExecutor::send_transfer` routes a same-chain
+transfer whose destination asset differs to `schedule_swap`, which never
+touches a chain client — `SwapsExecutor` holds only the DAO and the 0x/Across
+HTTP clients. Such a transfer therefore still executes while the chain is
+unavailable, because it does not need our node. This is deliberate (blocking it
+would strand payouts that can succeed), but it is a real asymmetry: the swap can
+execute while `SwapsTracker` cannot confirm its settlement, since that goes
+through `BalanceChecker`. The startup WARN says so explicitly rather than
+claiming a blanket payout freeze.
+
+**Connect timeouts.** Neither dependency bounds a connect attempt for us, and
+both let a half-open peer hang forever: jsonrpsee's 10s budget covers
+`TcpStream::connect` only (TLS handshake and WebSocket upgrade sit outside it),
+and alloy's `WsConnect` retry budget governs *reconnects* of an established
+socket, not the initial connect. A blackholed address otherwise costs the OS
+TCP timeout — ~127s per resolved address. That was survivable at one endpoint
+per client; iterating the list multiplies it, so `ENDPOINT_CONNECT_TIMEOUT`
+(`chain_client.rs`) caps each attempt and bounds startup at
+`endpoints × timeout` per connect phase. Note Polygon pays that per phase
+*twice*, since request and subscription providers are connected in separate
+loops, and the two chains are initialised sequentially.
 
 **Two cases are still fatal**, and only two — both enforced by
 `report_chain_availability`:

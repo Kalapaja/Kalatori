@@ -1822,6 +1822,94 @@ mod tests {
         assert_eq!(queue.len(), 1);
     }
 
+    /// The startup WARN says *direct* payouts and refunds are frozen on an
+    /// unavailable chain — not that every transfer is. `send_transfer` routes a
+    /// same-chain, different-asset transfer to `schedule_swap`, which never
+    /// touches a chain client (`SwapsExecutor` holds only the DAO and the
+    /// provider HTTP clients), so it still executes.
+    ///
+    /// Pin both halves through `send_transfer` rather than
+    /// `schedule_chain_transfer`, because the routing decision is what makes
+    /// the log message true or false. If the direct case stops being held, or
+    /// the swap case starts being blocked, the message becomes a lie.
+    #[tokio::test]
+    async fn an_unavailable_chain_holds_direct_transfers_but_not_provider_routed_swaps() {
+        let mut executor = setup_executor();
+        let mut queue = FuturesUnordered::new();
+
+        executor.polygon_client = None;
+
+        // Same chain, same asset: a direct transfer, which needs our node.
+        let mut direct: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+        direct.chain = ChainType::Polygon;
+        direct
+            .destination_params
+            .destination_asset_id = direct.asset_id.clone();
+
+        let direct_id = direct.id;
+        let expected_held = ChainExecutorError::ChainUnavailable {
+            chain: ChainType::Polygon,
+        }
+        .to_string();
+
+        executor
+            .dao
+            .expect_update_payout_retry()
+            .once()
+            .withf(
+                move |payout_id, retry_meta, is_retriable| {
+                    *payout_id == direct_id
+                        && *is_retriable
+                        && retry_meta.failure_message.as_deref() == Some(expected_held.as_str())
+                },
+            )
+            .returning(|_, _, _| Ok(default_payout(Uuid::new_v4())));
+
+        let () = executor
+            .send_transfer(direct, &mut queue)
+            .await;
+        assert!(queue.is_empty());
+
+        // Same chain, different asset: routed to the swap provider. Failing it
+        // inside the swap path is what proves the path was entered at all —
+        // the recorded failure is the provider's, not `ChainUnavailable`.
+        let mut swap_shaped: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+        swap_shaped.chain = ChainType::Polygon;
+        swap_shaped.amount = Decimal::ONE;
+        swap_shaped
+            .destination_params
+            .destination_asset_id = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F".to_string();
+
+        executor
+            .swaps_executor
+            .expect_create_swap()
+            .once()
+            .returning(|_| Err(SwapsExecutorError::DatabaseError));
+
+        let swap_id = swap_shaped.id;
+        let expected_routed = ChainExecutorError::BuildTransfer {
+            reason: SwapsExecutorError::DatabaseError.to_string(),
+        }
+        .to_string();
+
+        executor
+            .dao
+            .expect_update_payout_retry()
+            .once()
+            .withf(
+                move |payout_id, retry_meta, _is_retriable| {
+                    *payout_id == swap_id
+                        && retry_meta.failure_message.as_deref() == Some(expected_routed.as_str())
+                },
+            )
+            .returning(|_, _, _| Ok(default_payout(Uuid::new_v4())));
+
+        let () = executor
+            .send_transfer(swap_shaped, &mut queue)
+            .await;
+        assert!(queue.is_empty());
+    }
+
     #[tokio::test]
     async fn test_schedule_swap() {
         let mut executor = setup_executor();

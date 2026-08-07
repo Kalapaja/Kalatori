@@ -324,10 +324,17 @@ fn report_chain_availability(
             continue
         }
 
+        // Deliberately narrow. Provider-routed swaps are *not* covered: they
+        // settle through the swap provider's API rather than through our node,
+        // so `TransfersExecutor::send_transfer` still routes them and they can
+        // still execute. Saying "no payouts" here would be the same kind of
+        // false claim this whole change exists to remove.
         tracing::warn!(
             %chain,
-            "Running without this chain: no transfers will be tracked and no payouts or \
-             refunds will be submitted on it until the daemon is restarted"
+            "Running without this chain: no transfers will be tracked, and no direct payouts \
+             or refunds will be submitted on it, until the daemon is restarted. \
+             Swaps routed through a swap provider are unaffected, but their settlement \
+             cannot be confirmed while this chain is unavailable"
         );
 
         if chains_with_active_invoices.contains(&chain) {

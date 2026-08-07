@@ -252,24 +252,39 @@ impl AssetHubClient {
                 "Trying to connect to endpoint...",
             );
 
-            let connected = if config.allow_insecure_endpoints {
-                SubxtAssetHubClient::from_insecure_url(endpoint).await
-            } else {
-                SubxtAssetHubClient::from_url(endpoint).await
-            };
+            // jsonrpsee's own 10s budget covers `TcpStream::connect` and
+            // nothing else, so a peer that completes the TCP handshake and
+            // then stalls the TLS or WebSocket upgrade would hang here and
+            // never let the loop reach the remaining endpoints.
+            let connected = tokio::time::timeout(super::ENDPOINT_CONNECT_TIMEOUT, async {
+                if config.allow_insecure_endpoints {
+                    SubxtAssetHubClient::from_insecure_url(endpoint).await
+                } else {
+                    SubxtAssetHubClient::from_url(endpoint).await
+                }
+            })
+            .await;
 
             match connected {
-                Ok(connected) => {
+                Ok(Ok(connected)) => {
                     client = Some(connected);
                     break
                 },
-                Err(e) => tracing::debug!(
+                Ok(Err(e)) => tracing::debug!(
                     error.category = crate::utils::logging::category::CHAIN_CLIENT,
                     error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
                     error.source = ?e,
                     chain = %Self::chain_type(),
                     endpoint = %endpoint,
                     "Failed to connect to Asset Hub RPC endpoint"
+                ),
+                Err(_elapsed) => tracing::warn!(
+                    error.category = crate::utils::logging::category::CHAIN_CLIENT,
+                    error.operation = crate::utils::logging::operation::CONNECT_CLIENT,
+                    chain = %Self::chain_type(),
+                    endpoint = %endpoint,
+                    timeout_seconds = super::ENDPOINT_CONNECT_TIMEOUT.as_secs(),
+                    "Asset Hub RPC endpoint did not finish connecting in time, moving on"
                 ),
             }
         }

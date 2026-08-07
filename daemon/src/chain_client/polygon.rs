@@ -55,6 +55,7 @@ use super::{
     ChainConfig,
     ChainTransfer,
     ClientError,
+    ENDPOINT_CONNECT_TIMEOUT,
     GeneralTransactionId,
     KeyringClient,
     QueryError,
@@ -180,6 +181,13 @@ impl ConfirmationBuffer {
 /// comfortably inside `WS_MESSAGES_TIMEOUT_DURATION`, so alloy gives up while
 /// our own supervision is still waiting rather than after it has given up.
 /// `ws_reconnect_budget_stays_within_our_own_timeout` pins that relationship.
+///
+/// **This budget bounds reconnects only.** Verified against alloy 2.1.1:
+/// `alloy-pubsub`'s initial `connect` is a single attempt, and these two
+/// numbers are merely stored on the returned handle for
+/// `reconnect_with_retries` to consume once a connection already exists. The
+/// initial connect is bounded by `ENDPOINT_CONNECT_TIMEOUT` instead — do not
+/// read the 6s figure as a startup cost.
 const WS_RECONNECT_MAX_RETRIES: u32 = 3;
 const WS_RECONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -438,11 +446,56 @@ impl PolygonClient {
     /// when this endpoint is unusable, leaving the caller free to try the
     /// next one.
     async fn connect_and_identify(endpoint: &str) -> Option<(PolygonProvider, u64)> {
+        // One budget covers the connect and the probe together: both are
+        // unbounded on their own — alloy's retry budget applies to reconnects
+        // of an established socket, not to this first connect, and the RPC
+        // client sets no request timeout — so either could hang the endpoint
+        // loop before it reaches the remaining endpoints.
+        let connected = tokio::time::timeout(ENDPOINT_CONNECT_TIMEOUT, async {
+            let provider = Self::connect_provider(endpoint).await?;
+
+            tracing::debug!(
+                url = endpoint,
+                chain = %Self::chain_type(),
+                "Connection successful"
+            );
+
+            let chain_id = provider
+                .get_chain_id()
+                .await
+                .inspect_err(|e| {
+                    tracing::debug!(
+                        error.category = CHAIN_CLIENT,
+                        error.source = ?e,
+                        endpoint = %endpoint,
+                        "Failed to get chain ID"
+                    );
+                })
+                .ok()?;
+
+            Some((provider, chain_id))
+        })
+        .await;
+
+        match connected {
+            Ok(connected) => connected,
+            Err(_elapsed) => {
+                Self::warn_connect_timed_out(endpoint);
+
+                None
+            },
+        }
+    }
+
+    /// Open one WebSocket provider. `Ok` from alloy means the full TCP, TLS
+    /// and WebSocket handshake completed, so a returned provider is a live
+    /// endpoint rather than a lazily-connecting handle.
+    async fn connect_provider(endpoint: &str) -> Option<PolygonProvider> {
         let ws_connect = WsConnect::new(endpoint)
             .with_max_retries(WS_RECONNECT_MAX_RETRIES)
             .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
 
-        let provider = ProviderBuilder::new()
+        ProviderBuilder::new()
             .connect_ws(ws_connect)
             .await
             .inspect_err(|e| {
@@ -455,28 +508,18 @@ impl PolygonClient {
                     "Failed to connect to Polygon RPC endpoint"
                 );
             })
-            .ok()?;
+            .ok()
+    }
 
-        tracing::debug!(
-            url = endpoint,
+    fn warn_connect_timed_out(endpoint: &str) {
+        tracing::warn!(
+            error.category = CHAIN_CLIENT,
+            error.operation = "connect_client",
             chain = %Self::chain_type(),
-            "Connection successful"
+            endpoint = %endpoint,
+            timeout_seconds = ENDPOINT_CONNECT_TIMEOUT.as_secs(),
+            "Polygon RPC endpoint did not finish connecting in time, moving on"
         );
-
-        let chain_id = provider
-            .get_chain_id()
-            .await
-            .inspect_err(|e| {
-                tracing::debug!(
-                    error.category = CHAIN_CLIENT,
-                    error.source = ?e,
-                    endpoint = %endpoint,
-                    "Failed to get chain ID"
-                );
-            })
-            .ok()?;
-
-        Some((provider, chain_id))
     }
 
     /// Create a new Polygon client from configuration
@@ -537,15 +580,13 @@ impl PolygonClient {
         let mut subscription_provider = None;
 
         for endpoint in &subscription_endpoints {
-            let ws_connect = WsConnect::new(endpoint)
-                .with_max_retries(WS_RECONNECT_MAX_RETRIES)
-                .with_retry_interval(WS_RECONNECT_RETRY_INTERVAL);
-
-            match ProviderBuilder::new()
-                .connect_ws(ws_connect)
-                .await
+            match tokio::time::timeout(
+                ENDPOINT_CONNECT_TIMEOUT,
+                Self::connect_provider(endpoint),
+            )
+            .await
             {
-                Ok(provider) => {
+                Ok(Some(provider)) => {
                     tracing::info!(
                         chain_id = chain_id,
                         endpoint = %endpoint,
@@ -555,14 +596,9 @@ impl PolygonClient {
                     subscription_provider = Some(provider);
                     break
                 },
-                Err(e) => tracing::debug!(
-                    error.category = CHAIN_CLIENT,
-                    error.operation = "connect_client",
-                    error.source = ?e,
-                    endpoint = %endpoint,
-                    chain = %Self::chain_type(),
-                    "Failed to connect to Polygon RPC endpoint"
-                ),
+                // `connect_provider` already logged why.
+                Ok(None) => {},
+                Err(_elapsed) => Self::warn_connect_timed_out(endpoint),
             }
         }
 
