@@ -35,6 +35,13 @@ Axum server with four namespaces:
 - `/public` — Publicly accessible, no auth, sanitized responses
 - `/private` — HMAC-authenticated merchant endpoints
 - `/internal` — Internal operations
+- `/admin` — OAuth-session authenticated admin UI and API. Owner-only routes are
+  `/api/integration-settings` and `/api/get-plugin`, because both disclose the
+  merchant HMAC secret (the plugin embeds it). Read-only settings, identity,
+  invoice, payout, transaction, and swap routes are available to Owner,
+  Operator, Viewer, and Support. `/api/payout/initiate` is not routed at all —
+  it answers 404, not an error status or a feature flag — until its hardcoded
+  amount is replaced with product-defined amount semantics.
 - `/dev` — Development/debug endpoints (feature-gated via `dev_api`)
 
 `ApiErrorExt` trait in `api.rs` provides `category()`, `code()`, `message()`, `http_status_code()` for structured error responses. Request IDs via `x-request-id` header (UUID, auto-generated).
@@ -193,6 +200,10 @@ endpoints currently cannot be supplied by environment variable at all
 **Security**: Seed phrase and API secret key are zeroized from env/memory after loading.
 
 Example configs in `configs/` directory.
+
+When configured, the shop webhook URL is validated at startup as an absolute
+HTTP(S) URL with a host. Validation is structural only and performs no network
+reachability check.
 
 At startup, the daemon always runs SQLite's `PRAGMA integrity_check` before migrations. Set
 `require_existing` (or `KALATORI_DATABASE_REQUIRE_EXISTING`) to refuse startup when the configured

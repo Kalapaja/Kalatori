@@ -512,6 +512,55 @@ mod tests {
     const USDT_LOWER: &str = "0xc2132d05d31c914a87c6611c10748aeb04b58e8f";
     const USDT_CHECKSUMMED: &str = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
 
+    fn shop_config_with_webhook(value: Option<&str>) -> ShopConfig {
+        ShopConfig {
+            invoices_webhook_url: value.map(ToString::to_string),
+            signature_max_age_secs: default_signature_max_age_secs(),
+            private_api_base_url: None,
+            meta: ShopMetaConfig {
+                shop_name: String::new(),
+                shop_url: String::new(),
+                logo_url: None,
+                reown_project_id: String::new(),
+                ankr_api_token: None,
+            },
+            shop_platform: DetectedShopPlatform::default(),
+        }
+    }
+
+    #[test]
+    fn validates_invoices_webhook_url() {
+        for value in [
+            None,
+            Some("https://webhook.example.com/events"),
+            Some("http://localhost:8080/webhook"),
+        ] {
+            assert!(
+                shop_config_with_webhook(value)
+                    .validate_invoices_webhook_url()
+                    .is_ok(),
+                "expected {value:?} to be accepted"
+            );
+        }
+
+        for value in [
+            "",
+            "webhook.example.com",
+            "ftp://webhook.example.com/events",
+            "file:///tmp/webhook",
+            "https://?event=invoice",
+        ] {
+            let error = shop_config_with_webhook(Some(value))
+                .validate_invoices_webhook_url()
+                .unwrap_err();
+            let quoted_value = format!("`{value}`");
+            assert!(
+                error.contains(&quoted_value),
+                "`{error}` does not name `{value}`"
+            );
+        }
+    }
+
     #[test]
     fn test_canonicalize_payments_evm_asset_ids() {
         let slippage = SlippageParams {
@@ -981,6 +1030,31 @@ pub struct ShopConfig {
     pub meta: ShopMetaConfig,
     #[serde(default)]
     pub shop_platform: DetectedShopPlatform,
+}
+
+impl ShopConfig {
+    pub fn validate_invoices_webhook_url(&self) -> Result<(), String> {
+        let Some(value) = self.invoices_webhook_url.as_deref() else {
+            return Ok(());
+        };
+
+        let url = url::Url::parse(value)
+            .map_err(|error| format!("Invalid invoices webhook URL `{value}`: {error}"))?;
+
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(format!(
+                "Invalid invoices webhook URL `{value}`: scheme must be http or https"
+            ));
+        }
+
+        if url.host_str().is_none() {
+            return Err(format!(
+                "Invalid invoices webhook URL `{value}`: URL must include a host"
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 fn default_log_directives() -> String {

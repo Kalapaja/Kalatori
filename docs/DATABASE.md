@@ -59,6 +59,10 @@ Transfers from payment address to merchant's wallet.
 | next_retry_at, last_attempt_at | TEXT | Retry scheduling |
 
 `FailedRetriable` -> `InProgress` allows retry. `Completed` and `Failed` are terminal.
+On startup, before background workers begin claiming rows, any payout or refund
+left `InProgress` by an interrupted run is moved to immediately eligible
+`FailedRetriable`. This recovery assumes exactly one daemon instance owns the
+database; sharing one database between live instances is unsupported.
 
 ### refunds
 Refunds from payment address back to customer.
