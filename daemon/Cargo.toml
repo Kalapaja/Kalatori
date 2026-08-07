@@ -96,7 +96,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "json"
 # add a second TLS implementation. `compat-0-2-1` is not optional: the crate
 # refuses to compile without it.
 #
-# What this does not buy: openssl 0.10.78 is affected by no open advisory
+# What this does not buy: openssl 0.10.81, the version this drops, is affected
+# by no open advisory
 # (RUSTSEC-2025-0022 was patched in >= 0.10.72). The win is dropping runtime
 # linkage to the C libssl -- OS-level CVE surface that `cargo deny` cannot see
 # -- not closing a known hole. `deny.toml` no longer allows the OpenSSL license,

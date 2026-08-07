@@ -90,12 +90,17 @@ OpenSSL, and nothing in the tree links the C `libssl`.
 
 `async_try_main` installs the aws-lc provider as rustls' process-wide default in
 its **first statement**, before `logger::initialize`. This ordering is
-load-bearing, not stylistic: rustls accepts exactly one default provider, first
-install wins, and later attempts fail. Log shipping is the only other TLS user
-in the process — `tracing-loki` resolves reqwest 0.12, whose rustls feature set
-pulls the ring backend — so initialising the logger first would let it install
-ring and turn the daemon's own install into a startup panic. The comment at that
-call site records the same thing.
+load-bearing, not stylistic. Log shipping is the only other TLS user in the
+process — `tracing-loki` resolves reqwest 0.12, whose rustls feature set
+compiles in the ring backend — and installing first is what keeps it on aws-lc.
+
+Note what the ordering does *not* protect against: reqwest 0.12 never installs
+a default of its own. It reads one via `CryptoProvider::get_default` and, when
+the slot is empty, falls back to a locally built ring provider. Initialising
+the logger first would therefore not fail loudly — it would silently leave two
+crypto backends live in one process, Loki on ring and every payment on aws-lc.
+Nothing else in the tree calls `install_default`, which is what lets the call
+site `unwrap` its result. The comment there records the same thing.
 
 **Trust store: the operating system's, everywhere.** Two reqwest majors are in
 the tree and they reach that answer differently:
