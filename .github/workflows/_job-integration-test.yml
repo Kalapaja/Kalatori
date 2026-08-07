@@ -50,8 +50,12 @@ jobs:
             -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system_chain\",\"params\":[]}" \
             http://localhost:9000; do sleep 2; done'
 
-      - name: Run daemon and chopsticks in background
-        run: make run &
+      # Redirected rather than backgrounded bare: `make run &` sends the
+      # daemon's output nowhere the job can reach, so a daemon that fails to
+      # start is indistinguishable from one that is merely slow, and the poll
+      # below just times out with nothing to show for it.
+      - name: Run daemon in background
+        run: make run > daemon.log 2>&1 &
 
       # Poll the public /info endpoint until the daemon answers, capped at 5
       # minutes so a stuck daemon still fails the job in bounded time. Replaces
@@ -63,3 +67,9 @@ jobs:
 
       - name: Run integration tests
         run: make run-test-examples
+
+      # Whatever went wrong, the daemon's own output is the first thing anyone
+      # will want, and it is otherwise lost with the runner.
+      - name: Daemon log
+        if: failure()
+        run: tail -n 200 daemon.log || echo "daemon.log was never created"
