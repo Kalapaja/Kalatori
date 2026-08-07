@@ -194,6 +194,10 @@ endpoints currently cannot be supplied by environment variable at all
 
 Example configs in `configs/` directory.
 
+When configured, the shop webhook URL is validated at startup as an absolute
+HTTP(S) URL with a host. Validation is structural only and performs no network
+reachability check.
+
 At startup, the daemon always runs SQLite's `PRAGMA integrity_check` before migrations. Set
 `require_existing` (or `KALATORI_DATABASE_REQUIRE_EXISTING`) to refuse startup when the configured
 database file is missing or empty; this is incompatible with temporary in-memory mode.

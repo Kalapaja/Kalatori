@@ -43,6 +43,7 @@ use chain_client::{
 use configs::{
     ChainsConfig,
     PaymentsConfig,
+    ShopConfig,
     auth_config_with_prefix,
     chains_config_with_prefix,
     database_config_with_prefix,
@@ -168,8 +169,16 @@ async fn init_invoice_registry(dao: &impl DaoInterface) -> Result<InvoiceRegistr
 fn validate_and_extend_configs(
     chains_config: &mut ChainsConfig,
     payments_config: &mut PaymentsConfig,
+    shop_config: &ShopConfig,
     restored_asset_ids: HashMap<ChainType, HashSet<String>>,
 ) -> Result<(), Error> {
+    shop_config
+        .validate_invoices_webhook_url()
+        .map_err(|error| {
+            tracing::error!(%error, "Invalid shop config");
+            Error::Fatal
+        })?;
+
     // Ensure that we have recipients for all chains from restored invoices and for
     // default chain
     let mut required_recipients: Vec<_> = restored_asset_ids
@@ -279,11 +288,36 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
     // Initialize DAO for SQLite database operations
     let dao = DAO::new(database_config.clone()).await?;
 
+    // Recovery must finish before any executor is ignited: once workers can claim
+    // rows, a sweep could reset work claimed by this process.
+    let recovered_payouts = dao
+        .recover_in_progress_payouts()
+        .await
+        .map_err(|_| Error::Fatal)?;
+    if recovered_payouts > 0 {
+        tracing::info!(
+            count = recovered_payouts,
+            "Recovered in-progress payouts"
+        );
+    }
+
+    let recovered_refunds = dao
+        .recover_in_progress_refunds()
+        .await
+        .map_err(|_| Error::Fatal)?;
+    if recovered_refunds > 0 {
+        tracing::info!(
+            count = recovered_refunds,
+            "Recovered in-progress refunds"
+        );
+    }
+
     let invoice_registry = init_invoice_registry(&dao).await?;
 
     validate_and_extend_configs(
         &mut chains_config,
         &mut payments_config,
+        &shop_config,
         invoice_registry.used_asset_ids().await,
     )?;
 

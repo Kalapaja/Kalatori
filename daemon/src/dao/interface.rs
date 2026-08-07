@@ -216,6 +216,9 @@ pub trait DaoInterface: Send + Sync + 'static {
 
     // === Payout Methods ===
 
+    /// Recover payouts claimed by a previous daemon process.
+    async fn recover_in_progress_payouts(&self) -> Result<usize, DaoPayoutError>;
+
     /// Create a new payout record.
     async fn create_payout(
         &self,
@@ -369,6 +372,9 @@ pub trait DaoInterface: Send + Sync + 'static {
     ) -> Result<u32, DaoSwapError>;
 
     // === Refund Methods ===
+
+    /// Recover refunds claimed by a previous daemon process.
+    async fn recover_in_progress_refunds(&self) -> Result<usize, DaoRefundError>;
 
     async fn create_refund(
         &self,
@@ -848,6 +854,10 @@ impl DaoInterface for DAO {
         DaoPayoutMethods::create_payout(self, payout).await
     }
 
+    async fn recover_in_progress_payouts(&self) -> Result<usize, DaoPayoutError> {
+        DaoPayoutMethods::recover_in_progress_payouts(self).await
+    }
+
     async fn get_all_payouts(&self) -> Result<Vec<Payout>, DaoPayoutError> {
         DaoPayoutMethods::get_all_payouts(self).await
     }
@@ -1040,6 +1050,10 @@ impl DaoInterface for DAO {
         refund: Refund,
     ) -> Result<Refund, DaoRefundError> {
         DaoRefundMethods::create_refund(self, refund).await
+    }
+
+    async fn recover_in_progress_refunds(&self) -> Result<usize, DaoRefundError> {
+        DaoRefundMethods::recover_in_progress_refunds(self).await
     }
 
     async fn get_refund_by_id(
