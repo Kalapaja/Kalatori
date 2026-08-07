@@ -133,8 +133,8 @@ daemon aborts before finishing the lint pass without them ([#339](https://github
 
 `#[expect(clippy::too_many_lines)]` and friends sit in the tree without tripping
 `unfulfilled_lint_expectations`, even though `pedantic` is off. Among the clippy
-expectations in first-party code, **15 name a lint nothing enables**, across
-five of them: `too_many_lines` and `cast_sign_loss` (4 each),
+expectations in first-party code, **19 name a lint nothing enables**, across
+five of them: `cast_sign_loss` (8), `too_many_lines` (4),
 `struct_field_names` and `module_name_repetitions` (3 each), and `unused_self`.
 (The 13 `arithmetic_side_effects` expectations that used to sit in this bucket
 are now checked for real — the lint is enabled.)

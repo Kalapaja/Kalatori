@@ -1,3 +1,5 @@
+use std::fmt;
+
 use rust_decimal::Decimal;
 use serde::{
     Deserialize,
@@ -36,8 +38,7 @@ pub enum EtherscanResponse<T> {
     Err(EtherscanResponseData<String>),
 }
 
-// TODO: hide `api_key` field in logs
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct GetAccountTokenTransactionsParams<'a> {
     pub module: &'a str,
     pub action: &'a str,
@@ -48,6 +49,28 @@ pub struct GetAccountTokenTransactionsParams<'a> {
     pub chain_id: u32,
     #[serde(rename = "apikey")]
     pub api_key: &'a str,
+}
+
+/// Hand-written so the key cannot reach a log through `?params`. The field has
+/// to stay a plain `&str` because `Serialize` puts it in the query string, so
+/// the derive is what would leak it.
+impl fmt::Debug for GetAccountTokenTransactionsParams<'_> {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        f.debug_struct("GetAccountTokenTransactionsParams")
+            .field("module", &self.module)
+            .field("action", &self.action)
+            .field("address", &self.address)
+            .field(
+                "contract_address",
+                &self.contract_address,
+            )
+            .field("chain_id", &self.chain_id)
+            .field("api_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[serde_as]
@@ -141,7 +164,12 @@ impl EtherscanTransaction {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
+
+    use secrecy::SecretString;
+
     use super::*;
+    use crate::configs::EtherscanClientConfig;
 
     fn transaction(
         value: u128,
@@ -242,5 +270,44 @@ mod tests {
             err,
             EtherscanClientError::UnrepresentableAmount { .. }
         ));
+    }
+
+    /// A value that cannot occur by accident, so its absence is evidence.
+    const SENTINEL: &str = "SENTINEL-ETHERSCAN-KEY-8f3a1c";
+
+    #[test]
+    fn debug_of_request_params_hides_the_api_key() {
+        let params = GetAccountTokenTransactionsParams {
+            module: "account",
+            action: "tokentx",
+            address: "0x0000000000000000000000000000000000000000",
+            contract_address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+            chain_id: 137,
+            api_key: SENTINEL,
+        };
+
+        let rendered = format!("{params:?}");
+
+        assert!(
+            !rendered.contains(SENTINEL),
+            "api key leaked: {rendered}"
+        );
+        // The struct is still worth logging -- redaction, not omission.
+        assert!(rendered.contains("tokentx"));
+    }
+
+    #[test]
+    fn debug_of_client_config_hides_the_api_key() {
+        let config = EtherscanClientConfig {
+            requests_per_second: NonZeroU32::new(3).unwrap(),
+            api_key: SecretString::from(SENTINEL.to_string()),
+        };
+
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains(SENTINEL),
+            "api key leaked: {rendered}"
+        );
     }
 }
