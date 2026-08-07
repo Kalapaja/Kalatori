@@ -49,9 +49,15 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
         &self,
         swaps: &[Swap],
         same_chain: bool,
+        invoice_payment_address: &str,
     ) -> Option<TransferDestinationParams> {
         for swap in swaps {
-            if (swap.request.from_chain == swap.request.to_chain) == same_chain {
+            if swap
+                .request
+                .to_address
+                .eq_ignore_ascii_case(invoice_payment_address)
+                && (swap.request.from_chain == swap.request.to_chain) == same_chain
+            {
                 let destination_params = TransferDestinationParams {
                     destination_address: swap.request.from_address.clone(),
                     destination_asset_id: swap.request.from_token_address.clone(),
@@ -113,7 +119,12 @@ impl<D: DaoInterface + 'static> RefundDestinationDetector<D> {
                 RefundDestinationDetectorError::DatabaseError
             })?;
 
-        if let Some(params) = self.find_destination_in_swaps(&swaps, true) {
+        if let Some(params) = self.find_destination_in_swaps(
+            &swaps,
+            true,
+            // Refund::from_invoice persists the invoice payment address here.
+            &refund.source_address,
+        ) {
             return Ok(params)
         }
 
@@ -368,23 +379,42 @@ mod tests {
                 .clone(),
         };
 
+        let payment_address = swap_1.request.to_address.clone();
         let mut swaps = vec![swap_1, swap_2, swap_3];
-
-        let result = detector.find_destination_in_swaps(&swaps, true);
+        let result = detector.find_destination_in_swaps(&swaps, true, &payment_address);
         assert_eq!(result, Some(swap_1_destination));
 
-        let result = detector.find_destination_in_swaps(&swaps, false);
+        let result = detector.find_destination_in_swaps(&swaps, false, &payment_address);
         assert_eq!(result, Some(swap_3_destination));
 
         swaps.remove(0);
 
-        let result = detector.find_destination_in_swaps(&swaps, true);
+        let result = detector.find_destination_in_swaps(&swaps, true, &payment_address);
         assert_eq!(result, Some(swap_2_destination));
 
         swaps.remove(1);
 
-        let result = detector.find_destination_in_swaps(&swaps, false);
+        let result = detector.find_destination_in_swaps(&swaps, false, &payment_address);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn completed_swap_with_wrong_invoice_destination_is_not_a_refund_destination() {
+        let dao = MockDaoInterface::default();
+        let detector = RefundDestinationDetector::new(dao);
+        let mut swap = default_swap(Uuid::new_v4());
+        swap.request.from_chain = swap.request.to_chain;
+        swap.request.to_address = "0x0000000000000000000000000000000000000001".to_string();
+
+        assert!(
+            detector
+                .find_destination_in_swaps(
+                    &[swap],
+                    true,
+                    "0x0000000000000000000000000000000000000002",
+                )
+                .is_none()
+        );
     }
 
     #[test]
@@ -439,6 +469,7 @@ mod tests {
         {
             let mut returned_swap = default_swap(invoice_id);
             returned_swap.request.to_chain = returned_swap.request.from_chain;
+            returned_swap.request.to_address = refund.source_address.clone();
 
             let expected_destination_params = TransferDestinationParams {
                 destination_address: returned_swap

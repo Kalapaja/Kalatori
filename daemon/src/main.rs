@@ -451,6 +451,8 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
 
     let swaps_executor = SwapsExecutor::new(dao.clone(), swaps_clients.clone());
 
+    let swap_settlement_verifier = polygon_client.clone();
+
     let refund_destination_detector = RefundDestinationDetector::new(dao.clone());
 
     // Single executor handles both chains
@@ -477,6 +479,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         dao.clone(),
         swaps_clients,
         balance_checker,
+        swap_settlement_verifier,
     );
 
     let swaps_tracker_handle = swaps_tracker.ignite(shutdown_notification.token.clone());

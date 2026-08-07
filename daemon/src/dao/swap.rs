@@ -675,13 +675,18 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
     async fn update_swap_completed(
         &self,
         swap_id: Uuid,
+        settlement_verified: bool,
     ) -> Result<Swap, DaoSwapError> {
         let query = sqlx::query_as::<_, SwapRow>(
             "UPDATE swaps
-            SET status = 'Completed', finished_at = datetime('now')
+            SET status = 'Completed',
+                error_message = CASE WHEN ? THEN ? ELSE error_message END,
+                finished_at = datetime('now')
             WHERE id = ?
             RETURNING *",
         )
+        .bind(settlement_verified)
+        .bind(crate::types::VERIFIED_SETTLEMENT_MARKER)
         .bind(swap_id);
 
         self.fetch_one(query)
@@ -753,10 +758,14 @@ pub trait DaoSwapMethods: DaoExecutor + 'static {
     ) -> Result<Vec<Swap>, DaoSwapError> {
         let query = sqlx::query_as::<_, SwapRow>(
             "SELECT * FROM swaps
-            WHERE status = 'Completed' AND direction = 'Incoming' AND invoice_id = ?
+            WHERE status = 'Completed'
+              AND direction = 'Incoming'
+              AND invoice_id = ?
+              AND error_message = ?
             ORDER BY created_at ASC",
         )
-        .bind(invoice_id);
+        .bind(invoice_id)
+        .bind(crate::types::VERIFIED_SETTLEMENT_MARKER);
 
         self.fetch_all(query)
             .await
@@ -996,7 +1005,7 @@ mod tests {
         assert_eq!(pending, expected_pending);
 
         let mut completed = dao
-            .update_swap_completed(swap_id)
+            .update_swap_completed(swap_id, false)
             .await
             .unwrap();
         completed.trunc_timestamps();
@@ -1021,7 +1030,7 @@ mod tests {
         assert_eq!(result, swap);
 
         let completed_err = dao
-            .update_swap_completed(swap_id)
+            .update_swap_completed(swap_id, false)
             .await
             .unwrap_err();
         assert_eq!(
@@ -1063,7 +1072,7 @@ mod tests {
         assert_eq!(submitted, expected_submitted);
 
         let completed_err = dao
-            .update_swap_completed(swap_id)
+            .update_swap_completed(swap_id, false)
             .await
             .unwrap_err();
         assert_eq!(
@@ -1109,7 +1118,7 @@ mod tests {
         );
 
         let result = dao
-            .update_swap_completed(swap_id)
+            .update_swap_completed(swap_id, false)
             .await
             .unwrap_err();
         assert_eq!(
@@ -1187,6 +1196,71 @@ mod tests {
                 swap_id: missing
             }
         );
+    }
+
+    #[tokio::test]
+    async fn only_verified_completed_incoming_swaps_are_refund_eligible() {
+        let dao = create_test_dao().await;
+        let invoice = default_create_invoice_data();
+        let invoice_id = invoice.id;
+        dao.create_invoice(invoice)
+            .await
+            .unwrap();
+
+        let verified = default_swap(invoice_id);
+        let verified_id = verified.id;
+        dao.create_swap(verified).await.unwrap();
+        dao.update_swap_submitted(verified_id)
+            .await
+            .unwrap();
+
+        let unverified = default_swap(invoice_id);
+        let unverified_id = unverified.id;
+        dao.create_swap(unverified)
+            .await
+            .unwrap();
+        dao.update_swap_submitted(unverified_id)
+            .await
+            .unwrap();
+
+        dao.get_submitted_swaps().await.unwrap();
+        let completed_verified = dao
+            .update_swap_completed(verified_id, true)
+            .await
+            .unwrap();
+        let completed_unverified = dao
+            .update_swap_completed(unverified_id, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            completed_verified
+                .error_message
+                .as_deref(),
+            Some(crate::types::VERIFIED_SETTLEMENT_MARKER)
+        );
+        assert_eq!(
+            completed_verified.status,
+            SwapStatus::Completed
+        );
+        // This models Across: it still reaches Completed normally, but without
+        // destination-chain verification it cannot become refund-eligible.
+        assert_eq!(
+            completed_unverified.status,
+            SwapStatus::Completed
+        );
+        assert!(
+            completed_unverified
+                .error_message
+                .is_none()
+        );
+
+        let eligible = dao
+            .get_completed_incoming_swaps_by_invoice(invoice_id)
+            .await
+            .unwrap();
+        assert_eq!(eligible.len(), 1);
+        assert_eq!(eligible[0].id, verified_id);
     }
 
     #[tokio::test]
@@ -1408,7 +1482,7 @@ mod tests {
             .await
             .unwrap();
         dao.get_submitted_swaps().await.unwrap();
-        dao.update_swap_completed(s_id)
+        dao.update_swap_completed(s_id, false)
             .await
             .unwrap();
 
@@ -1455,7 +1529,7 @@ mod tests {
             .await
             .unwrap();
         dao.get_submitted_swaps().await.unwrap();
-        dao.update_swap_completed(s_id)
+        dao.update_swap_completed(s_id, false)
             .await
             .unwrap();
 

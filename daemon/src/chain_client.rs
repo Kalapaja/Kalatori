@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::types::{
     ChainType,
     GeneralTransactionId,
+    SwapChainType,
     TransferInfo,
 };
 
@@ -102,6 +103,39 @@ pub struct GeneralChainTransfer {
     pub transaction_hash: Option<String>,
     // TODO: use DateTime<Utc> for consistency
     pub timestamp: u64, // milliseconds since epoch
+}
+
+/// An ERC-20 transfer decoded from a destination-chain transaction receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettlementTransfer {
+    pub token_address: String,
+    pub recipient_address: String,
+    pub amount_units: Option<u128>,
+}
+
+/// Destination-chain evidence used to independently confirm swap settlement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapSettlement {
+    pub chain: SwapChainType,
+    pub transfers: Vec<SettlementTransfer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SettlementVerificationError {
+    #[error("invalid transaction hash")]
+    InvalidTransactionHash,
+    #[error("destination-chain receipt is not available")]
+    ReceiptUnavailable,
+}
+
+/// Reads destination-chain settlement evidence independently of swap providers.
+#[cfg_attr(test, mockall::automock)]
+#[trait_variant::make(Send)]
+pub trait SwapSettlementVerifier: Sync {
+    async fn get_swap_settlement(
+        &self,
+        transaction_hash: &str,
+    ) -> Result<SwapSettlement, SettlementVerificationError>;
 }
 
 impl GeneralChainTransfer {
