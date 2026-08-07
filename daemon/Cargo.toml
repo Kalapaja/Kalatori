@@ -91,7 +91,39 @@ parity-scale-codec = { version = "3", features = ["derive"] }
 # Tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "json"] }
-tracing-loki = "0.2"
+# Default features pull reqwest/native-tls, i.e. OpenSSL on Linux, alongside the
+# rustls/aws-lc stack every money path already uses. Log shipping does not get to
+# add a second TLS implementation. `compat-0-2-1` is not optional: the crate
+# refuses to compile without it.
+#
+# What this does not buy: openssl 0.10.81, the version this drops, is affected
+# by no open advisory
+# (RUSTSEC-2025-0022 was patched in >= 0.10.72). The win is dropping runtime
+# linkage to the C libssl -- OS-level CVE surface that `cargo deny` cannot see
+# -- not closing a known hole. `deny.toml` no longer allows the OpenSSL license,
+# which keeps the stack from coming back.
+tracing-loki = { version = "0.2", default-features = false, features = [
+    "compat-0-2-1",
+    "rustls",
+] }
+# Trust store, not a second TLS stack. tracing-loki's `rustls` feature maps to
+# reqwest 0.12's `rustls-tls`, and in that major `rustls-tls` is hard-wired to
+# `rustls-tls-webpki-roots` -- a bundled root bundle, not the operating
+# system's. The daemon's own reqwest is 0.13, whose `rustls` routes through
+# rustls-platform-verifier and does read the OS store, so leaving this alone
+# would make log shipping the one subsystem in the daemon that ignores a CA the
+# operator installed. Silently, and only for Loki: payments would keep flowing
+# while log pushes failed certificate validation.
+#
+# tracing-loki 0.2 exposes no native-roots variant, so the feature has to be
+# turned on for reqwest 0.12 directly. Cargo unifies features per resolved
+# package, so naming it here applies to the instance tracing-loki resolves to;
+# the crate is never imported. reqwest 0.12 adds the two root sources in
+# independent branches, so this is additive -- webpki roots plus the OS store,
+# never fewer roots than before this change.
+loki-transport-roots = { package = "reqwest", version = "0.12", default-features = false, features = [
+    "rustls-tls-native-roots",
+] }
 
 # Utils
 config = "0.15"

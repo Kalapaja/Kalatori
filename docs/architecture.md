@@ -78,10 +78,47 @@ Business logic models: `Invoice`, `Payout`, `Transaction`, `Refund`, `Swap`, `We
 Monolithic `Error` enum with `PrettyCause` trait. Being migrated to domain-specific errors (see `chain_client/errors.rs`). `thiserror` derive for all error types.
 
 ### `daemon/src/utils/` — Utilities
-- `logger.rs` — tracing-subscriber setup, optional Loki integration
+- `logger.rs` — tracing-subscriber setup, optional Loki integration (see [TLS](#tls))
 - `logging.rs` — Structured log category/operation constants
 - `task_tracker.rs` — Wraps `tokio_util::task::TaskTracker` with error collection
 - `shutdown.rs` — `ShutdownNotification`, `CancellationToken`, panic hook, signal handling
+
+## TLS
+
+**One TLS implementation, process-wide: rustls with the aws-lc backend.** No
+OpenSSL, and nothing in the tree links the C `libssl`.
+
+`async_try_main` installs the aws-lc provider as rustls' process-wide default in
+its **first statement**, before `logger::initialize`. This ordering is
+load-bearing, not stylistic. Log shipping is the only other TLS user in the
+process — `tracing-loki` resolves reqwest 0.12, whose rustls feature set
+compiles in the ring backend — and installing first is what keeps it on aws-lc.
+
+Note what the ordering does *not* protect against: reqwest 0.12 never installs
+a default of its own. It reads one via `CryptoProvider::get_default` and, when
+the slot is empty, falls back to a locally built ring provider. Initialising
+the logger first would therefore not fail loudly — it would silently leave two
+crypto backends live in one process, Loki on ring and every payment on aws-lc.
+Nothing else in the tree calls `install_default`, which is what lets the call
+site `unwrap` its result. The comment there records the same thing.
+
+**Trust store: the operating system's, everywhere.** Two reqwest majors are in
+the tree and they reach that answer differently:
+
+| Consumer | reqwest | How roots are chosen |
+|---|---|---|
+| Money paths — Asset Hub, Polygon, Pimlico, Etherscan, merchant webhooks | 0.13 | `rustls` feature → `rustls-platform-verifier` → OS store |
+| Log shipping — `tracing-loki` | 0.12 | `rustls-tls` → bundled webpki roots, **plus** `rustls-tls-native-roots` enabled explicitly in `daemon/Cargo.toml` → OS store as well |
+
+reqwest 0.12's `rustls-tls` is hard-wired to the bundled `webpki-roots`, so
+without that explicit feature Loki would be the one subsystem in the daemon
+ignoring a CA the operator installed — silently, and only for logs. The two root
+sources are additive, so the result is never fewer roots than an operator
+expects. `tracing-loki` 0.2 exposes no native-roots variant of its own, which is
+why the feature is enabled on reqwest directly.
+
+`deny.toml` does not allow the `OpenSSL` license, which keeps the second stack
+from returning through a future dependency's default features.
 
 ### `client/` — Public Client Library
 Rust crate for integrating with Kalatori: HTTP client, shared types (API types, invoice/transaction types), HMAC utilities, Axum middleware for signature verification.

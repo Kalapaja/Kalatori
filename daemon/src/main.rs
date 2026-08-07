@@ -210,6 +210,27 @@ fn validate_and_extend_configs(
 
 #[expect(clippy::too_many_lines)]
 async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
+    // This must stay the first statement in the function, and in particular
+    // must precede `logger::initialize` below. rustls allows exactly one
+    // process-wide default provider: whoever installs first wins, and every
+    // later attempt fails.
+    //
+    // Every money path -- Asset Hub, Polygon, Pimlico, Etherscan, merchant
+    // webhooks -- runs on this provider, so it has to be the one we chose.
+    // Log shipping is the only other TLS user in the process, and it does not
+    // get to decide: tracing-loki resolves reqwest 0.12, whose rustls feature
+    // set compiles in the ring backend.
+    //
+    // What the ordering buys is not a won race. reqwest 0.12 never installs a
+    // default of its own: it reads one via `CryptoProvider::get_default` and,
+    // finding the slot empty, falls back to a locally built ring provider
+    // (`async_impl/client.rs`). So initialising the logger first would leave
+    // this `unwrap` intact and fail silently instead -- Loki on ring, every
+    // payment on aws-lc, two crypto backends live in one process. Installing
+    // here is what collapses that back to one.
+    //
+    // Nothing else in the tree calls `install_default`, which is what makes
+    // the `#[expect]` reason below true.
     #[expect(
         clippy::unwrap_used,
         reason = "startup: this is the first install of the process-wide crypto provider, so it cannot already be set"

@@ -8,7 +8,6 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     ca-certificates \
     curl \
-    libssl-dev \
     git \
     unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -80,16 +79,15 @@ WORKDIR /usr/src/kalatori
 # Build AWS-LC from the vendored sources pinned by aws-lc-sys, never from a
 # system install.
 #
-# This is inert at the version currently locked: aws-lc-sys 0.40.0 has no
-# system-probing code at all -- its builder/ contains no USE_SYSTEM, OPENSSL_DIR
-# or pkg_config. The probe is introduced in 0.43.0, which is what this pins the
-# intent ahead of. It matters because main.rs installs
-# aws_lc_rs::default_provider() process-wide, so every TLS connection the daemon
-# makes -- RPC, Pimlico, Etherscan, webhooks -- terminates on whatever got
-# linked here, and this stage installs pkg-config and libssl-dev.
+# This is live, not precautionary: the probe arrived in aws-lc-sys 0.43.0,
+# which is what the lockfile now pins. Up to 0.41.0 the builder/ directory
+# contained no USE_SYSTEM, OPENSSL_DIR or pkg_config at all. It matters because
+# main.rs installs aws_lc_rs::default_provider() process-wide, so every TLS
+# connection the daemon makes -- RPC, Pimlico, Etherscan, webhooks --
+# terminates on whatever got linked here, and this stage installs pkg-config.
 #
 # Set in .cargo/config.toml as well, so dev and CI builds do not diverge from
-# the image after that bump.
+# the image.
 ENV AWS_LC_SYS_USE_SYSTEM=0
 
 COPY rust-toolchain.toml ./

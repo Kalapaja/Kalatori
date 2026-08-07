@@ -28,7 +28,9 @@ allow = [
     "GPL-3.0-or-later",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
-    "OpenSSL",
+    # No "OpenSSL": nothing in the graph links libssl any more, and leaving the
+    # allowance out turns this list into a standing guardrail against the stack
+    # coming back through a future dependency's default features.
     "Unlicense",
     "bzip2-1.0.6",
 ]
