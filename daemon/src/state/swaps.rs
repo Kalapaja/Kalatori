@@ -118,6 +118,9 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::AssetMetadataUnavailable {
                 ..
             }
+            | SwapRequestError::AmountConversion {
+                ..
+            }
             | SwapRequestError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
@@ -146,6 +149,9 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::QuoteRequestFailed => "QUOTE_REQUEST_FAILED",
             SwapRequestError::SwapDestinationUnavailable => "SWAP_DESTINATION_UNAVAILABLE",
             SwapRequestError::AssetMetadataUnavailable {
+                ..
+            }
+            | SwapRequestError::AmountConversion {
                 ..
             }
             | SwapRequestError::DatabaseError => "INTERNAL_SERVER_ERROR",
@@ -180,6 +186,9 @@ impl ApiErrorExt for SwapRequestError {
             },
             SwapRequestError::QuoteRequestFailed
             | SwapRequestError::AssetMetadataUnavailable {
+                ..
+            }
+            | SwapRequestError::AmountConversion {
                 ..
             }
             | SwapRequestError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
@@ -218,6 +227,9 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::AssetMetadataUnavailable {
                 ..
             } => "The swap could not be prepared: asset metadata is unavailable.",
+            SwapRequestError::AmountConversion {
+                ..
+            } => "The swap amount cannot be represented in token base units.",
             SwapRequestError::DatabaseError => "A database error occurred.",
         }
     }

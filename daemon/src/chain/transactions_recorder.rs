@@ -271,9 +271,11 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
         let updated_received_amount = invoice
             .total_received_amount
             .checked_add(transaction.transfer_info.amount)
-            .ok_or(TransactionsRecorderError::AmountOverflow {
-                operation: "accumulating received amount",
-            })?;
+            .ok_or(
+                TransactionsRecorderError::AmountOverflow {
+                    operation: "accumulating received amount",
+                },
+            )?;
 
         let underpayment_tolerance = self
             .config
@@ -285,9 +287,11 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             .invoice
             .amount
             .checked_sub(underpayment_tolerance)
-            .ok_or(TransactionsRecorderError::AmountOverflow {
-                operation: "applying underpayment tolerance",
-            })?;
+            .ok_or(
+                TransactionsRecorderError::AmountOverflow {
+                    operation: "applying underpayment tolerance",
+                },
+            )?;
 
         let overpayment_tolerance = self
             .config
@@ -299,9 +303,11 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
             .invoice
             .amount
             .checked_add(overpayment_tolerance)
-            .ok_or(TransactionsRecorderError::AmountOverflow {
-                operation: "applying overpayment tolerance",
-            })?;
+            .ok_or(
+                TransactionsRecorderError::AmountOverflow {
+                    operation: "applying overpayment tolerance",
+                },
+            )?;
 
         let is_underpaid = updated_received_amount < min_paid_amount;
         let is_overpaid = updated_received_amount > max_paid_amount;
@@ -432,8 +438,7 @@ impl<D: DaoInterface + 'static> TransactionsRecorder<D> {
                 operation,
             }) => {
                 tracing::error!(
-                    invoice_id = %invoice.id,
-                    filled_amount = %updated_received_amount,
+                    invoice_id = %invoice.invoice.id,
                     operation,
                     "Amount overflow while storing transaction for invoice; nothing was committed"
                 );

@@ -594,10 +594,6 @@ impl<
         };
 
         // TODO: get precision from prestored values instead of hardcoding 6
-        #[expect(
-            clippy::unwrap_used,
-            reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
-        )]
         let from_amount_units = to_base_units(request.amount, 6)?;
 
         let data = CreateSwapData {

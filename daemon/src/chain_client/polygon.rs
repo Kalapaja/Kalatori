@@ -614,14 +614,13 @@ impl PolygonClient {
 
     /// Convert a log entry to a ChainTransfer
     async fn log_to_transfer(
-        &self,
+        asset_info_store: &AssetInfoStore<PolygonChainConfig>,
         log: &Log,
         event: &IERC20::Transfer,
     ) -> Result<ChainTransfer<PolygonChainConfig>, SubscriptionError> {
         let asset_id = log.address();
 
-        let asset_info = self
-            .asset_info_store
+        let asset_info = asset_info_store
             .get_asset_info(&asset_id)
             .await
             .ok_or_else(|| {
@@ -636,6 +635,12 @@ impl PolygonClient {
             })?;
 
         let tx_hash = log.transaction_hash.ok_or(
+            SubscriptionError::BlockProcessingFailed {
+                block_number: 0,
+            },
+        )?;
+
+        let block_number = log.block_number.ok_or(
             SubscriptionError::BlockProcessingFailed {
                 block_number: 0,
             },
@@ -657,19 +662,12 @@ impl PolygonClient {
         #[expect(clippy::cast_sign_loss)]
         let timestamp = chrono::Utc::now().timestamp_millis() as u64;
 
-        let amount = u256_to_decimal(event.value, asset_info.decimals).ok_or_else(|| {
-            tracing::warn!(
-                error.category = CHAIN_CLIENT,
-                error.operation = "log_to_transfer",
-                asset_id = %asset_id,
-                value = %event.value,
-                decimals = asset_info.decimals,
-                "Transfer amount is not representable as a Decimal; skipping block"
-            );
+        let error_block_number = u32::try_from(block_number).unwrap_or(u32::MAX);
+        let amount = u256_to_decimal(event.value, asset_info.decimals).ok_or(
             SubscriptionError::BlockProcessingFailed {
-                block_number: 0,
-            }
-        })?;
+                block_number: error_block_number,
+            },
+        )?;
 
         Ok(ChainTransfer {
             asset_id,
@@ -680,6 +678,44 @@ impl PolygonClient {
             transaction_id: const_hex::encode_prefixed(tx_hash),
             timestamp,
         })
+    }
+
+    async fn buffer_transfer_log(
+        asset_info_store: &AssetInfoStore<PolygonChainConfig>,
+        buffer: &mut ConfirmationBuffer,
+        log: &Log,
+        event: &IERC20::Transfer,
+        block_number: u64,
+        transaction_hash: TxHash,
+        log_index: u64,
+    ) {
+        match Self::log_to_transfer(asset_info_store, log, event).await {
+            Ok(transfer) => {
+                tracing::trace!(
+                    from = %transfer.sender,
+                    to = %transfer.recipient,
+                    amount = %transfer.amount,
+                    asset = %transfer.asset_name,
+                    block_number,
+                    "Detected ERC-20 transfer, waiting for confirmations"
+                );
+                buffer.insert(
+                    block_number,
+                    transaction_hash,
+                    log_index,
+                    transfer,
+                );
+            },
+            Err(error) => {
+                tracing::error!(
+                    ?error,
+                    %transaction_hash,
+                    block_number,
+                    raw_value = %event.value,
+                    "Failed to process transfer event, skipping it"
+                );
+            },
+        }
     }
 
     // Takes no `self`: the digest depends only on its arguments and the module
@@ -985,8 +1021,8 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                 decimals,
                 "Balance is not representable as a Decimal"
             );
-            QueryError::NotFound {
-                query_type: "erc20_balance".to_string(),
+            QueryError::DecodeFailed {
+                data_type: format!("ERC-20 balance {balance} with {decimals} decimals"),
             }
         })?;
 
@@ -1111,30 +1147,15 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                         match log.log_decode::<IERC20::Transfer>() {
                             Ok(decoded) => {
                                 let event = decoded.inner.data;
-                                match client.log_to_transfer(&log, &event).await {
-                                    Ok(transfer) => {
-                                        tracing::trace!(
-                                            from = %transfer.sender,
-                                            to = %transfer.recipient,
-                                            amount = %transfer.amount,
-                                            asset = %transfer.asset_name,
-                                            block_number,
-                                            "Detected ERC-20 transfer, waiting for confirmations"
-                                        );
-                                        buffer.insert(block_number, transaction_hash, log_index, transfer);
-                                    },
-                                    Err(e) => {
-                                        // The log decoded, so this is one of our Transfer
-                                        // events: failing to record it means a payment we
-                                        // will not see again until the invoice expires.
-                                        tracing::error!(
-                                            error = ?e,
-                                            tx_hash = ?log.transaction_hash,
-                                            "Failed to process transfer event, skipping it"
-                                        );
-                                        continue
-                                    },
-                                }
+                                Self::buffer_transfer_log(
+                                    &client.asset_info_store,
+                                    &mut buffer,
+                                    &log,
+                                    &event,
+                                    block_number,
+                                    transaction_hash,
+                                    log_index,
+                                ).await;
                             },
                             Err(e) => {
                                 // One log we cannot decode must not take down tracking for
@@ -1661,7 +1682,8 @@ mod tests {
             PolygonClient::compute_user_op_hash(
                 &default_polygon_unsigned_transaction(),
                 &[0xde, 0xad, 0xbe, 0xef],
-            ),
+            )
+            .unwrap(),
             b256!("0xadcbc48bfdb2401ec19ac83775527235c635fa609de423e3130c436a35dc1853"),
         );
     }
@@ -1784,6 +1806,67 @@ mod tests {
         assert_eq!(released[1].amount, Decimal::new(2, 6));
     }
 
+    #[tokio::test]
+    async fn unrepresentable_log_does_not_drop_other_transfers_in_batch() {
+        let asset_id = address!("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359");
+        let store = AssetInfoStore::new();
+        store.assets.write().await.insert(
+            asset_id,
+            AssetInfo {
+                name: "USDC".to_string(),
+                id: asset_id,
+                decimals: 6,
+            },
+        );
+
+        let mut buffer = ConfirmationBuffer::default();
+        let mut bad_log = Log::default();
+        bad_log.inner.address = asset_id;
+        bad_log.block_number = Some(100);
+        bad_log.transaction_hash = Some(TxHash::with_last_byte(1));
+        let bad_event = IERC20::Transfer {
+            from: Address::with_last_byte(1),
+            to: Address::with_last_byte(2),
+            value: U256::MAX,
+        };
+
+        let mut good_log = bad_log.clone();
+        good_log.transaction_hash = Some(TxHash::with_last_byte(2));
+        let good_event = IERC20::Transfer {
+            value: U256::from(1_000_000_u64),
+            ..bad_event.clone()
+        };
+
+        PolygonClient::buffer_transfer_log(
+            &store,
+            &mut buffer,
+            &bad_log,
+            &bad_event,
+            100,
+            TxHash::with_last_byte(1),
+            0,
+        )
+        .await;
+        PolygonClient::buffer_transfer_log(
+            &store,
+            &mut buffer,
+            &good_log,
+            &good_event,
+            100,
+            TxHash::with_last_byte(2),
+            1,
+        )
+        .await;
+
+        let delivered = buffer.take_confirmed(112, 12);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].amount, Decimal::ONE);
+        assert_eq!(
+            delivered[0].transaction_id,
+            const_hex::encode_prefixed(TxHash::with_last_byte(2))
+        );
+    }
+
     /// The budget we hand alloy has to run out while our own supervision is
     /// still waiting, not after it has given up. alloy retries one URL;
     /// `TransfersTracker::recreate()` is the only thing that can rotate to
@@ -1822,6 +1905,7 @@ mod tests {
             "alloy would still be retrying after {worst_case:?}, past our own \
              {WS_MESSAGES_TIMEOUT_DURATION:?} timeout, blocking endpoint rotation",
         );
+    }
 
     #[test]
     fn u256_to_decimal_handles_18_decimal_tokens() {
