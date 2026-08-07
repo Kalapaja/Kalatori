@@ -49,7 +49,7 @@ axum = { version = "0.8", default-features = false, features = [
     "macros",
 ] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "fs", "normalize-path"] }
+tower-http = { version = "0.7", features = ["trace", "request-id", "cors", "fs", "normalize-path"] }
 
 # Database
 # On update sqlx version, plase also update sqlx-cli to corresponding version in Makefile
@@ -128,8 +128,8 @@ loki-transport-roots = { package = "reqwest", version = "0.12", default-features
 # Utils
 config = "0.15"
 hkdf = "0.13"
-chacha20poly1305 = "0.10"
-base64 = "0.22"
+chacha20poly1305 = "0.11"
+base64 = "0.23"
 pasetors = { version = "0.7", default-features = false, features = ["v4", "paserk", "std"] }
 url = "2"
 # Please keep reqwest version in sync with the one in kalatori-client
@@ -151,7 +151,7 @@ zip = "8.5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
-mockall = "0.14"
+mockall = "0.15"
 mockall_double = "0.3"
 httpmock = "0.8"
 indoc = "2"

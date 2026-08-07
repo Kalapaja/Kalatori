@@ -95,11 +95,12 @@ pub fn decrypt_state(
     }
 
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
-    let nonce = chacha20poly1305::XNonce::from_slice(nonce_bytes);
+    let nonce = chacha20poly1305::XNonce::try_from(nonce_bytes)
+        .map_err(|_| OAuthError::StateDecryptionFailed)?;
 
     let cipher = XChaCha20Poly1305::new(key.expose_secret().into());
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|_| OAuthError::StateDecryptionFailed)?;
 
     String::from_utf8(plaintext).map_err(|_| OAuthError::StateDecryptionFailed)
