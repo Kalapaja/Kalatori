@@ -4,8 +4,8 @@ Self-hosted, non-custodial blockchain payment gateway daemon for Polkadot Asset 
 
 ## Critical Pitfalls
 
-- **Metadata regen required** when updating subxt or connecting to new chain version: `make install-subxt-cli && make download-node-metadata-ci`
-- **Version sync**: subxt-cli must match subxt in Cargo.toml (both 0.44), sqlx-cli must match sqlx (both 0.8) — versions pinned in `Makefile`
+- **Metadata regen required** when updating subxt or connecting to new chain version: `make setup-utils && make download-node-metadata`
+- **Version sync**: subxt-cli must match subxt in Cargo.toml (both 0.44), sqlx-cli must match sqlx (both 0.8) — versions pinned in `[workspace.metadata.bin]` in the root `Cargo.toml` (subxt-cli is pinned a *second* time in the `Dockerfile`; keep both in step)
 - **Clippy**: the PR clippy job — and only that job — runs `RUSTFLAGS="-Dwarnings"`, so every *enabled* lint fails it. The enabled set is small and **`pedantic` is not in it**. See [docs/conventions.md](docs/conventions.md) before assuming a lint protects you
 - **Never use `mod.rs`** — self-named modules only (enforced by `mod_module_files` clippy lint)
 - **Nightly rustfmt**: `cargo +nightly fmt --all`

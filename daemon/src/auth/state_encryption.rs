@@ -95,7 +95,11 @@ pub fn decrypt_state(
     }
 
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
-    let nonce = chacha20poly1305::XNonce::from_slice(nonce_bytes);
+    // `Array::from_slice` is deprecated in hybrid-array and panics on a length
+    // mismatch. `TryFrom` gives the same zero-copy view without the panic.
+    let nonce: &chacha20poly1305::XNonce = nonce_bytes
+        .try_into()
+        .map_err(|_| OAuthError::StateDecryptionFailed)?;
 
     let cipher = XChaCha20Poly1305::new(key.expose_secret().into());
     let plaintext = cipher
@@ -133,6 +137,32 @@ mod tests {
         let encrypted = encrypt_state(verifier, &key);
         let decrypted = decrypt_state(&encrypted, &key).unwrap();
         assert_eq!(decrypted, verifier);
+    }
+
+    /// Known-answer test: a `state` value produced by an earlier build must
+    /// still decrypt.
+    ///
+    /// Every other test here encrypts and decrypts with the same stack, so all
+    /// of them would keep passing if a dependency bump changed the encoder and
+    /// the decoder together -- while every OAuth callback carrying a `state`
+    /// issued by the previous build started failing. This vector is frozen
+    /// output, so it pins the wire format (`base64url(nonce || ciphertext ||
+    /// tag)`, XChaCha20-Poly1305, HKDF-SHA256 key derivation) rather than
+    /// merely our self-consistency.
+    ///
+    /// Captured under base64 0.23.1 / chacha20poly1305 0.11.0. If a future bump
+    /// breaks this, the format changed and in-flight auth flows will break
+    /// across the deploy -- do not regenerate the vector to make it pass.
+    #[test]
+    fn test_decrypts_a_frozen_vector() {
+        const FROZEN: &str =
+            "8CVovIqKtOce29ag1l0ZTfHELk5XDrPE4SwFKJbpsITZiFz2FsI0HnvTFJ0AK9LneMKIleXmBN40qA";
+
+        let key = derive_state_key(b"kat-secret", "kat-daemon");
+        assert_eq!(
+            decrypt_state(FROZEN, &key).unwrap(),
+            "kat-verifier-value"
+        );
     }
 
     #[test]

@@ -49,10 +49,11 @@ axum = { version = "0.8", default-features = false, features = [
     "macros",
 ] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "fs", "normalize-path"] }
+tower-http = { version = "0.7", features = ["trace", "request-id", "cors", "fs", "normalize-path"] }
 
 # Database
-# On update sqlx version, plase also update sqlx-cli to corresponding version in Makefile
+# On updating sqlx, also update sqlx-cli to the matching version in
+# [workspace.metadata.bin] in the root Cargo.toml
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "sqlite-unbundled",
@@ -64,7 +65,8 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 
 # Asset Hub chain
-# On update subxt version, plase also update subxt-cli to corresponding version in Makefile
+# On updating subxt, also update subxt-cli to the matching version in BOTH
+# [workspace.metadata.bin] in the root Cargo.toml and the Dockerfile
 subxt = "0.44"
 subxt-signer = "0.44"
 
@@ -128,9 +130,18 @@ loki-transport-roots = { package = "reqwest", version = "0.12", default-features
 # Utils
 config = "0.15"
 hkdf = "0.13"
-chacha20poly1305 = "0.10"
-base64 = "0.22"
-pasetors = { version = "0.7", default-features = false, features = ["v4", "paserk", "std"] }
+# `zeroize` was a non-optional dependency in 0.10 and became an opt-in feature
+# in 0.11. Without it the cipher's own copy of the state key, and the derived
+# Poly1305 key, are dropped without being wiped -- `secrecy` only covers the
+# original `StateKey`, not the copy `XChaCha20Poly1305::new` takes.
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
+# `simd-unsafe` is default-on in 0.23 and is the crate's only `unsafe`; without
+# it base64 is `#![forbid(unsafe_code)]`. It also buys us nothing here: our
+# engine is `general_purpose::URL_SAFE_NO_PAD`, whose encode/decode are
+# unconditionally scalar — the SIMD engines are separate types we never
+# construct. `std` reproduces the 0.22 default feature set exactly.
+base64 = { version = "0.23", default-features = false, features = ["std"] }
+pasetors = { version = "0.8", default-features = false, features = ["v4", "paserk", "std"] }
 url = "2"
 # Please keep reqwest version in sync with the one in kalatori-client
 reqwest = { version = "0.13", features = ["json", "form"] }
@@ -139,8 +150,6 @@ reqwest = { version = "0.13", features = ["json", "form"] }
 # See details here: https://docs.rs/rustls/latest/rustls/crypto/struct.CryptoProvider.html#using-the-per-process-default-cryptoprovider
 rustls = "0.23"
 zeroize = "1"
-# Don't forget to update me in `[build-dependencies]`!
-shadow-rs = { version = "0.36", default-features = false }
 thiserror = "2"
 trait-variant = "0.1"
 sha2 = "0.11"
@@ -151,16 +160,12 @@ zip = "8.5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
-mockall = "0.14"
+mockall = "0.15"
 mockall_double = "0.3"
 httpmock = "0.8"
 indoc = "2"
 tracing-test = "0.2"
 insta = { version = "1", features = ["json", "yaml", "redactions"] }
-
-[build-dependencies]
-# Don't forget to update me in `[dependencies]`!
-shadow-rs = { version = "0.36", default-features = false }
 
 [features]
 default = []

@@ -45,11 +45,11 @@ workflow to compile the project will be following:
 
 1. Install `subxt-cli` locally, into the `bin` folder:
 ```sh
-make install-subxt-cli
+make setup-utils
 ```
 2. Download Asset Hub's node metadata:
 ```sh
-make download-node-metadata-ci
+make download-node-metadata
 ```
 3. Build the daemon:
 ```sh

@@ -3,6 +3,13 @@
 # output a note when they are encountered.
 
 ignore = [
+    # paste unmaintained. Build-time transitive dep, not a vulnerability.
+    # Reached from alloy-primitives and syn-solidity, and independently from
+    # ark-ff 0.3, 0.4 and 0.5 (0.6 has already dropped it). cargo deny reads
+    # the lockfile rather than the feature-resolved tree, so the ark-ff copies
+    # count even though our feature set does not compile them: this ignore can
+    # only go once *every* one of those reverse deps stops resolving paste, not
+    # when alloy alone migrates to pastey.
     "RUSTSEC-2024-0436",
     # proc-macro-error2 unmaintained. Build-time transitive dep via
     # subxt-macro; no safe upgrade available and not a vulnerability.
