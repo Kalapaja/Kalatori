@@ -28,12 +28,21 @@ jobs:
       - name: Create database directory
         run: mkdir database
 
+      # Compile before the readiness poll below, so the build does not race its
+      # timeout. `make run` is `cargo run`, which builds first; with the
+      # workspace-root profiles now actually applying, `[profile.dev.package."*"]
+      # opt-level = 3` rebuilds the whole dependency graph optimised, and on a
+      # cold cache that alone exceeds the poll's budget.
+      - name: Build daemon
+        run: cargo build --bin kalatori
+
       - name: Run daemon and chopsticks in background
         run: make run &
 
       # Poll the public /info endpoint until the daemon answers, capped at 5
       # minutes so a stuck daemon still fails the job in bounded time. Replaces
-      # an unconditional `sleep 300`.
+      # an unconditional `sleep 300`. The binary is already built by the step
+      # above, so this measures startup, not compilation.
       - name: Wait for daemon to be ready
         run: |
           timeout 300 bash -c 'until curl -sf http://localhost:8080/public/info >/dev/null; do sleep 2; done'
