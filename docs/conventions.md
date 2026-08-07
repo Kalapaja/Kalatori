@@ -276,10 +276,13 @@ tracing::debug!(
 ## Dependency Management
 
 - CLI tool versions are pinned in `[workspace.metadata.bin]` in the root
-  `Cargo.toml` and installed by `make setup-utils` (which runs `cargo bin
-  --install`). They are *not* Makefile variables, and Dependabot cannot see
-  them — a metadata table is not a dependency section, so they drift silently
-  and need checking by hand.
+  `Cargo.toml` and installed by `make setup-utils`, which runs
+  `cargo bin --install`. They are *not* Makefile variables, and Dependabot
+  cannot see them — a metadata table is not a dependency section, so they
+  drift silently and need checking by hand. Note they also cannot currently be
+  *changed* without breaking CI; see
+  [testing-strategy.md](testing-strategy.md) and
+  [#390](https://github.com/Kalapaja/Kalatori/issues/390).
 - **subxt** and **subxt-cli** versions must match. Note `subxt-cli` is pinned
   in **two** places: `[workspace.metadata.bin]` and `Dockerfile`. Update both.
 - **sqlx** and **sqlx-cli** versions must match (`[workspace.metadata.bin]`)

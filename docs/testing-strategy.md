@@ -67,12 +67,20 @@ Reusable job templates: `_job-cargo-check.yml`, `_job-cargo-test.yml`, `_job-car
 
 Pinned in `[workspace.metadata.bin]` in the root `Cargo.toml`, installed by
 `make setup-utils`:
-- nextest: 0.9.143
-- llvm-cov: 0.8.7
-- cargo-insta: 1.48.0
+- nextest: 0.9.133
+- llvm-cov: 0.8.4
+- cargo-insta: 1.46.3
 - cargo-mutants: 26.2.0
 
 Dependabot does not watch these — `[workspace.metadata.bin]` is a metadata
 table, not a dependency section — so they only move when someone checks.
+
+**These pins cannot currently be changed.** CI caches `.bin/` under
+`bins-${{ hashFiles('Cargo.toml') }}`, so editing the root `Cargo.toml` at all
+forces a cache miss and a real `make setup-utils`. That install then fails:
+subxt ships no release binaries, so `cargo binstall` falls back to
+`cargo install`, which rejects the `--install-path` flag `cargo-run-bin`
+passes. The cache is the only reason this works today. See
+[#390](https://github.com/Kalapaja/Kalatori/issues/390).
 
 Install all: `make setup-utils`
