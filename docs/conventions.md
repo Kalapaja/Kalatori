@@ -161,7 +161,7 @@ Verify a profile change actually landed rather than trusting the manifest:
 
 ```sh
 cargo build --release -vv 2>&1 | grep 'rustc --crate-name kalatori '
-# expect: -C overflow-checks=on -C panic=abort -C lto -C codegen-units=1
+# expect: -C overflow-checks=on -C lto -C codegen-units=1
 ```
 
 ## Panic Gate
@@ -200,11 +200,18 @@ fatal:
 - `std::process::abort`/`exit`, and allocation failure.
 - Panics inside dependencies on data we hand them.
 
-Treat the gate as removing the *careless* panics, not as a guarantee. Note
-also that `panic = "abort"` is now genuinely in effect for release builds
-(see [Build Profiles](#build-profiles)), so a release-mode panic no longer
-unwinds into a graceful shutdown — the hook still runs, but the process dies
-immediately after it.
+Treat the gate as removing the *careless* panics, not as a guarantee.
+
+`panic = "abort"` is deliberately **not** part of the release profile, even
+though it sat in `daemon/Cargo.toml` for months. It was written in 2024 when
+this was a single crate and went inert when the workspace split moved the
+profile out of the root, so moving the profile back would have revived it
+rather than introduced it. Under abort the panic hook still runs, but the
+process dies before the shutdown listener can observe the cancelled token — the
+executor, chain trackers, webhook sender and keyring never drain — and Tokio's
+per-task containment goes with it, so a panic in any spawned task takes the
+daemon down instead of surfacing as a `JoinError`. Unwinding keeps the graceful
+path this daemon actually implements.
 
 ### Test code
 
