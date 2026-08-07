@@ -4,6 +4,44 @@ Decision records and behavioral notes for the swaps subsystem
 (`daemon/src/swaps/`, `daemon/src/clients/swaps/`). Not yet a full subsystem
 overview — see [architecture.md](architecture.md) for the component map.
 
+## Executed swaps require destination-chain settlement evidence (2026-08-07)
+
+A provider reporting `Executed` is not sufficient to make a swap eligible as a
+refund destination. Incoming same-chain swaps use normal 0x, whose stored hash
+is the Polygon transaction hash. Before completing one, the tracker reads that
+receipt and requires an ERC-20 `Transfer` whose contract and recipient exactly
+match the stored `to_token_address` and `to_address`; EVM address spelling is
+compared case-insensitively. The observed chain must exactly match `to_chain`.
+
+A 0x mismatch is terminally marked `Failed` and logged at error level with the
+swap, invoice, provider, claimed hash, expected settlement, and all observed
+transfers for manual reconciliation. Receipt/RPC unavailability is retried and
+does not make a terminal decision. Verified-ness is persisted without a schema
+change as an internal marker in the existing `error_message` column, written in
+the same update that marks the swap `Completed`; it therefore survives restarts
+and excludes pre-rule completed rows. Refund destination detection requires the
+marker and also ignores a swap unless its stored destination matches the invoice
+payment address persisted on the refund.
+
+Incoming cross-chain swaps use Across, whose stored identifier is the
+source-chain deposit reference rather than a Polygon fill hash. Across swaps
+therefore complete normally, without receipt verification or behavior change,
+but never receive the marker and are permanently refund-ineligible. They fall
+through to transaction-based detection or manual handling. Provider-specific
+destination-hash resolution was deliberately deferred. Bungee is unreachable
+because executor selection never chooses it; 0x gasless is outgoing-only and
+cannot be selected by the incoming-swap refund query.
+
+Amount is advisory for existing rows. `Swap` persists the requested destination
+units but neither the quote's slippage allowance nor destination-token decimals,
+so it cannot reconstruct a defensible unit lower bound. A below-requested amount
+is logged but does not by itself reject strict recipient/token/chain evidence.
+Persisting quote slippage can make this a lower-bound check later.
+
+Binding public swap-mutation endpoints to a per-invoice token is deliberately
+deferred to a separate authorization-hardening change; this rule does not alter
+the external HTTP API.
+
 ## Payer signatures are validated and claimed atomically (2026-08-04)
 
 A gasless 0x quote can require two signatures — the trade and a token approval

@@ -6,6 +6,11 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::balance_checker::BalanceChecker;
+use crate::chain_client::{
+    PolygonClient,
+    SwapSettlement,
+    SwapSettlementVerifier,
+};
 use crate::clients::{
     ExecutorSwapStatus,
     SwapsClientError,
@@ -19,6 +24,8 @@ use crate::types::{
     PayoutStatus,
     RefundStatus,
     Swap,
+    SwapDirection,
+    SwapExecutorType,
     SwapStatus,
     TransactionOriginVariant,
 };
@@ -33,6 +40,11 @@ const SWAPS_EXECUTOR_API_POLLING_INTERVAL_MILLIS: u64 = 3000;
 const SWAPS_EXECUTOR_DATABASE_POLLING_INTERVAL_MILLIS: u64 = 100;
 const SWAPS_EXECUTOR_PENDING_RELOAD_RETRY_MILLIS: u64 = 5000;
 const SWAPS_EXECUTOR_PENDING_RELOAD_MAX_ATTEMPTS: u32 = 12;
+
+fn requires_settlement_verification(swap: &Swap) -> bool {
+    swap.request.direction == SwapDirection::Incoming
+        && swap.request.swap_executor == SwapExecutorType::ZeroEx
+}
 
 struct TrackedSwaps {
     swaps: HashMap<Uuid, Swap>,
@@ -141,11 +153,15 @@ fn apply_hashless_swap_reload(
     Some(reloaded)
 }
 
-pub struct SwapsTracker<D: DaoInterface + 'static> {
+pub struct SwapsTracker<
+    D: DaoInterface + 'static,
+    V: SwapSettlementVerifier + 'static = PolygonClient,
+> {
     dao: D,
     store: TrackedSwaps,
     clients: SwapsClients,
     balance_checker: BalanceChecker,
+    settlement_verifier: V,
 }
 
 #[expect(clippy::enum_variant_names)]
@@ -162,24 +178,124 @@ impl From<SwapsClientError> for SwapsTrackerError {
     }
 }
 
-impl<D: DaoInterface + 'static> SwapsTracker<D> {
+impl<D: DaoInterface + 'static, V: SwapSettlementVerifier + 'static> SwapsTracker<D, V> {
     pub fn new(
         dao: D,
         clients: SwapsClients,
         balance_checker: BalanceChecker,
+        settlement_verifier: V,
     ) -> Self {
         Self {
             dao,
             clients,
             balance_checker,
+            settlement_verifier,
             store: TrackedSwaps::new(),
         }
+    }
+
+    fn settlement_matches(
+        swap: &Swap,
+        settlement: &SwapSettlement,
+    ) -> bool {
+        if settlement.chain != swap.request.to_chain {
+            return false
+        }
+
+        settlement
+            .transfers
+            .iter()
+            .any(|transfer| {
+                transfer
+                    .token_address
+                    .eq_ignore_ascii_case(&swap.request.to_token_address)
+                    && transfer
+                        .recipient_address
+                        .eq_ignore_ascii_case(&swap.request.to_address)
+            })
+    }
+
+    async fn verify_executed_swap(
+        &mut self,
+        swap: &Swap,
+    ) -> Result<bool, SwapsTrackerError> {
+        let transaction_hash = swap
+            .swap_details
+            .transaction_hash
+            .as_deref()
+            .ok_or(SwapsTrackerError::ApiError)?;
+        let settlement = self
+            .settlement_verifier
+            .get_swap_settlement(transaction_hash)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    swap_id = %swap.id,
+                    invoice_id = %swap.request.invoice_id,
+                    provider = %swap.request.swap_executor,
+                    claimed_transaction_hash = transaction_hash,
+                    error = %error,
+                    "Destination-chain settlement evidence is temporarily unavailable"
+                );
+                SwapsTrackerError::ApiError
+            })?;
+
+        if !Self::settlement_matches(swap, &settlement) {
+            tracing::error!(
+                swap_id = %swap.id,
+                invoice_id = %swap.request.invoice_id,
+                provider = %swap.request.swap_executor,
+                claimed_transaction_hash = transaction_hash,
+                expected_chain = %swap.request.to_chain,
+                expected_recipient = %swap.request.to_address,
+                expected_token = %swap.request.to_token_address,
+                expected_amount_units = swap.request.expected_to_amount_units,
+                actual_chain = %settlement.chain,
+                actual_transfers = ?settlement.transfers,
+                "Provider reported an executed swap whose on-chain settlement does not match; marking it failed for manual reconciliation"
+            );
+            self.handle_swap_failed(swap).await?;
+            return Ok(false)
+        }
+
+        let delivered_amount = settlement
+            .transfers
+            .iter()
+            .filter(|transfer| {
+                transfer
+                    .token_address
+                    .eq_ignore_ascii_case(&swap.request.to_token_address)
+                    && transfer
+                        .recipient_address
+                        .eq_ignore_ascii_case(&swap.request.to_address)
+            })
+            .filter_map(|transfer| transfer.amount_units)
+            .fold(0_u128, u128::saturating_add);
+
+        if delivered_amount < swap.request.expected_to_amount_units {
+            // Swap rows do not persist the quote's slippage allowance (and do
+            // not persist destination-token decimals), so no defensible unit
+            // lower bound can be reconstructed here. Recipient/token/chain are
+            // security-critical and strict; amount is deliberately advisory.
+            tracing::warn!(
+                swap_id = %swap.id,
+                invoice_id = %swap.request.invoice_id,
+                provider = %swap.request.swap_executor,
+                claimed_transaction_hash = transaction_hash,
+                expected_amount_units = swap.request.expected_to_amount_units,
+                delivered_amount_units = delivered_amount,
+                "Verified swap settlement amount is below the requested amount; accepting because the stored swap has no reconstructible slippage bound"
+            );
+        }
+
+        Ok(true)
     }
 
     #[tracing::instrument(skip_all)]
     async fn handle_swap_executed(
         &mut self,
         swap: &Swap,
+        settlement_verified: bool,
     ) -> Result<(), SwapsTrackerError> {
         // TODO: check error, if it's Invoice not found, skip monitoring (shouldn't
         // happen though)
@@ -215,7 +331,7 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
             .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
         dao_transaction
-            .update_swap_completed(swap.id)
+            .update_swap_completed(swap.id, settlement_verified)
             .await
             .map_err(|_| SwapsTrackerError::DatabaseError)?;
 
@@ -346,7 +462,12 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
                 tracing::trace!("Swap still has pending status, keep watching")
             },
             ExecutorSwapStatus::Executed => {
-                self.handle_swap_executed(swap).await?;
+                let requires_verification = requires_settlement_verification(swap);
+
+                if !requires_verification || self.verify_executed_swap(swap).await? {
+                    self.handle_swap_executed(swap, requires_verification)
+                        .await?;
+                }
             },
             ExecutorSwapStatus::Failed => {
                 self.handle_swap_failed(swap).await?;
@@ -543,8 +664,13 @@ impl<D: DaoInterface + 'static> SwapsTracker<D> {
 
 #[cfg(test)]
 mod tests {
+    use crate::chain_client::{
+        SettlementTransfer,
+        SwapSettlement,
+    };
     use crate::dao::DaoSwapError;
     use crate::types::{
+        SwapChainType,
         SwapStatus,
         default_swap,
     };
@@ -593,5 +719,109 @@ mod tests {
             .is_none()
         );
         assert!(store.swaps.contains_key(&swap.id));
+    }
+
+    fn settlement_for(
+        swap: &Swap,
+        amount_units: u128,
+    ) -> SwapSettlement {
+        SwapSettlement {
+            chain: swap.request.to_chain,
+            transfers: vec![SettlementTransfer {
+                token_address: swap
+                    .request
+                    .to_token_address
+                    .to_lowercase(),
+                recipient_address: swap.request.to_address.to_uppercase(),
+                amount_units: Some(amount_units),
+            }],
+        }
+    }
+
+    #[test]
+    fn unrelated_successful_transaction_is_not_valid_settlement() {
+        let swap = default_swap(Uuid::new_v4());
+        let settlement = SwapSettlement {
+            chain: swap.request.to_chain,
+            transfers: vec![SettlementTransfer {
+                token_address: swap.request.to_token_address.clone(),
+                recipient_address: "0x0000000000000000000000000000000000000001".to_string(),
+                amount_units: Some(swap.request.expected_to_amount_units),
+            }],
+        };
+
+        assert!(!SwapsTracker::<crate::dao::DAO>::settlement_matches(&swap, &settlement));
+    }
+
+    #[test]
+    fn matching_settlement_is_accepted_case_insensitively() {
+        let swap = default_swap(Uuid::new_v4());
+        let settlement = settlement_for(
+            &swap,
+            swap.request.expected_to_amount_units,
+        );
+
+        assert!(SwapsTracker::<crate::dao::DAO>::settlement_matches(&swap, &settlement));
+    }
+
+    #[test]
+    fn matching_settlement_below_expected_amount_remains_eligible() {
+        let swap = default_swap(Uuid::new_v4());
+        let settlement = settlement_for(
+            &swap,
+            swap.request
+                .expected_to_amount_units
+                .saturating_sub(1),
+        );
+
+        assert!(SwapsTracker::<crate::dao::DAO>::settlement_matches(&swap, &settlement));
+    }
+
+    #[test]
+    fn wrong_token_is_not_valid_settlement() {
+        let swap = default_swap(Uuid::new_v4());
+        let mut settlement = settlement_for(
+            &swap,
+            swap.request.expected_to_amount_units,
+        );
+        settlement.transfers[0].token_address =
+            "0x0000000000000000000000000000000000000001".to_string();
+
+        assert!(!SwapsTracker::<crate::dao::DAO>::settlement_matches(&swap, &settlement));
+    }
+
+    #[test]
+    fn wrong_chain_is_not_valid_settlement() {
+        let swap = default_swap(Uuid::new_v4());
+        let mut settlement = settlement_for(
+            &swap,
+            swap.request.expected_to_amount_units,
+        );
+        settlement.chain = SwapChainType::Base;
+
+        assert!(!SwapsTracker::<crate::dao::DAO>::settlement_matches(&swap, &settlement));
+    }
+
+    #[test]
+    fn incoming_zero_ex_requires_verification_but_across_does_not() {
+        let mut zero_ex = default_swap(Uuid::new_v4());
+        zero_ex.request.direction = SwapDirection::Incoming;
+        zero_ex.request.swap_executor = SwapExecutorType::ZeroEx;
+        assert!(requires_settlement_verification(
+            &zero_ex
+        ));
+
+        let mut across = zero_ex.clone();
+        across.request.swap_executor = SwapExecutorType::Across;
+        assert!(!requires_settlement_verification(
+            &across
+        ));
+
+        let mut gasless = zero_ex;
+        gasless.request.direction = SwapDirection::Outgoing;
+        gasless.request.swap_executor = SwapExecutorType::ZeroExGasless;
+        assert!(!requires_settlement_verification(
+            &gasless
+        ));
     }
 }

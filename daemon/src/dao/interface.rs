@@ -337,6 +337,7 @@ pub trait DaoInterface: Send + Sync + 'static {
     async fn update_swap_completed(
         &self,
         swap_id: Uuid,
+        settlement_verified: bool,
     ) -> Result<Swap, DaoSwapError>;
 
     async fn update_swap_failed(
@@ -614,6 +615,7 @@ pub trait DaoTransactionInterface {
     async fn update_swap_completed(
         &self,
         swap_id: Uuid,
+        settlement_verified: bool,
     ) -> Result<Swap, DaoSwapError>;
 
     async fn update_swap_failed(
@@ -995,8 +997,9 @@ impl DaoInterface for DAO {
     async fn update_swap_completed(
         &self,
         swap_id: Uuid,
+        settlement_verified: bool,
     ) -> Result<Swap, DaoSwapError> {
-        DaoSwapMethods::update_swap_completed(self, swap_id).await
+        DaoSwapMethods::update_swap_completed(self, swap_id, settlement_verified).await
     }
 
     async fn update_swap_failed(
@@ -1373,8 +1376,9 @@ impl DaoTransactionInterface for DaoTransaction {
     async fn update_swap_completed(
         &self,
         swap_id: Uuid,
+        settlement_verified: bool,
     ) -> Result<Swap, DaoSwapError> {
-        DaoSwapMethods::update_swap_completed(self, swap_id).await
+        DaoSwapMethods::update_swap_completed(self, swap_id, settlement_verified).await
     }
 
     async fn update_swap_failed(

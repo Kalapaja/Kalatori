@@ -31,6 +31,10 @@ use super::{
     TransactionOrigin,
 };
 
+/// Persisted marker proving that the tracker independently verified the
+/// destination-chain settlement before completing the swap.
+pub const VERIFIED_SETTLEMENT_MARKER: &str = "destination_chain_settlement_verified";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateFrontEndSwapParams {
     pub invoice_id: Uuid,

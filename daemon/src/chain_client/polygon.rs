@@ -58,14 +58,19 @@ use super::{
     GeneralTransactionId,
     KeyringClient,
     QueryError,
+    SettlementTransfer,
+    SettlementVerificationError,
     SignPermitRequestData,
     SignedTransaction,
     SignedTransactionUtils,
     SubscriptionError,
+    SwapSettlement,
+    SwapSettlementVerifier,
     TransactionError,
     TransfersStream,
     UnsignedTransaction,
 };
+use crate::types::SwapChainType;
 
 use super::keyring::SignTransactionRequestData;
 
@@ -1468,6 +1473,54 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
                 transaction_id: op_hash,
             },
         )
+    }
+}
+
+impl SwapSettlementVerifier for PolygonClient {
+    #[tracing::instrument(skip(self))]
+    async fn get_swap_settlement(
+        &self,
+        transaction_hash: &str,
+    ) -> Result<SwapSettlement, SettlementVerificationError> {
+        let transaction_hash = transaction_hash
+            .parse::<TxHash>()
+            .map_err(|_| SettlementVerificationError::InvalidTransactionHash)?;
+        let receipt = self
+            .provider
+            .get_transaction_receipt(transaction_hash)
+            .await
+            .inspect_err(|error| {
+                tracing::debug!(
+                    error.source = ?error,
+                    %transaction_hash,
+                    "Failed to fetch swap settlement receipt"
+                );
+            })
+            .map_err(|_| SettlementVerificationError::ReceiptUnavailable)?
+            .ok_or(SettlementVerificationError::ReceiptUnavailable)?;
+
+        let transfers = receipt
+            .inner
+            .logs()
+            .iter()
+            .filter_map(|log| {
+                let decoded = log
+                    .log_decode::<IERC20::Transfer>()
+                    .ok()?;
+                let amount_units = u128::try_from(decoded.inner.data.value).ok();
+
+                Some(SettlementTransfer {
+                    token_address: log.address().to_string(),
+                    recipient_address: decoded.inner.data.to.to_string(),
+                    amount_units,
+                })
+            })
+            .collect();
+
+        Ok(SwapSettlement {
+            chain: SwapChainType::Polygon,
+            transfers,
+        })
     }
 }
 
