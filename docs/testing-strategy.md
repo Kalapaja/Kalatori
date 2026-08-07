@@ -65,9 +65,14 @@ Reusable job templates: `_job-cargo-check.yml`, `_job-cargo-test.yml`, `_job-car
 
 ## Tool Versions
 
-Pinned in `Makefile`:
-- nextest: 0.9.129
-- llvm-cov: 0.8.4
+Pinned in `[workspace.metadata.bin]` in the root `Cargo.toml`, installed by
+`make setup-utils`:
+- nextest: 0.9.143
+- llvm-cov: 0.8.7
+- cargo-insta: 1.48.0
 - cargo-mutants: 26.2.0
+
+Dependabot does not watch these — `[workspace.metadata.bin]` is a metadata
+table, not a dependency section — so they only move when someone checks.
 
 Install all: `make setup-utils`

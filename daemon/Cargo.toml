@@ -52,7 +52,8 @@ tower = "0.5"
 tower-http = { version = "0.7", features = ["trace", "request-id", "cors", "fs", "normalize-path"] }
 
 # Database
-# On update sqlx version, plase also update sqlx-cli to corresponding version in Makefile
+# On updating sqlx, also update sqlx-cli to the matching version in
+# [workspace.metadata.bin] in the root Cargo.toml
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "sqlite-unbundled",
@@ -64,7 +65,8 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 
 # Asset Hub chain
-# On update subxt version, plase also update subxt-cli to corresponding version in Makefile
+# On updating subxt, also update subxt-cli to the matching version in BOTH
+# [workspace.metadata.bin] in the root Cargo.toml and the Dockerfile
 subxt = "0.44"
 subxt-signer = "0.44"
 
@@ -128,7 +130,11 @@ loki-transport-roots = { package = "reqwest", version = "0.12", default-features
 # Utils
 config = "0.15"
 hkdf = "0.13"
-chacha20poly1305 = "0.11"
+# `zeroize` was a non-optional dependency in 0.10 and became an opt-in feature
+# in 0.11. Without it the cipher's own copy of the state key, and the derived
+# Poly1305 key, are dropped without being wiped -- `secrecy` only covers the
+# original `StateKey`, not the copy `XChaCha20Poly1305::new` takes.
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 # `simd-unsafe` is default-on in 0.23 and is the crate's only `unsafe`; without
 # it base64 is `#![forbid(unsafe_code)]`. It also buys us nothing here: our
 # engine is `general_purpose::URL_SAFE_NO_PAD`, whose encode/decode are

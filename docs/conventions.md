@@ -275,11 +275,18 @@ tracing::debug!(
 
 ## Dependency Management
 
-- **subxt** and **subxt-cli** versions must match (pinned in `Makefile` as `subxt_cli_version`)
-- **sqlx** and **sqlx-cli** versions must match (pinned in `Makefile` as `sqlx_cli_version`)
+- CLI tool versions are pinned in `[workspace.metadata.bin]` in the root
+  `Cargo.toml` and installed by `make setup-utils` (which runs `cargo bin
+  --install`). They are *not* Makefile variables, and Dependabot cannot see
+  them — a metadata table is not a dependency section, so they drift silently
+  and need checking by hand.
+- **subxt** and **subxt-cli** versions must match. Note `subxt-cli` is pinned
+  in **two** places: `[workspace.metadata.bin]` and `Dockerfile`. Update both.
+- **sqlx** and **sqlx-cli** versions must match (`[workspace.metadata.bin]`)
 - **reqwest** version synced between daemon and client crates
 - `cargo deny` checks licenses and security advisories (`make cargo-deny`)
-- When updating subxt: reinstall CLI (`make install-subxt-cli`), regenerate metadata (`make download-node-metadata-ci`), rebuild
+- When updating subxt: reinstall the CLI (`make setup-utils`), regenerate
+  metadata (`make download-node-metadata`), rebuild
 
 ## Error Handling Quick Reference
 

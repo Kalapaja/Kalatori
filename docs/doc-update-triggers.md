@@ -15,7 +15,7 @@ After completing code changes, check this table and update any affected docs. Al
 | **New chain support** | `AGENTS.md`, `docs/architecture.md` throughout |
 | **MSRV or toolchain change** | `rust-version` in root `Cargo.toml` `[workspace.package]` (single source, inherited by all members), then `AGENTS.md` tech stack, `docs/conventions.md` code style, `CONTRIBUTING.md` prerequisites |
 | **New dependency (major)** | `AGENTS.md` tech stack |
-| **subxt/sqlx version bump** | `AGENTS.md` pitfalls (version sync), `Makefile` version pins |
+| **subxt/sqlx version bump** | `AGENTS.md` pitfalls (version sync), `[workspace.metadata.bin]` in the root `Cargo.toml`, and — for subxt only — the duplicate `subxt-cli` pin in `Dockerfile` |
 | **MCP config changes** | `docs/mcp-tooling.md` |
 | **New docs file created** | `AGENTS.md` Documentation Map table |
 | **Makefile target changes** | `AGENTS.md` commands section, `docs/testing-strategy.md` if test-related |
