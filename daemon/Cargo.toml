@@ -135,7 +135,7 @@ chacha20poly1305 = "0.11"
 # unconditionally scalar — the SIMD engines are separate types we never
 # construct. `std` reproduces the 0.22 default feature set exactly.
 base64 = { version = "0.23", default-features = false, features = ["std"] }
-pasetors = { version = "0.7", default-features = false, features = ["v4", "paserk", "std"] }
+pasetors = { version = "0.8", default-features = false, features = ["v4", "paserk", "std"] }
 url = "2"
 # Please keep reqwest version in sync with the one in kalatori-client
 reqwest = { version = "0.13", features = ["json", "form"] }

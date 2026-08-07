@@ -61,7 +61,7 @@ RUN rustup show active-toolchain || rustup toolchain install
 RUN cargo install --locked cargo-chef
 
 # Install subxt-cli separately to cache it, keep version in sync with Cargo.toml
-RUN cargo install subxt-cli --version 0.44.0 --locked
+RUN cargo install subxt-cli --version 0.44.3 --locked
 
 FROM base AS planner
 
