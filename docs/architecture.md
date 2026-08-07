@@ -118,11 +118,11 @@ Both are deterministic: same seed + same invoice params = same payment account.
 
 ## Configuration System
 
-Eight config types loaded at startup (all support env var overrides):
+Ten config types loaded at startup (all support env var overrides):
 
 | Config | File | Key Fields |
 |--------|------|------------|
-| Chains | `chains.json` | Chain endpoints, assets (mandatory) |
+| Chains | `chains.json` | Chain endpoints (optional — see below), assets |
 | Payments | `payments.json` | Recipient addresses, account lifetime, default chain/asset |
 | Secrets | `secrets.json` | BIP39 seed phrase, API secret key |
 | Database | `database.json` | Database path, temporary mode, fail-closed existing-database requirement |
@@ -130,6 +130,18 @@ Eight config types loaded at startup (all support env var overrides):
 | Shop | `shop.json` | Webhook URL, shop metadata, signature max age |
 | Logger | `logger.json` | Log level, Loki endpoint |
 | Etherscan | `etherscan_client.json` | API key for Etherscan/Polygonscan |
+| Auth | `auth.json` | OAuth client credentials, token lifetimes |
+| Swaps | `swaps.json` | 0x API key and RPC URL (RPC optional — see below) |
+
+**Public-default endpoints**: chain endpoints and the swaps 0x RPC URL are *not*
+mandatory. Leaving either unset falls back to compiled-in free public providers
+(`configs/consts.rs`), which carry no availability guarantee and are unsuitable
+for production — a three-month unnoticed dependency on one of them was the
+subject of [#333](https://github.com/Kalapaja/Kalatori/issues/333). Each
+fallback emits a WARN at startup carrying `error.category = "config"`, so the
+degraded state is greppable and alertable rather than silent. Note that chain
+endpoints currently cannot be supplied by environment variable at all
+([#338](https://github.com/Kalapaja/Kalatori/issues/338)); use `chains.json`.
 
 **Env var pattern**: `{PREFIX}_{CONFIG}_{FIELD}` (e.g., `KALATORI_PAYMENTS_RECIPIENT`)
 **Custom prefix**: `KALATORI_APP_ENV_PREFIX`

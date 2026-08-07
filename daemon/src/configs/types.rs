@@ -20,6 +20,10 @@ use crate::types::{
     ChainType,
     DetectedShopPlatform,
 };
+use crate::utils::logging::{
+    category,
+    operation,
+};
 
 use super::consts::{
     DEFAULT_ALLOW_INSECURE_ENDPOINTS,
@@ -268,7 +272,21 @@ impl ChainsConfig {
                 // These are free public endpoints with no availability guarantee.
                 // An operator who never configured any has no other way to find
                 // out which node their payments depend on.
+                //
+                // WARN rather than ERROR is a deliberate choice: this is the
+                // documented dev-mode default and the daemon runs correctly on
+                // it, so it is degraded state rather than a critical failure —
+                // the WARN row of the level table in docs/conventions.md. An
+                // operator who wants it to be fatal can promote it downstream
+                // on `error.category = "config"`.
+                //
+                // `endpoints` is the hardcoded default slice, never the
+                // operator's own value: configured endpoint URLs can carry
+                // credentials in userinfo or the path, so only compiled-in
+                // constants are ever printed here. Tests pin this down.
                 tracing::warn!(
+                    error.category = category::CONFIG,
+                    error.operation = operation::LOAD_CHAIN_ENDPOINTS,
                     chain = %chain,
                     endpoints = ?endpoints,
                     "No endpoints configured, falling back to free public defaults. \
@@ -840,6 +858,68 @@ mod tests {
         );
         logs_assert(|logs| assert_swaps_warnings(logs, 1));
     }
+
+    /// A URL an operator configured is theirs, and can carry credentials in
+    /// userinfo or in the path. The rule these warnings follow is that only
+    /// compiled-in constants are ever printed — this pair is what holds the
+    /// rule in place, since every other test here asserts on what *is* logged
+    /// and would stay green while a secret leaked alongside it.
+    ///
+    /// Only URL-borne secrets need a runtime check. `ZeroExApiConfig::api_key`
+    /// is a `SecretBox<str>`, so logging it is a compile error and its `Debug`
+    /// is redacted — a test for it could never fail. `rpc_url` beside it is a
+    /// plain `String`, which is why `?self.zero_ex` would still leak and why
+    /// the swaps case below is worth pinning.
+    const CREDENTIAL_SENTINELS: &[&str] = &["hunter2", "s3cr3t-path"];
+
+    fn assert_no_sentinel_leaked(logs: &[&str]) -> Result<(), String> {
+        for sentinel in CREDENTIAL_SENTINELS {
+            if logs
+                .iter()
+                .any(|log| log.contains(sentinel))
+            {
+                return Err(format!(
+                    "configured value `{sentinel}` reached the log"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_configured_chain_endpoint_never_reaches_the_log() {
+        let mut config = chains_config_from_json(r#"{"chains":{}}"#);
+        config.chains.insert(
+            ChainType::Polygon,
+            configured("wss://operator:hunter2@polygon.example.internal/s3cr3t-path"),
+        );
+
+        config.set_default_chains_if_missing();
+
+        logs_assert(|logs| {
+            // Asset Hub still fell back, so the warning path really did run.
+            assert_warned_once(logs, ChainType::PolkadotAssetHub)?;
+            assert_no_sentinel_leaked(logs)
+        });
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_configured_swaps_rpc_never_reaches_the_log() {
+        let config = SwapsConfig {
+            zero_ex: ZeroExApiConfig {
+                api_key: "not-a-real-key".into(),
+                rpc_url: "https://operator:hunter2@rpc.example.internal/s3cr3t-path".to_string(),
+            },
+            ..SwapsConfig::default()
+        };
+
+        config.warn_if_zero_ex_rpc_is_public_default();
+
+        logs_assert(assert_no_sentinel_leaked);
+    }
 }
 
 fn default_host() -> IpAddr {
@@ -1095,8 +1175,18 @@ impl SwapsConfig {
     /// warning exists to abolish.
     pub(super) fn warn_if_zero_ex_rpc_is_public_default(&self) {
         if self.zero_ex.rpc_url == DEFAULT_ZERO_EX_RPC_URL {
+            // Logs the constant, not `self.zero_ex.rpc_url`. The guard makes
+            // the two equal today, so this reads as a pointless substitution —
+            // it is not. Printing the field would mean the leak is prevented
+            // only by the guard's exact-equality, and any later loosening of
+            // that guard (to a host match, say) would start printing operator
+            // URLs, which can carry credentials in userinfo or the path.
+            // Sourcing the value from the constant makes that impossible by
+            // construction rather than by careful reading.
             tracing::warn!(
-                rpc_url = %self.zero_ex.rpc_url,
+                error.category = category::CONFIG,
+                error.operation = operation::LOAD_SWAPS_RPC,
+                rpc_url = DEFAULT_ZERO_EX_RPC_URL,
                 "Swaps are using a free public RPC endpoint. \
                  Set swaps.zero_ex.rpc_url to your own endpoint for production use."
             );

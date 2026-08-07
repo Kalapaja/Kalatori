@@ -8,6 +8,7 @@ pub mod category {
     pub const AUTH: &str = "auth";
     pub const BALANCE_CHECKER: &str = "balance_checker";
     pub const CHAIN_CLIENT: &str = "chain_client";
+    pub const CONFIG: &str = "config";
     pub const SWAPS_CLIENT: &str = "swaps_client";
     pub const SWAPS_TRACKER: &str = "swaps_tracker";
 }
@@ -34,4 +35,8 @@ pub mod operation {
     // Swaps operations
     pub const GET_QUOTE: &str = "get_quote";
     pub const RELOAD_PENDING_SWAPS: &str = "reload_pending_swaps";
+
+    // Config operations
+    pub const LOAD_CHAIN_ENDPOINTS: &str = "load_chain_endpoints";
+    pub const LOAD_SWAPS_RPC: &str = "load_swaps_rpc";
 }
