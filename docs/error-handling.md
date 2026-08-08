@@ -403,6 +403,12 @@ pub enum SubscriptionError {
     BlockProcessingFailed { block_number: u32 },  // Skip block
 }
 
+// 3a. Re-reading a past block range (catch-up sweep)
+pub enum BackfillError {
+    Unsupported,             // Stop sweeping this chain for good
+    RequestFailed,           // Retry the same range next tick
+}
+
 // 4. Transaction lifecycle
 pub enum TransactionError<T: ChainConfig> {
     BuildFailed { reason: String },
@@ -425,6 +431,8 @@ pub enum TransactionError<T: ChainConfig> {
 
 **Why separate QueryError and SubscriptionError?**
 Different recovery: queries retry immediately with different endpoint; subscriptions restart entire stream.
+
+**Why BackfillError is not QueryError**, even though both wrap one-off RPC calls: the caller has to tell "this chain will never answer" from "this call failed". The first disables the sweep permanently and reports the chain as uncovered; the second is retried on the next tick. Two variants, because two recovery paths — a third variant nobody branches on would violate Principle 1.
 
 **Cross-Domain Conversion:**
 

@@ -7,6 +7,10 @@ SQLite via sqlx 0.8. Requires SQLite >= 3.47.0 at runtime.
 - `migrations/20250104000001_initial_schema.sql` — Core tables: invoices, transactions, payouts, refunds, webhook_events
 - `migrations/20250211000001_create_front_end_swaps.sql` — Front-end swap tracking
 - `migrations/20250218000001_add_transaction_uniqueness_constraints.sql` — Uniqueness constraints
+- `migrations/20260303181227_add_swaps.sql` — Swaps
+- `migrations/20260401000001_refund_destination_fields.sql` — Refund destination fields
+- `migrations/20260515090507_transaction_origin_indexes.sql` — Indexed virtual columns over `transactions.origin`
+- `migrations/20260808033820_add_chain_sync_cursors.sql` — Catch-up sweep cursor
 
 Run migrations: `make sqlx-migrate`
 Prepare for compile-time verification: `make sqlx-prepare`
@@ -73,6 +77,27 @@ Queue of webhook notifications to send to merchant's configured URL.
 | entity_id | BLOB | References any entity |
 | payload | TEXT | JSON (TEXT) payload |
 | sent | INTEGER | 0 = pending, 1 = sent |
+
+## Operational Tables
+
+Not entities — daemon state that has to survive a restart.
+
+### chain_sync_cursors
+
+How far the catch-up sweep has processed each chain (`daemon/src/chain/transfer_tracker.rs`, issue [#333](https://github.com/Kalapaja/Kalatori/issues/333)). One row per chain; the database file belongs to a single daemon, so no instance column.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| chain | TEXT | Primary key |
+| last_processed_block | INTEGER | Highest block whose transfers are recorded, `CHECK(>= 0)` |
+| updated_at | TEXT | ISO 8601; moves only when the cursor advances |
+
+Two properties are load-bearing and easy to break:
+
+- **`last_processed_block` must stay INTEGER.** The cursor may never move backwards, and that guard is `MAX(excluded.last_processed_block, chain_sync_cursors.last_processed_block)` in the upsert. Stored as TEXT the comparison becomes lexicographic, where `'1000' < '999'`. An older head is a normal observation — public RPC pools answer from whichever node took the request, and some lag.
+- **The cursor cannot be reconstructed from `transactions`.** On Polygon the transfer path stores no block number (see the TODO above `log_to_transfer` in `chain_client/polygon.rs`), so `transactions.block_number` is NULL there and `SELECT MAX(block_number)` returns nothing.
+
+Re-reading a range already processed is safe: incoming transfers are deduplicated by the unique index on `(chain, tx_hash)`, so the sweep only has to be at-least-once.
 
 ## Status Transition Triggers
 
