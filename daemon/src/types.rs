@@ -12,6 +12,7 @@
 /// }
 /// ```
 mod admin;
+mod chain_sync_cursor;
 mod changes;
 mod common;
 mod invoice;
@@ -23,6 +24,7 @@ mod webhook_event;
 
 // Re-export commonly used types for convenience
 pub use admin::*;
+pub use chain_sync_cursor::*;
 pub use changes::*;
 pub use common::*;
 pub use invoice::*;

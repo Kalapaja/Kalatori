@@ -9,6 +9,7 @@
 /// - We want to be able to compare datetime fields directly in SQL queries,
 ///   so we convert `chrono::DateTime<Utc>` to `NaiveDateTime` when binding parameters
 ///   (see details [here](https://docs.rs/sqlx/latest/sqlx/sqlite/types/index.html#note-current_timestamp-and-comparisoninteroperability-of-datetime-values)).
+mod chain_sync_cursor;
 mod changes;
 mod error_parsing;
 mod interface;
