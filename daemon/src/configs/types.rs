@@ -142,20 +142,33 @@ impl ChainConfig {
             })
     }
 
-    pub fn get_random_requests_endpoint(&self) -> Option<String> {
-        let mut rng = rand::rng();
-
-        self.get_endpoints_with_allowed_operation(EndpointAllowedOperation::Requests)
-            .choose(&mut rng)
+    /// Every endpoint allowed for `op`, in a randomized order.
+    ///
+    /// Callers connect by walking this list and keeping the first endpoint
+    /// that answers, so the shuffle spreads load the way picking one at random
+    /// used to, while a dead or restarting node no longer decides the outcome
+    /// on its own. An empty result means the chain has no endpoint for `op` at
+    /// all, which is a configuration error rather than an outage.
+    fn shuffled_endpoints_with_allowed_operation(
+        &self,
+        op: EndpointAllowedOperation,
+    ) -> Vec<String> {
+        let mut endpoints: Vec<String> = self
+            .get_endpoints_with_allowed_operation(op)
             .cloned()
+            .collect();
+
+        endpoints.shuffle(&mut rand::rng());
+
+        endpoints
     }
 
-    pub fn get_random_subscriptions_endpoint(&self) -> Option<String> {
-        let mut rng = rand::rng();
+    pub fn shuffled_requests_endpoints(&self) -> Vec<String> {
+        self.shuffled_endpoints_with_allowed_operation(EndpointAllowedOperation::Requests)
+    }
 
-        self.get_endpoints_with_allowed_operation(EndpointAllowedOperation::Subscriptions)
-            .choose(&mut rng)
-            .cloned()
+    pub fn shuffled_subscriptions_endpoints(&self) -> Vec<String> {
+        self.shuffled_endpoints_with_allowed_operation(EndpointAllowedOperation::Subscriptions)
     }
 }
 
@@ -743,9 +756,9 @@ mod tests {
 
         for chain in ChainType::iter() {
             assert!(
-                config.chains[&chain]
-                    .get_random_requests_endpoint()
-                    .is_some(),
+                !config.chains[&chain]
+                    .shuffled_requests_endpoints()
+                    .is_empty(),
                 "{chain} was left without endpoints"
             );
         }
@@ -777,8 +790,8 @@ mod tests {
         config.set_default_chains_if_missing();
 
         assert_eq!(
-            config.chains[&ChainType::Polygon].get_random_requests_endpoint(),
-            Some(url.to_string()),
+            config.chains[&ChainType::Polygon].shuffled_requests_endpoints(),
+            vec![url.to_string()],
         );
         logs_assert(|logs| {
             assert_not_warned(logs, ChainType::Polygon)?;
@@ -801,8 +814,8 @@ mod tests {
         config.set_default_chains_if_missing();
 
         assert_eq!(
-            config.chains[&ChainType::PolkadotAssetHub].get_random_requests_endpoint(),
-            Some(url.to_string()),
+            config.chains[&ChainType::PolkadotAssetHub].shuffled_requests_endpoints(),
+            vec![url.to_string()],
         );
         logs_assert(|logs| {
             assert_not_warned(logs, ChainType::PolkadotAssetHub)?;
@@ -828,11 +841,53 @@ mod tests {
         config.set_default_chains_if_missing();
 
         assert!(
-            config.chains[&ChainType::Polygon]
-                .get_random_requests_endpoint()
-                .is_some()
+            !config.chains[&ChainType::Polygon]
+                .shuffled_requests_endpoints()
+                .is_empty()
         );
         logs_assert(|logs| assert_warned_once(logs, ChainType::Polygon));
+    }
+
+    /// Connecting used to pick one endpoint at random and give up if it did
+    /// not answer, so a single restarting node took the whole chain down. The
+    /// shuffled list has to offer *every* usable endpoint, not just a
+    /// different one each run.
+    #[test]
+    fn shuffled_endpoints_offer_every_endpoint_allowed_for_the_operation() {
+        let config = ChainConfig {
+            endpoints: vec![
+                ChainEndpoint::Universal("wss://both.example".to_string()),
+                ChainEndpoint::Specific {
+                    url: "wss://requests-only.example".to_string(),
+                    operations: vec![EndpointAllowedOperation::Requests],
+                },
+                ChainEndpoint::Specific {
+                    url: "wss://subscriptions-only.example".to_string(),
+                    operations: vec![EndpointAllowedOperation::Subscriptions],
+                },
+            ],
+            ..ChainConfig::default()
+        };
+
+        let sorted = |mut endpoints: Vec<String>| {
+            endpoints.sort();
+            endpoints
+        };
+
+        assert_eq!(
+            sorted(config.shuffled_requests_endpoints()),
+            vec![
+                "wss://both.example".to_string(),
+                "wss://requests-only.example".to_string(),
+            ]
+        );
+        assert_eq!(
+            sorted(config.shuffled_subscriptions_endpoints()),
+            vec![
+                "wss://both.example".to_string(),
+                "wss://subscriptions-only.example".to_string(),
+            ]
+        );
     }
 
     /// Exercise the loader rather than the method directly, so the file/env
@@ -848,9 +903,9 @@ mod tests {
 
         for chain in ChainType::iter() {
             assert!(
-                config.chains[&chain]
-                    .get_random_requests_endpoint()
-                    .is_some(),
+                !config.chains[&chain]
+                    .shuffled_requests_endpoints()
+                    .is_empty(),
                 "{chain} was left without endpoints"
             );
         }

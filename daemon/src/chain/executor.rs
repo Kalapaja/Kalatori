@@ -84,6 +84,11 @@ pub enum ChainExecutorError {
     AmountConversion { amount: Decimal },
     #[error("Amount {amount} is invalid for an asset with {decimals} decimals")]
     InvalidAmountPrecision { amount: Decimal, decimals: u32 },
+    // The chain's client did not come up at startup, so nothing can be submitted to it
+    // until the daemon is restarted. Retriable on purpose: the transfer has to stay
+    // claimable rather than be failed for good because of an RPC outage.
+    #[error("Chain {chain} is unavailable for the lifetime of this daemon run")]
+    ChainUnavailable { chain: ChainType },
 }
 
 impl ChainExecutorError {
@@ -108,6 +113,12 @@ impl ChainExecutorError {
             | InvalidAmountPrecision {
                 ..
             } => false,
+            // Recovering from a chain that failed to initialize takes a
+            // restart, and the retry backoff is what keeps the row claimable
+            // across one.
+            ChainUnavailable {
+                ..
+            } => true,
         }
     }
 }
@@ -205,8 +216,10 @@ pub struct TransfersExecutor<
     PG: BlockChainClient<PolygonChainConfig> + 'static = PolygonClient,
 > {
     refund_destination_detector: RefundDestinationDetector<D>,
-    asset_hub_client: Arc<AH>,
-    polygon_client: Arc<PG>,
+    /// `None` when the chain's client did not come up at startup. See the
+    /// degraded-chain section of [`docs/architecture.md`].
+    asset_hub_client: Option<Arc<AH>>,
+    polygon_client: Option<Arc<PG>>,
     dao: D,
     swaps_executor: SwapsExecutor<D>,
     keyring_client: KeyringClient,
@@ -562,14 +575,25 @@ impl<
         // it will be added to span at the prepare_transfer call
         let transaction_id = Uuid::new_v4();
 
-        let transfer = match request.chain {
+        let chain = request.chain;
+        let unavailable = || ChainExecutorError::ChainUnavailable {
+            chain,
+        };
+
+        let transfer = match chain {
             ChainType::PolkadotAssetHub => {
-                let client = self.asset_hub_client.clone();
+                let client = self
+                    .asset_hub_client
+                    .clone()
+                    .ok_or_else(unavailable)?;
                 self.prepare_transfer(client, request, transaction_id)
                     .await
             },
             ChainType::Polygon => {
-                let client = self.polygon_client.clone();
+                let client = self
+                    .polygon_client
+                    .clone()
+                    .ok_or_else(unavailable)?;
                 self.prepare_transfer(client, request, transaction_id)
                     .await
             },
@@ -1098,7 +1122,21 @@ impl<
             POLLING_INTERVAL_MILLIS,
         ));
 
-        tracing::info!("Transfers executor started for AssetHub and Polygon chains.");
+        // Name the chains this executor can actually submit to. Claiming both
+        // when one client never came up is how the startup bug this replaced
+        // stayed invisible for so long.
+        let mut chains: Vec<&str> = Vec::new();
+        if self.asset_hub_client.is_some() {
+            chains.push("AssetHub");
+        }
+        if self.polygon_client.is_some() {
+            chains.push("Polygon");
+        }
+
+        tracing::info!(
+            chains = chains.join(", "),
+            "Transfers executor started"
+        );
 
         loop {
             tokio::select! {
@@ -1138,16 +1176,16 @@ impl<
 
     pub fn new(
         refund_destination_detector: RefundDestinationDetector<D>,
-        asset_hub_client: AH,
-        polygon_client: PG,
+        asset_hub_client: Option<AH>,
+        polygon_client: Option<PG>,
         dao: D,
         keyring_client: KeyringClient,
         swaps_executor: SwapsExecutor<D>,
     ) -> Self {
         Self {
             refund_destination_detector,
-            asset_hub_client: Arc::new(asset_hub_client),
-            polygon_client: Arc::new(polygon_client),
+            asset_hub_client: asset_hub_client.map(Arc::new),
+            polygon_client: polygon_client.map(Arc::new),
             dao,
             swaps_executor,
             keyring_client,
@@ -1268,8 +1306,8 @@ mod tests {
 
         TransfersExecutor::new(
             refund_destination_detector,
-            asset_hub_client,
-            polygon_client,
+            Some(asset_hub_client),
+            Some(polygon_client),
             dao,
             keyring_client,
             swaps_executor,
@@ -1294,8 +1332,8 @@ mod tests {
 
         let executor = TransfersExecutor::new(
             refund_destination_detector,
-            asset_hub_client,
-            polygon_client,
+            Some(asset_hub_client),
+            Some(polygon_client),
             dao,
             keyring_client,
             swaps_executor,
@@ -1724,7 +1762,7 @@ mod tests {
                     })
                 });
 
-            executor.polygon_client = Arc::new(polygon_client);
+            executor.polygon_client = Some(Arc::new(polygon_client));
 
             let result = executor
                 .schedule_chain_transfer(request.clone(), &mut queue)
@@ -1751,6 +1789,10 @@ mod tests {
             let asset_id = 1337;
 
             let mut request: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+            // `default_payout` is a Polygon payout. Without this the request
+            // dispatches to the Polygon client left installed by test case 1
+            // and the Asset Hub path is never exercised at all.
+            request.chain = ChainType::PolkadotAssetHub;
             request.source_address = source_address.to_string();
             request
                 .destination_params
@@ -1759,6 +1801,7 @@ mod tests {
 
             asset_hub_client
                 .expect_build_transfer()
+                .once()
                 .with(
                     eq(source_address),
                     eq(destination_address),
@@ -1771,7 +1814,7 @@ mod tests {
                     })
                 });
 
-            executor.asset_hub_client = Arc::new(asset_hub_client);
+            executor.asset_hub_client = Some(Arc::new(asset_hub_client));
 
             let result = executor
                 .schedule_chain_transfer(request.clone(), &mut queue)
@@ -1819,7 +1862,7 @@ mod tests {
                     })
                 });
 
-            executor.polygon_client = Arc::new(polygon_client);
+            executor.polygon_client = Some(Arc::new(polygon_client));
 
             executor
                 .dao
@@ -1835,6 +1878,165 @@ mod tests {
             assert!(result.is_ok());
             assert_eq!(queue.len(), 1);
         }
+    }
+
+    /// A chain whose client never came up must neither take the daemon down
+    /// nor swallow the transfer: the request comes back as `ChainUnavailable`,
+    /// which is retriable, so the row stays claimable and a restart with the
+    /// chain reachable still pays it out. The chain that *did* come up keeps
+    /// working in the same executor.
+    #[tokio::test]
+    async fn a_transfer_on_an_unavailable_chain_is_retriable_and_the_other_chain_still_works() {
+        let mut executor = setup_executor();
+        let mut queue = FuturesUnordered::new();
+
+        executor.asset_hub_client = None;
+
+        let mut asset_hub_request: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+        asset_hub_request.chain = ChainType::PolkadotAssetHub;
+
+        let error = executor
+            .schedule_chain_transfer(asset_hub_request, &mut queue)
+            .await
+            .expect_err("a transfer on a chain with no client cannot be scheduled");
+
+        assert_eq!(
+            error,
+            ChainExecutorError::ChainUnavailable {
+                chain: ChainType::PolkadotAssetHub,
+            }
+        );
+        assert!(
+            error.is_retriable(),
+            "an unreachable chain must not fail a payout for good"
+        );
+        assert!(queue.is_empty());
+
+        // The healthy chain is untouched by its neighbour being down.
+        let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+
+        polygon_client
+            .expect_build_transfer()
+            .once()
+            .returning(|_, _, _, _| {
+                Ok(UnsignedTransaction {
+                    transaction: default_polygon_unsigned_transaction(),
+                })
+            });
+        polygon_client
+            .expect_sign_transaction()
+            .once()
+            .returning(|_, _, _| {
+                Ok(SignedTransaction {
+                    transaction: default_polygon_signed_transaction(),
+                })
+            });
+
+        executor.polygon_client = Some(Arc::new(polygon_client));
+        executor
+            .dao
+            .expect_create_transaction()
+            .once()
+            .returning(Ok);
+
+        let mut polygon_request: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+        polygon_request.chain = ChainType::Polygon;
+
+        assert!(
+            executor
+                .schedule_chain_transfer(polygon_request, &mut queue)
+                .await
+                .is_ok()
+        );
+        assert_eq!(queue.len(), 1);
+    }
+
+    /// The startup WARN says *direct* payouts and refunds are frozen on an
+    /// unavailable chain — not that every transfer is. `send_transfer` routes a
+    /// same-chain, different-asset transfer to `schedule_swap`, which never
+    /// touches a chain client (`SwapsExecutor` holds only the DAO and the
+    /// provider HTTP clients), so it still executes.
+    ///
+    /// Pin both halves through `send_transfer` rather than
+    /// `schedule_chain_transfer`, because the routing decision is what makes
+    /// the log message true or false. If the direct case stops being held, or
+    /// the swap case starts being blocked, the message becomes a lie.
+    #[tokio::test]
+    async fn an_unavailable_chain_holds_direct_transfers_but_not_provider_routed_swaps() {
+        let mut executor = setup_executor();
+        let mut queue = FuturesUnordered::new();
+
+        executor.polygon_client = None;
+
+        // Same chain, same asset: a direct transfer, which needs our node.
+        let mut direct: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+        direct.chain = ChainType::Polygon;
+        direct
+            .destination_params
+            .destination_asset_id = direct.asset_id.clone();
+
+        let direct_id = direct.id;
+        let expected_held = ChainExecutorError::ChainUnavailable {
+            chain: ChainType::Polygon,
+        }
+        .to_string();
+
+        executor
+            .dao
+            .expect_update_payout_retry()
+            .once()
+            .withf(
+                move |payout_id, retry_meta, is_retriable| {
+                    *payout_id == direct_id
+                        && *is_retriable
+                        && retry_meta.failure_message.as_deref() == Some(expected_held.as_str())
+                },
+            )
+            .returning(|_, _, _| Ok(default_payout(Uuid::new_v4())));
+
+        let () = executor
+            .send_transfer(direct, &mut queue)
+            .await;
+        assert!(queue.is_empty());
+
+        // Same chain, different asset: routed to the swap provider. Failing it
+        // inside the swap path is what proves the path was entered at all —
+        // the recorded failure is the provider's, not `ChainUnavailable`.
+        let mut swap_shaped: OutgoingTransferRequest = default_payout(Uuid::new_v4()).into();
+        swap_shaped.chain = ChainType::Polygon;
+        swap_shaped.amount = Decimal::ONE;
+        swap_shaped
+            .destination_params
+            .destination_asset_id = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F".to_string();
+
+        executor
+            .swaps_executor
+            .expect_create_swap()
+            .once()
+            .returning(|_| Err(SwapsExecutorError::DatabaseError));
+
+        let swap_id = swap_shaped.id;
+        let expected_routed = ChainExecutorError::BuildTransfer {
+            reason: SwapsExecutorError::DatabaseError.to_string(),
+        }
+        .to_string();
+
+        executor
+            .dao
+            .expect_update_payout_retry()
+            .once()
+            .withf(
+                move |payout_id, retry_meta, _is_retriable| {
+                    *payout_id == swap_id
+                        && retry_meta.failure_message.as_deref() == Some(expected_routed.as_str())
+                },
+            )
+            .returning(|_, _, _| Ok(default_payout(Uuid::new_v4())));
+
+        let () = executor
+            .send_transfer(swap_shaped, &mut queue)
+            .await;
+        assert!(queue.is_empty());
     }
 
     #[tokio::test]
@@ -2237,7 +2439,7 @@ mod tests {
                     })
                 });
 
-            executor.polygon_client = Arc::new(polygon_client);
+            executor.polygon_client = Some(Arc::new(polygon_client));
 
             executor
                 .dao
@@ -2275,7 +2477,7 @@ mod tests {
             .times(2)
             .returning(move |_, _, _, _| Err(returned_error.clone()));
 
-        executor.polygon_client = Arc::new(polygon_client);
+        executor.polygon_client = Some(Arc::new(polygon_client));
 
         // Test case 3:
         // - Unsuccessful flow

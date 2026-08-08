@@ -19,7 +19,7 @@ HTTP Request → API Server (Axum) → AppState (Arc<AppState>)
                                       └→ InvoiceRegistry (in-memory)
 
 Background Tasks:
-  TransfersTracker (per chain) → TransactionsRecorder → DAO
+  TransfersTracker (per available chain) → TransactionsRecorder → DAO
   TransfersExecutor → chain clients + Keyring → DAO
   ExpirationDetector → DAO + chain clients
   WebhookSender → DAO → external webhook URLs
@@ -56,6 +56,11 @@ SQLite via sqlx 0.8. `DaoInterface` + `DaoTransactionInterface` traits (mockable
 
 `AssetInfoStore` trait for per-chain asset metadata. Error types in `errors.rs` follow the [error handling principles](error-handling.md).
 Incoming base-unit amounts are normalized at the asset scale before conversion to `Decimal`. Outgoing amounts must convert exactly to integer base units; sub-base-unit dust and unrepresentable precision are rejected, and deterministic amount failures are not retried.
+
+Both clients try every configured endpoint before reporting
+`ClientError::AllEndpointsUnreachable`, and a client that cannot be built at
+startup degrades its chain instead of aborting the daemon — see
+[Degraded Chains](#degraded-chains).
 
 ### `daemon/src/chain_client/keyring.rs` — Keyring (Actor)
 Actor pattern: mpsc channel + oneshot responses. Holds seed phrase (`Zeroize` + `ZeroizeOnDrop`). Handles both:
@@ -213,6 +218,80 @@ At startup, the daemon always runs SQLite's `PRAGMA integrity_check` before migr
 `require_existing` (or `KALATORI_DATABASE_REQUIRE_EXISTING`) to refuse startup when the configured
 database file is missing or empty; this is incompatible with temporary in-memory mode.
 
+## Degraded Chains
+
+**An unreachable chain does not stop the daemon.** `init_chain_client` in
+`main.rs` returns `Option<C>`: a chain whose client cannot connect, or whose
+asset metadata cannot be read, is reported at WARN and dropped, and the daemon
+serves whatever else came up. Both halves matter — a node that accepts the
+socket but cannot answer for its assets is not usable — so both degrade the
+chain identically.
+
+Connecting now walks **every** configured endpoint for the operation, in a
+shuffled order, before giving up (`ChainConfig::shuffled_requests_endpoints`,
+`shuffled_subscriptions_endpoints`). Each client used to pick one endpoint at
+random and report `ClientError::AllEndpointsUnreachable` if that single node did
+not answer, so one restarting node read as the whole chain being down — the
+error name now means what it says. Polygon's request
+endpoints are additionally probed with `eth_chainId`, since a socket that
+connects but cannot answer is not a usable endpoint.
+
+**What degraded means, per subsystem:**
+
+| Subsystem | Behaviour without the chain's client |
+|---|---|
+| `TransfersTracker` | Not started for that chain — no subscription, no incoming transfers detected |
+| `TransfersExecutor` | **Direct transfers only**: `ChainExecutorError::ChainUnavailable`, **retriable**, so the payout/refund row goes back to `FailedRetriable` with the usual backoff rather than being failed for good over an RPC outage. **Provider-routed swaps are not blocked** — see below |
+| `BalanceChecker` | `FetchBalanceFailed` without calling any RPC. Both callers (`ExpirationDetector`, `SwapsTracker`) already treat that as "leave the invoice alone and look again later", so it needs no variant of its own — only a distinguishing log line |
+| `AppState` / HTTP API | Unchanged. `asset_names_map` and `asset_decimals_map` simply carry no entries for the chain |
+
+**The swap carve-out.** `TransfersExecutor::send_transfer` routes a same-chain
+transfer whose destination asset differs to `schedule_swap`, which never
+touches a chain client — `SwapsExecutor` holds only the DAO and the 0x/Across
+HTTP clients. Such a transfer therefore still executes while the chain is
+unavailable, because it does not need our node. This is deliberate (blocking it
+would strand payouts that can succeed), but it is a real asymmetry: the swap can
+execute while `SwapsTracker` cannot confirm its settlement, since that goes
+through `BalanceChecker`. The startup WARN says so explicitly rather than
+claiming a blanket payout freeze.
+
+**Connect timeouts.** Neither dependency bounds a connect attempt for us, and
+both let a half-open peer hang forever: jsonrpsee's 10s budget covers
+`TcpStream::connect` only (TLS handshake and WebSocket upgrade sit outside it),
+and alloy's `WsConnect` retry budget governs *reconnects* of an established
+socket, not the initial connect. A blackholed address otherwise costs the OS
+TCP timeout — ~127s per resolved address. That was survivable at one endpoint
+per client; iterating the list multiplies it, so `ENDPOINT_CONNECT_TIMEOUT`
+(`chain_client.rs`) caps each attempt and bounds startup at
+`endpoints × timeout` per connect phase. Note Polygon pays that per phase
+*twice*, since request and subscription providers are connected in separate
+loops, and the two chains are initialised sequentially.
+
+**Two cases are still fatal**, and only two — both enforced by
+`report_chain_availability`:
+
+- **No chain came up.** Nothing to serve.
+- **The configured `default_chain` did not come up.** Every invoice is created
+  on `default_chain` and every swap settles there, so the daemon would answer
+  requests while being unable to accept a single payment. This is also what
+  keeps the API surface unchanged: no public operation can target a chain that
+  is unavailable, so no new API error code was needed.
+
+**Recovery requires a restart.** There is no reconnection path for a chain that
+failed at startup — deliberately, because a partial one would be worse: if the
+tracker recovered while the executor did not, invoices on that chain would be
+marked paid and never paid out. The WARN lines say "until the daemon is
+restarted" for exactly this reason. Note that a client which came up and *later*
+loses its connection is a different case, already handled: `TransfersTracker`
+retries with backoff and calls `BlockChainClient::recreate` to move to another
+endpoint.
+
+**Startup ordering**: config validation (`validate_and_extend_configs`,
+recipient and asset checks) runs *before* any client is constructed, so a
+degraded chain cannot turn a startup validation into a different fatal error.
+Chains carrying restored active invoices are reported by name when they are
+unavailable, since nothing will be detected for those invoices until a restart.
+
 ## Background Task Management
 
 **TaskTracker** (`daemon/src/utils/task_tracker.rs`):
@@ -222,7 +301,7 @@ database file is missing or empty; this is incompatible with temporary in-memory
 **Shutdown sequence**:
 1. Signal received (SIGTERM/SIGINT) or fatal error → `CancellationToken` cancelled
 2. TaskTracker waits for all tasks, then cancels shutdown listener
-3. All component handles joined: Keyring, TransfersExecutor, ExpirationDetector, both TransfersTrackers, WebhookSender, API server
+3. All component handles joined: Keyring, TransfersExecutor, ExpirationDetector, one TransfersTracker per *available* chain (see [Degraded Chains](#degraded-chains)), WebhookSender, API server
 4. Loki logs flushed
 5. Clean exit
 
@@ -231,6 +310,9 @@ database file is missing or empty; this is incompatible with temporary in-memory
 1. **Configuration**: Hardcoded RPC URLs in Makefile (see TODOs)
 2. **Scalability**: TransfersTracker queries all watched accounts every block
 3. **Metadata**: Manual `metadata.scale` update process (should be automated)
+4. **Chain recovery**: a chain whose client failed at *startup* stays unavailable
+   until the daemon is restarted — see [Degraded Chains](#degraded-chains) for
+   why the partial alternative was rejected
 
 ## Future Vision
 

@@ -54,6 +54,28 @@ pub use polygon::{
 pub type TransfersStream<T> =
     Pin<Box<dyn stream::Stream<Item = Result<Vec<ChainTransfer<T>>, SubscriptionError>> + Send>>;
 
+/// How long one endpoint gets to prove itself before we move to the next.
+///
+/// Neither dependency bounds this for us, and both leave a half-open peer able
+/// to hang forever. subxt reaches jsonrpsee, whose 10s `connection_timeout`
+/// covers `TcpStream::connect` only — the TLS handshake and the WebSocket
+/// upgrade sit outside it. alloy's `WsConnect` retry budget
+/// (`WS_RECONNECT_MAX_RETRIES`) governs *reconnects* of an established socket
+/// and does not apply to the initial connect at all, which is a single
+/// unbounded `tokio_tungstenite::connect_async`. A blackholed address
+/// therefore costs the OS TCP timeout — ~127s per resolved address, doubled on
+/// a dual-stack host.
+///
+/// That was survivable while a client tried exactly one endpoint. Now that
+/// connecting walks the whole list, an unbounded per-endpoint cost multiplies
+/// by the endpoint count, so the cap has to be ours. It bounds startup at
+/// `endpoints × this` per connect phase, and a chain that blows through it is
+/// reported as unavailable rather than stalling the daemon.
+///
+/// Generous on purpose: this is a "the node is gone" cap, not a latency
+/// budget, and must not fail a slow-but-working node on a congested link.
+pub const ENDPOINT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 pub trait SignedTransactionUtils {
     /// Encode transaction to raw string. It might be hex-encoded bytes or json
     /// value depending on implementation

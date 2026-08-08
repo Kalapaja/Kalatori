@@ -493,7 +493,12 @@ pub enum ChainError {
 - Principle 1 (within domain): Only enumerate errors requiring different handling
 - Principle 4 (between domains): Separate error types for different usage contexts
 
-**Context**: Usage-based domains align with recovery strategies. Each domain has focused error handling: initialization fails fast, queries retry with failover, subscriptions restart stream, transactions use DB-backed retry worker.
+**Context**: Usage-based domains align with recovery strategies. Each domain has focused error handling: initialization fails fast *within a client* (it stops trying that endpoint and reports), queries retry with failover, subscriptions restart stream, transactions use DB-backed retry worker.
+
+Note that "fails fast" describes the client, not the daemon. A `ClientError` at
+startup degrades its chain rather than aborting the process — see
+[Degraded Chains](architecture.md#degraded-chains) for which two cases are still
+fatal and why.
 
 ## Principle 5: Internal Errors Shouldn't Leak to API
 
