@@ -4,6 +4,99 @@ All notable changes to this project will be documented in this file.
 **Please note:**
 This is a public beta release of the Kalatori daemon. While it adheres to the [API specs](https://kalapaja.github.io/kalatori-api), it is still under active development. We encourage you to test it and provide feedback.
 
+## [0.9.5] - 2026-08-08
+
+The final 0.9 point release. Two unauthenticated paths that could misdirect
+money are closed, the daemon now survives a chain RPC being unreachable at
+startup, and the checked-arithmetic guarantees this project documented are
+actually enforced by the build for the first time. Continues to require the
+Kassette 0.1.0 front-end.
+
+Operators running the kokpitti admin UI should deploy 0.2.0 or later alongside
+this release: `/admin/api/integration-settings` and `/admin/api/get-plugin` are
+now Owner-only, and older kokpitti builds show an error rather than hiding the
+page for other roles.
+
+### 🐛 Bug Fixes
+
+- Refunds no longer let an unauthenticated caller choose where the money goes.
+  A refund issued without an explicit destination preferred the earliest
+  completed incoming swap's `from_address`, and nothing tied that swap to the
+  payment it claimed — knowing an invoice id, which payment links carry, was
+  enough to register a swap pointing at an attacker's address and collect
+  someone else's refund. Completed swaps no longer select a destination at all;
+  such refunds resolve to a genuine on-chain payer or fall through to manual
+  handling. A swap's settlement transfer is also excluded by its recorded hash,
+  not only by payer address, because a swap settles through a bridge or router
+  whose address never matches the payer's (#394)
+- The daemon starts when a chain's RPC is unreachable instead of exiting. It
+  logged "continuing without it" and then returned a fatal error, so a
+  Polygon-only merchant could not boot while Polkadot RPC was down and any
+  transient reset at startup stopped the daemon. An unavailable non-default
+  chain is now degraded and named in the logs, each endpoint connect is bounded,
+  and every configured endpoint is tried (#395)
+- Payouts and refunds interrupted mid-flight are recovered at startup. A row was
+  marked `InProgress` when claimed, and nothing reset it if the daemon died
+  before the terminal update, so the money owed was stranded silently with no
+  retry and no signal. Both tables are now swept back to a retriable state
+  before any executor can claim work (#393)
+- Amount conversions across Polygon, Asset Hub, Etherscan and swaps are checked
+  and exact. An Etherscan transfer of ten units of an 18-decimal token was
+  recorded as a *negative* amount, base-unit conversions substituted zero on
+  failure — recording a real payment as nothing — and scaling built the decimal
+  before applying the token's scale, rejecting perfectly representable amounts.
+  Sub-base-unit dust is now refused rather than truncated (#330, #334, #340)
+- A single unrepresentable transfer no longer tears down the Polygon
+  subscription or poisons an Etherscan batch. The offending log is skipped with
+  its transaction hash and block number recorded, and the remaining transfers in
+  the same batch are still processed (#334, #340)
+- `/admin/api/payout/initiate` is withdrawn. It built every payout with a
+  hardcoded 0.21 tokens and sent that on-chain for any invoice; the route now
+  answers 404 until the amount semantics are defined (#393)
+- Admin roles are enforced. Every handler bound the authenticated user and
+  ignored it, so a Viewer or Support token could do whatever an Owner could —
+  including reading the raw merchant HMAC secret, which forges `/private` calls
+  and webhook signatures indefinitely and survives session revocation (#393)
+- The Etherscan API key no longer reaches logs through any `Debug` path, and a
+  failed response body read no longer crashes the client (#334)
+- A malformed webhook URL now fails startup instead of silently disabling every
+  webhook for the life of the process (#393)
+- Chain endpoint fallbacks are announced. Falling back to the public default
+  endpoints, and to the public swaps RPC, is now logged rather than silent
+  (#336)
+- The Polygon WebSocket reconnect budget is pinned rather than inherited from
+  the provider's defaults (#330)
+
+### 🚜 Refactor
+
+- `overflow-checks` applies to release builds again, and
+  `clippy::arithmetic_side_effects` is enforced workspace-wide. Both had been
+  configured and then quietly disabled — the profile by a workspace split that
+  moved `[profile.*]` out of the root manifest where Cargo silently ignores it,
+  the lint by a commit that silenced warnings by configuration. `panic = "abort"`
+  was deliberately *not* restored with the profile: it predates the daemon's
+  panic-aware graceful shutdown and would stop the executor, trackers, webhook
+  sender and keyring from draining (#340)
+
+### 📚 Documentation
+
+- The lint gate, build profiles and panic gate are documented as they actually
+  behave, replacing claims that had gone stale — including which lints are
+  enabled, where `-Dwarnings` applies, and why `#[expect]` annotations naming
+  disabled lints are documentation rather than enforcement (#337, #340)
+- The swaps subsystem records why settlement verification is deferred, and which
+  providers can reach an incoming swap (#392)
+
+### ⚠️ Known Limitations
+
+- Swap settlement is still not verified against the destination chain, so a
+  forged swap record can be driven to `Completed`. The refund-theft consequence
+  is closed above by refusing to select a destination from swaps; the
+  verification itself is deferred, with the full analysis on #392
+- The Asset Hub incoming-transfer path still converts amounts through an
+  unchecked `i64` cast. Polygon, Etherscan, swap and executor conversions were
+  converted; Asset Hub was not
+
 ## [0.9.4] - 2026-08-04
 
 Patch release fixing payment dead ends found while reviewing everything merged
