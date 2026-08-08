@@ -13,6 +13,8 @@ use chrono::{
 use uuid::Uuid;
 
 use crate::types::{
+    ChainSyncCursor,
+    ChainType,
     ChangesResponse,
     CreateFrontEndSwapParams,
     CreateInvoiceData,
@@ -37,6 +39,10 @@ use crate::types::{
     WebhookEvent,
 };
 
+use super::chain_sync_cursor::{
+    DaoChainSyncCursorError,
+    DaoChainSyncCursorMethods,
+};
 use super::changes::{
     DaoChangesError,
     DaoChangesMethods,
@@ -281,6 +287,21 @@ pub trait DaoInterface: Send + Sync + 'static {
         &self,
         event_id: Uuid,
     ) -> Result<WebhookEvent, DaoWebhookEventError>;
+
+    // === Chain Sync Cursor Methods ===
+
+    /// Read how far the catch-up sweep has processed a chain.
+    async fn get_chain_sync_cursor(
+        &self,
+        chain: ChainType,
+    ) -> Result<Option<ChainSyncCursor>, DaoChainSyncCursorError>;
+
+    /// Move the sweep watermark forward. Never moves it backwards.
+    async fn advance_chain_sync_cursor(
+        &self,
+        chain: ChainType,
+        block_number: u64,
+    ) -> Result<ChainSyncCursor, DaoChainSyncCursorError>;
 
     // === Changes Methods ===
 
@@ -922,6 +943,21 @@ impl DaoInterface for DAO {
         event_id: Uuid,
     ) -> Result<WebhookEvent, DaoWebhookEventError> {
         DaoWebhookEventMethods::mark_webhook_event_as_sent(self, event_id).await
+    }
+
+    async fn get_chain_sync_cursor(
+        &self,
+        chain: ChainType,
+    ) -> Result<Option<ChainSyncCursor>, DaoChainSyncCursorError> {
+        DaoChainSyncCursorMethods::get_chain_sync_cursor(self, chain).await
+    }
+
+    async fn advance_chain_sync_cursor(
+        &self,
+        chain: ChainType,
+        block_number: u64,
+    ) -> Result<ChainSyncCursor, DaoChainSyncCursorError> {
+        DaoChainSyncCursorMethods::advance_chain_sync_cursor(self, chain, block_number).await
     }
 
     async fn get_invoice_changes(
