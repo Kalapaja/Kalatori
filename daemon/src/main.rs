@@ -601,6 +601,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
             client,
             invoice_registry.clone(),
             transactions_recorder.clone(),
+            dao.clone(),
         )
         .ignite(
             asset_hub_assets,
@@ -613,6 +614,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
             client,
             invoice_registry.clone(),
             transactions_recorder,
+            dao.clone(),
         )
         .ignite(
             polygon_assets,
