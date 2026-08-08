@@ -42,12 +42,13 @@ pub fn chains_config_with_prefix(
 pub fn payments_config_with_prefix(
     config_dir_path: &str,
     prefix: &str,
-) -> PaymentsConfig {
+) -> Result<PaymentsConfig, PaymentsConfigError> {
     let config_path = format_config_path(config_dir_path, "payments.json");
     let env_prefix = format_prefix(prefix, "PAYMENTS");
     let mut config: PaymentsConfig = config_from_file_or_env(&config_path, &env_prefix);
     config.set_default_asset_id_if_missing();
-    config
+    config.validate()?;
+    Ok(config)
 }
 
 pub fn web_server_config_with_prefix(

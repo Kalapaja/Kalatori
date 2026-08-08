@@ -1289,7 +1289,10 @@ mod tests {
             payment_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
             cart: InvoiceCart::empty(),
             redirect_url: "http://localhost:8080/thankyou".to_string(),
-            #[expect(clippy::arithmetic_side_effects)]
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "test fixture: `Utc::now()` plus a fixed 24 hours cannot overflow DateTime<Utc>"
+            )]
             valid_till: chrono::Utc::now() + chrono::Duration::hours(24),
         }
     }

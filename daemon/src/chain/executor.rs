@@ -56,7 +56,10 @@ use crate::types::{
     TransferDestinationParams,
     TransferInfo,
 };
-use crate::utils::RefundDestinationDetector;
+use crate::utils::{
+    RefundDestinationDetector,
+    decimal_to_base_units,
+};
 
 #[derive(Debug, PartialEq, Eq, Clone, Error)]
 pub enum ChainExecutorError {
@@ -75,6 +78,12 @@ pub enum ChainExecutorError {
         from_chain: SwapChainType,
         to_chain: SwapChainType,
     },
+    /// Scaling a `Decimal` amount into integer token base units overflowed.
+    /// Previously this was `.unwrap()`, which crashed the executor task.
+    #[error("Amount {amount} cannot be converted to token base units")]
+    AmountConversion { amount: Decimal },
+    #[error("Amount {amount} is invalid for an asset with {decimals} decimals")]
+    InvalidAmountPrecision { amount: Decimal, decimals: u32 },
     // The chain's client did not come up at startup, so nothing can be submitted to it
     // until the daemon is restarted. Retriable on purpose: the transfer has to stay
     // claimable rather than be failed for good because of an RPC outage.
@@ -97,6 +106,13 @@ impl ChainExecutorError {
             UnsupportedSwapDirection {
                 ..
             } => false,
+            // Deterministic in the amount: retrying produces the same failure.
+            AmountConversion {
+                ..
+            }
+            | InvalidAmountPrecision {
+                ..
+            } => false,
             // Recovering from a chain that failed to initialize takes a
             // restart, and the retry backoff is what keeps the row claimable
             // across one.
@@ -105,6 +121,20 @@ impl ChainExecutorError {
             } => true,
         }
     }
+}
+
+/// Scale a `Decimal` amount into integer token base units.
+///
+/// `amount / Decimal::new(1, precision)` is really a multiplication by
+/// `10^precision`, which panics on `Decimal` overflow, and `.to_u128()` returns
+/// `None` for negative or oversized results. Both used to be unhandled.
+fn to_base_units(
+    amount: Decimal,
+    precision: u32,
+) -> Result<u128, ChainExecutorError> {
+    decimal_to_base_units(amount, precision).ok_or(ChainExecutorError::AmountConversion {
+        amount,
+    })
 }
 
 const MAX_CONCURRENT_TRANSFERS: u32 = 10;
@@ -308,6 +338,9 @@ async fn send_transfer_request<T: ChainConfig, C: BlockChainClient<T>>(
         )]
         Err(TransactionError::BuildFailed {
             ..
+        })
+        | Err(TransactionError::InvalidAmountPrecision {
+            ..
         }) => unreachable!(),
     };
 
@@ -413,8 +446,17 @@ impl<
                     "Failed to build transfer transaction",
                 );
 
-                ChainExecutorError::BuildTransfer {
-                    reason: format!("Failed to build transfer transaction: {e}"),
+                match e {
+                    TransactionError::InvalidAmountPrecision {
+                        amount,
+                        decimals,
+                    } => ChainExecutorError::InvalidAmountPrecision {
+                        amount,
+                        decimals,
+                    },
+                    error => ChainExecutorError::BuildTransfer {
+                        reason: format!("Failed to build transfer transaction: {error}"),
+                    },
                 }
             })?;
 
@@ -591,15 +633,8 @@ impl<
             )
         };
 
-        // TODO: make it more normally. Add some helpers for such operation, get
-        // precision from prestored values
-        #[expect(
-            clippy::unwrap_used,
-            reason = "pre-existing panic site, grandfathered when the panic gate landed; see the panic-gate backlog in docs/conventions.md"
-        )]
-        let from_amount_units = (request.amount / Decimal::new(1, 6))
-            .to_u128()
-            .unwrap();
+        // TODO: get precision from prestored values instead of hardcoding 6
+        let from_amount_units = to_base_units(request.amount, 6)?;
 
         let data = CreateSwapData {
             invoice_id: request.invoice_id,
@@ -807,7 +842,11 @@ impl<
             .collect_pending_payout_requests(limit)
             .await?;
 
-        let remaining_limit = limit - u32::try_from(payout_requests.len()).unwrap_or(0);
+        // `collect_pending_payout_requests` is expected to honour `limit`, but a
+        // DAO that returns more rows must not underflow this counter into ~4
+        // billion and defeat the concurrency cap.
+        let remaining_limit =
+            limit.saturating_sub(u32::try_from(payout_requests.len()).unwrap_or(u32::MAX));
 
         let refund_requests = self
             .collect_pending_refund_requests(remaining_limit)
@@ -1195,6 +1234,64 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn to_base_units_scales_by_precision() {
+        assert_eq!(
+            to_base_units(Decimal::from_str("1.5").unwrap(), 6).unwrap(),
+            1_500_000
+        );
+        assert_eq!(
+            to_base_units(Decimal::ZERO, 6).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn to_base_units_rejects_overflowing_amount() {
+        // Scaling `Decimal::MAX` by 10^6 overflows `Decimal`; the old code did
+        // this with a bare `/` and `.unwrap()`, panicking the executor task.
+        let err = to_base_units(Decimal::MAX, 6).unwrap_err();
+        assert!(matches!(
+            err,
+            ChainExecutorError::AmountConversion { .. }
+        ));
+        assert!(!err.is_retriable());
+    }
+
+    #[test]
+    fn to_base_units_rejects_negative_amount() {
+        // `to_u128` returns None for negatives; that used to be an `unwrap`.
+        let err = to_base_units(Decimal::from_str("-1").unwrap(), 6).unwrap_err();
+        assert!(matches!(
+            err,
+            ChainExecutorError::AmountConversion { .. }
+        ));
+    }
+
+    #[test]
+    fn to_base_units_rejects_precision_beyond_decimal_scale() {
+        // `Decimal::new(1, 29)` panics; the fallible path must return an error.
+        let err = to_base_units(Decimal::ONE, 29).unwrap_err();
+        assert!(matches!(
+            err,
+            ChainExecutorError::AmountConversion { .. }
+        ));
+    }
+
+    #[test]
+    fn to_base_units_rejects_sub_base_unit_dust() {
+        let amount = Decimal::from_str("1.0000001").unwrap();
+        let error = to_base_units(amount, 6).unwrap_err();
+
+        assert_eq!(
+            error,
+            ChainExecutorError::AmountConversion {
+                amount,
+            }
+        );
+        assert!(!error.is_retriable());
+    }
+
     fn setup_executor() -> TransfersExecutor<
         MockDaoInterface,
         MockBlockChainClient<AssetHubChainConfig>,
@@ -1353,6 +1450,38 @@ mod tests {
                             .to_string()
                 }
             );
+        }
+
+        // A deterministic amount/precision failure must retain its domain
+        // classification so the worker marks it terminal instead of retrying.
+        {
+            let mut polygon_client = MockBlockChainClient::<PolygonChainConfig>::default();
+            let amount = request.amount;
+
+            polygon_client
+                .expect_build_transfer()
+                .returning(move |_, _, _, _| {
+                    Err(
+                        TransactionError::InvalidAmountPrecision {
+                            amount,
+                            decimals: 6,
+                        },
+                    )
+                });
+
+            let error = executor
+                .build_and_sign_transfer(&Arc::new(polygon_client), &request)
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                error,
+                ChainExecutorError::InvalidAmountPrecision {
+                    amount,
+                    decimals: 6,
+                }
+            );
+            assert!(!error.is_retriable());
         }
 
         // Test case 3:

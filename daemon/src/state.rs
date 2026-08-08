@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 
 use chrono::{
-    Duration,
+    DateTime,
     Utc,
 };
 use rust_decimal::Decimal;
@@ -98,6 +98,22 @@ pub struct AppState<D: DaoInterface = DAO> {
     api_secret_key: SecretString,
 }
 
+/// Expiry timestamp for a freshly created or updated invoice.
+///
+/// `invoice_lifetime_millis` is operator-supplied configuration and is a `u64`.
+/// The previous `as i64` cast wrapped values above `i64::MAX` into a *negative*
+/// lifetime, producing an invoice that was already expired, and the subsequent
+/// `Utc::now() + Duration` panicked for lifetimes near the top of the range.
+/// Invalid lifetimes are rejected at configuration load. This remains
+/// fallible as defense in depth for directly-constructed test/application
+/// state.
+fn invoice_valid_till(invoice_lifetime_millis: u64) -> Option<DateTime<Utc>> {
+    i64::try_from(invoice_lifetime_millis)
+        .ok()
+        .and_then(chrono::TimeDelta::try_milliseconds)
+        .and_then(|lifetime| Utc::now().checked_add_signed(lifetime))
+}
+
 impl<D: DaoInterface> AppState<D> {
     #[expect(clippy::too_many_arguments)]
     pub fn new(
@@ -145,7 +161,6 @@ impl<D: DaoInterface> AppState<D> {
             .await
     }
 
-    #[expect(clippy::arithmetic_side_effects, clippy::cast_possible_wrap)]
     #[tracing::instrument(skip_all)]
     pub async fn create_invoice(
         &self,
@@ -174,11 +189,11 @@ impl<D: DaoInterface> AppState<D> {
             // This should never happen, but just in case
             .unwrap_or_else(|| "UNKNOWN".to_string());
 
-        let valid_till = Utc::now()
-            + Duration::milliseconds(
-                self.payments_config
-                    .invoice_lifetime_millis as i64,
-            );
+        let valid_till = invoice_valid_till(
+            self.payments_config
+                .invoice_lifetime_millis,
+        )
+        .ok_or(DaoInvoiceError::InvalidInvoiceLifetime)?;
 
         let payment_address = match chain {
             ChainType::PolkadotAssetHub => {
@@ -278,7 +293,6 @@ impl<D: DaoInterface> AppState<D> {
         Ok(invoice_with_amount)
     }
 
-    #[expect(clippy::arithmetic_side_effects, clippy::cast_possible_wrap)]
     pub async fn update_invoice(
         &self,
         params: UpdateInvoiceParams,
@@ -287,11 +301,11 @@ impl<D: DaoInterface> AppState<D> {
             invoice_id: params.invoice_id,
             amount: params.amount,
             cart: params.cart,
-            valid_till: Utc::now()
-                + Duration::milliseconds(
-                    self.payments_config
-                        .invoice_lifetime_millis as i64,
-                ),
+            valid_till: invoice_valid_till(
+                self.payments_config
+                    .invoice_lifetime_millis,
+            )
+            .ok_or(DaoInvoiceError::InvalidInvoiceLifetime)?,
         };
 
         let dao_transaction = self
@@ -759,7 +773,7 @@ impl<D: DaoInterface> AppState<D> {
             .invoices
             .sort_by_key(|i| i.invoice.updated_at);
 
-        Ok(internal_response.into_public(&self.payments_config.payment_url_base))
+        internal_response.into_public(&self.payments_config.payment_url_base)
     }
 
     pub fn get_shop_meta(&self) -> ShopMetaConfig {
@@ -1210,12 +1224,12 @@ mod tests {
                 asset_name: "USDC".to_string(),
                 chain: ChainType::PolkadotAssetHub,
                 payment_address: to_base58_string(account_id.0, 0),
-                valid_till: Utc::now()
-                    + Duration::milliseconds(
-                        app_state
-                            .payments_config
-                            .invoice_lifetime_millis as i64,
-                    ),
+                valid_till: invoice_valid_till(
+                    app_state
+                        .payments_config
+                        .invoice_lifetime_millis,
+                )
+                .unwrap(),
             }
         };
 
@@ -1336,12 +1350,12 @@ mod tests {
                 asset_name: "USDC".to_string(),
                 chain: ChainType::PolkadotAssetHub,
                 payment_address: to_base58_string(account_id.0, 0),
-                valid_till: Utc::now()
-                    + Duration::milliseconds(
-                        app_state
-                            .payments_config
-                            .invoice_lifetime_millis as i64,
-                    ),
+                valid_till: invoice_valid_till(
+                    app_state
+                        .payments_config
+                        .invoice_lifetime_millis,
+                )
+                .unwrap(),
             }
         };
 

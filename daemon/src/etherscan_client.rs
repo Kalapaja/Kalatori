@@ -32,6 +32,19 @@ pub enum EtherscanClientError {
     EtherscanError { message: String, result: String },
     #[error("Request failed")]
     RequestFailed,
+    /// Etherscan reported a transfer whose base-unit amount cannot be
+    /// represented as a `Decimal`. The item is rejected on its own, so the
+    /// other transfers in the same response are still recorded — a poisoned
+    /// item must not cost the batch, because Etherscan keeps returning it and
+    /// every retry would meet it again.
+    #[error("Transfer {tx_hash}: amount {value} with {decimals} decimals is not representable")]
+    UnrepresentableAmount {
+        value: u128,
+        decimals: u32,
+        tx_hash: String,
+        block_number: u32,
+        transaction_index: u32,
+    },
 }
 
 impl From<EtherscanResponseData<String>> for EtherscanClientError {
@@ -59,6 +72,46 @@ pub struct EtherscanClient {
 }
 
 impl EtherscanClient {
+    fn convert_incoming_transfers(
+        transactions: Vec<EtherscanTransaction>,
+        address: &str,
+        invoice_id: Uuid,
+    ) -> Vec<IncomingTransaction> {
+        transactions
+            .into_iter()
+            .filter(|transaction| transaction.to.eq_ignore_ascii_case(address))
+            .filter_map(|transaction| {
+                transaction
+                    .into_incoming_transaction(invoice_id)
+                    .map_err(|error| {
+                        match &error {
+                            EtherscanClientError::UnrepresentableAmount {
+                                value,
+                                decimals,
+                                tx_hash,
+                                block_number,
+                                transaction_index,
+                            } => tracing::error!(
+                                %invoice_id,
+                                %tx_hash,
+                                block_number,
+                                transaction_index,
+                                value,
+                                decimals,
+                                "Rejected unrepresentable Etherscan transfer; valid batch items will continue"
+                            ),
+                            _ => tracing::error!(
+                                %invoice_id,
+                                error = ?error,
+                                "Rejected Etherscan transfer during conversion"
+                            ),
+                        }
+                    })
+                    .ok()
+            })
+            .collect()
+    }
+
     pub fn new(config: EtherscanClientConfig) -> Self {
         let rate_limiter = Arc::new(RateLimiter::direct(Quota::per_second(
             config.requests_per_second,
@@ -163,17 +216,62 @@ impl EtherscanClient {
             },
         };
 
-        let result = self
+        let transactions = self
             .get_account_transfers(chain_id, asset_id, address)
-            .await?
-            .into_iter()
-            .filter_map(|trans| {
-                (trans.to.to_lowercase() == address.to_lowercase())
-                    .then(|| trans.into_incoming_transaction(invoice_id))
-                    .flatten()
-            })
-            .collect();
+            .await?;
 
-        Ok(result)
+        Ok(Self::convert_incoming_transfers(
+            transactions,
+            address,
+            invoice_id,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal::Decimal;
+
+    use super::*;
+
+    fn transaction(
+        hash: &str,
+        value: u128,
+    ) -> EtherscanTransaction {
+        EtherscanTransaction {
+            block_number: 1,
+            hash: hash.to_string(),
+            from: "0xfrom".to_string(),
+            contract_address: "0xcontract".to_string(),
+            to: "0xrecipient".to_string(),
+            value,
+            token_symbol: "USDC".to_string(),
+            token_decimal: 18,
+            transaction_index: 0,
+        }
+    }
+
+    #[test]
+    fn mixed_batch_keeps_valid_transfers_around_rejected_item() {
+        let invoice_id = Uuid::new_v4();
+        let transfers = EtherscanClient::convert_incoming_transfers(
+            vec![
+                transaction("0xgood1", 1_000_000_000_000_000_000),
+                transaction("0xbad", u128::MAX),
+                transaction("0xgood2", 2_000_000_000_000_000_000),
+            ],
+            "0xRECIPIENT",
+            invoice_id,
+        );
+
+        assert_eq!(transfers.len(), 2);
+        assert_eq!(
+            transfers[0].transfer_info.amount,
+            Decimal::ONE
+        );
+        assert_eq!(
+            transfers[1].transfer_info.amount,
+            Decimal::from(2)
+        );
     }
 }

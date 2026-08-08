@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use rust_decimal::prelude::{
-    Decimal,
-    ToPrimitive,
-};
+use rust_decimal::prelude::Decimal;
 use subxt::blocks::Block;
 use subxt::config::{
     DefaultExtrinsicParams,
@@ -23,6 +20,7 @@ use tracing::{
 };
 
 use crate::types::ChainType;
+use crate::utils::decimal_to_base_units;
 
 use super::{
     AssetInfo,
@@ -775,19 +773,20 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
             })?
             .decimals;
 
-        #[expect(clippy::arithmetic_side_effects)]
-        let normalized_amount = amount / Decimal::new(1, decimals.into());
-
-        let transaction_amount = normalized_amount
-            .to_u128()
-            .ok_or_else(|| {
+        // Dividing by `Decimal::new(1, decimals)` is really a multiplication by
+        // `10^decimals`. `Decimal::new` panics for `decimals` above 28 and the
+        // division panics on `Decimal` overflow, both on values derived from
+        // on-chain asset metadata and a merchant-supplied payout amount.
+        let transaction_amount =
+            decimal_to_base_units(amount, decimals.into()).ok_or_else(|| {
                 tracing::error!(
                     amount = %amount,
-                    normalized = %normalized_amount,
-                    "Amount exceeds u128::MAX after normalization"
+                    decimals,
+                    "Amount cannot be normalized into u128 base units"
                 );
-                TransactionError::BuildFailed {
-                    reason: format!("Amount {amount} exceeds u128::MAX after normalization"),
+                TransactionError::InvalidAmountPrecision {
+                    amount,
+                    decimals: u32::from(decimals),
                 }
             })?;
 

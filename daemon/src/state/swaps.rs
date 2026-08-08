@@ -15,6 +15,7 @@ use crate::types::{
     SwapSignatureParams,
     SwapStatus,
 };
+use crate::utils::decimal_to_base_units;
 
 use super::AppState;
 
@@ -54,6 +55,13 @@ pub enum SwapRequestError {
     AssetMetadataUnavailable { asset_id: String },
     #[error("Database error")]
     DatabaseError,
+    /// Scaling the invoice's unfilled amount into integer token base units
+    /// overflowed. Kept distinct from `DatabaseError` because it is a bad
+    /// amount, not a storage fault, and is not worth retrying.
+    #[error("Amount {amount} cannot be converted to token base units")]
+    AmountConversion { amount: Decimal },
+    #[error("Invoice {invoice_id} has an unrepresentable remaining amount")]
+    InvalidInvoiceAmount { invoice_id: Uuid },
 }
 
 impl From<SwapsExecutorError> for SwapRequestError {
@@ -113,6 +121,12 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::AssetMetadataUnavailable {
                 ..
             }
+            | SwapRequestError::AmountConversion {
+                ..
+            }
+            | SwapRequestError::InvalidInvoiceAmount {
+                ..
+            }
             | SwapRequestError::DatabaseError => "INTERNAL_SERVER_ERROR",
         }
     }
@@ -141,6 +155,12 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::QuoteRequestFailed => "QUOTE_REQUEST_FAILED",
             SwapRequestError::SwapDestinationUnavailable => "SWAP_DESTINATION_UNAVAILABLE",
             SwapRequestError::AssetMetadataUnavailable {
+                ..
+            }
+            | SwapRequestError::AmountConversion {
+                ..
+            }
+            | SwapRequestError::InvalidInvoiceAmount {
                 ..
             }
             | SwapRequestError::DatabaseError => "INTERNAL_SERVER_ERROR",
@@ -175,6 +195,12 @@ impl ApiErrorExt for SwapRequestError {
             },
             SwapRequestError::QuoteRequestFailed
             | SwapRequestError::AssetMetadataUnavailable {
+                ..
+            }
+            | SwapRequestError::AmountConversion {
+                ..
+            }
+            | SwapRequestError::InvalidInvoiceAmount {
                 ..
             }
             | SwapRequestError::DatabaseError => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
@@ -213,9 +239,38 @@ impl ApiErrorExt for SwapRequestError {
             SwapRequestError::AssetMetadataUnavailable {
                 ..
             } => "The swap could not be prepared: asset metadata is unavailable.",
+            SwapRequestError::AmountConversion {
+                ..
+            } => "The swap amount cannot be represented in token base units.",
+            SwapRequestError::InvalidInvoiceAmount {
+                ..
+            } => "The invoice amount cannot be represented in token base units.",
             SwapRequestError::DatabaseError => "A database error occurred.",
         }
     }
+}
+
+fn expected_invoice_amount_units(
+    invoice: &crate::types::InvoiceWithReceivedAmount,
+    decimals: u32,
+) -> Result<u128, SwapRequestError> {
+    let invoice_id = invoice.invoice.id;
+    let amount = invoice
+        .unfilled_amount()
+        .map_err(|error| {
+            tracing::error!(
+                %invoice_id,
+                error = ?error,
+                "Invoice remaining amount cannot be represented"
+            );
+            SwapRequestError::InvalidInvoiceAmount {
+                invoice_id,
+            }
+        })?;
+
+    decimal_to_base_units(amount, decimals).ok_or(SwapRequestError::AmountConversion {
+        amount,
+    })
 }
 
 impl<D: DaoInterface> AppState<D> {
@@ -311,22 +366,7 @@ impl<D: DaoInterface> AppState<D> {
                     }
                 })?;
 
-            let one_unit = Decimal::try_new(1, decimals.into()).map_err(|_| {
-                tracing::error!(
-                    chain = %default_chain,
-                    asset_id = %to_token_address,
-                    decimals,
-                    "Destination asset decimals exceed the supported range"
-                );
-                SwapRequestError::AssetMetadataUnavailable {
-                    asset_id: to_token_address.clone(),
-                }
-            })?;
-
-            (invoice.unfilled_amount() / one_unit)
-                .to_u128()
-                // TODO: change error
-                .ok_or(SwapRequestError::DatabaseError)?
+            expected_invoice_amount_units(&invoice, decimals.into())?
         };
 
         let data = CreateSwapData {
@@ -733,5 +773,30 @@ mod tests {
             error.message(),
             "Swaps are not available for this shop."
         );
+    }
+
+    #[test]
+    fn expected_invoice_units_reject_sub_base_unit_dust() {
+        let mut invoice = default_invoice().with_amount(Decimal::ZERO);
+        invoice.invoice.amount = Decimal::from_str_exact("1.0000001").unwrap();
+
+        assert!(matches!(
+            expected_invoice_amount_units(&invoice, 6),
+            Err(SwapRequestError::AmountConversion { .. })
+        ));
+    }
+
+    #[test]
+    fn expected_invoice_units_propagate_unrepresentable_remainder() {
+        let mut invoice = default_invoice().with_amount(Decimal::MIN);
+        invoice.invoice.amount = Decimal::MAX;
+        let invoice_id = invoice.invoice.id;
+
+        assert!(matches!(
+            expected_invoice_amount_units(&invoice, 6),
+            Err(SwapRequestError::InvalidInvoiceAmount {
+                invoice_id: id,
+            }) if id == invoice_id
+        ));
     }
 }

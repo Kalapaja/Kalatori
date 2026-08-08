@@ -17,6 +17,7 @@ described in the four parts that answer it.
 
 ```toml
 allow_attributes = "deny"
+arithmetic_side_effects = "warn"
 cargo_common_metadata = "warn"
 cast_possible_truncation = "warn"
 ignored_unit_patterns = "warn"
@@ -70,30 +71,56 @@ Note also that `-Dwarnings` escalates lints that are *already enabled*. It
 cannot turn on a lint that is off — which is why the list above, not the flag,
 determines what protects you.
 
+### `arithmetic_side_effects`
+
+This is a payment daemon, so a silent wrap or truncation in an amount, fee or
+token-unit conversion is a money bug. Clippy's own documentation for this lint
+uses `rust_decimal::Decimal` — this repo's money type — as its motivating
+example, because `Decimal`'s `+`, `-`, `*` and `/` **panic** on overflow.
+
+The lint had been removed on 2026-01-16 in `ed941bc` (*"style: fix clippy and
+rustfmt warnings"* — a commit that silenced the warnings by config rather than
+fixing them) while ~12 `#[expect(clippy::arithmetic_side_effects)]` attributes
+stayed in the tree as inert markers. It is now re-enabled workspace-wide, and
+every site it flags was either converted to checked arithmetic or carries a
+justified `#[expect]`.
+
+Rules for new code:
+
+- Money, fee and token-unit paths (anything touching `Decimal`, `U256`, base-unit
+  conversion, invoice totals, refunds or gas) must use `checked_*` /
+  `saturating_*` and return a domain error on failure. Never paper over a real
+  overflow with `#[expect]`.
+- `Decimal::new(n, scale)` panics for `scale > 28`; use `Decimal::try_new`.
+- `U256::to::<u128>()` panics above `u128::MAX`; use `u128::try_from`.
+- `DateTime + Duration` panics on date overflow, and `TimeDelta::seconds` /
+  `milliseconds` panic outside their range; use `checked_add_signed` and
+  `try_seconds` / `try_milliseconds` whenever the operand is config- or
+  request-derived.
+- Everything else (test fixtures, obviously bounded counters) may use
+  `#[expect(clippy::arithmetic_side_effects, reason = "...")]` — the `reason` must
+  state *why* the value cannot overflow, not merely that it is a test.
+
 ### What is not enabled, and why the docs used to say otherwise
 
-`pedantic`, `arithmetic_side_effects` and the `shadow_*` family are **off**.
+`pedantic` and the `shadow_*` family are **off**.
 
 They were not declined after deliberation — they were configured and then
-removed, and the documentation simply went stale:
+removed, and the documentation simply went stale: `pedantic` went in `ed941bc`
+(2026-01-16, alongside `arithmetic_side_effects`, which has since been
+restored — see above), and the `shadow_*` family in `abcaf13` (2025-12-02).
 
-- `pedantic` and `arithmetic_side_effects` were removed on 2026-01-16 in
-  `ed941bc`, titled *"style: fix clippy and rustfmt warnings"* — a commit that
-  silenced the warnings by config rather than fixing them.
-- The `shadow_*` family went the same way in `abcaf13` (2025-12-02).
-
-Turning them back on today produces **471 warnings** across the workspace,
-deduplicated by site — so adopting them is a cleanup project, not a config
-change. The bulk is shadowing (149 `shadow_unrelated`, 52 `shadow_reuse`), then
-45 unseparated long literals, 32 unchecked arithmetic operations, 25
-over-long functions, 23 missing doc backticks and 19 inlinable `format!` args.
+Turning them back on produces hundreds of warnings across the workspace —
+a 2026-08 measurement found 471, deduplicated by site, of which the bulk was
+shadowing (149 `shadow_unrelated`, 52 `shadow_reuse`), then 45 unseparated long
+literals, 25 over-long functions, 23 missing doc backticks and 19 inlinable
+`format!` args. Adopting them is a cleanup project, not a config change.
 
 Re-measure with:
 
 ```bash
 cargo clippy --all-targets --all-features -- \
   -W clippy::pedantic \
-  -W clippy::arithmetic_side_effects \
   -W clippy::shadow_reuse -W clippy::shadow_same -W clippy::shadow_unrelated
 ```
 
@@ -105,11 +132,12 @@ daemon aborts before finishing the lint pass without them ([#339](https://github
 ### `#[expect]` on a lint nothing enables
 
 `#[expect(clippy::too_many_lines)]` and friends sit in the tree without tripping
-`unfulfilled_lint_expectations`, even though `pedantic` is off. Of the 122
-clippy expectations in first-party code, **28 name a lint nothing enables**,
-across six of them: `arithmetic_side_effects` (13), `too_many_lines` and
-`cast_sign_loss` (4 each), `struct_field_names` and `module_name_repetitions`
-(3 each), and `unused_self`.
+`unfulfilled_lint_expectations`, even though `pedantic` is off. Among the clippy
+expectations in first-party code, **19 name a lint nothing enables**, across
+five of them: `cast_sign_loss` (8), `too_many_lines` (4),
+`struct_field_names` and `module_name_repetitions` (3 each), and `unused_self`.
+(The 13 `arithmetic_side_effects` expectations that used to sit in this bucket
+are now checked for real — the lint is enabled.)
 
 That works because `#[expect]` is a *scoped lint level* ([RFC 2383](https://rust-lang.github.io/rfcs/2383-lint-reasons.html)):
 it raises the lint's level for its scope, so the lint runs there even though
@@ -120,6 +148,21 @@ warns.
 
 So these annotations mark real violations of lints nothing enforces. Useful as
 documentation; not evidence that anything is checking.
+
+## Build Profiles
+
+`[profile.*]` tables **must** live in the workspace root `Cargo.toml`. Cargo
+silently ignores profile tables declared in non-root workspace members: no
+warning, no error, the settings simply do not apply. `daemon/Cargo.toml` carried
+`[profile.release]` — including `overflow-checks = true`, `lto`, `codegen-units`
+and `panic = "abort"` — for a long time without any of it taking effect.
+
+Verify a profile change actually landed rather than trusting the manifest:
+
+```sh
+cargo build --release -vv 2>&1 | grep 'rustc --crate-name kalatori '
+# expect: -C overflow-checks=on -C lto -C codegen-units=1
+```
 
 ## Panic Gate
 
@@ -146,18 +189,29 @@ unwrap_used      = "deny"
 
 ### What the gate does and does not cover
 
-It covers the listed constructs **in first-party code**. It is not a proof that
-the daemon cannot panic. Still uncaught, and still fatal:
+It covers the listed constructs **in first-party code**, and — now that
+`arithmetic_side_effects` is enabled (see above) — unguarded arithmetic too.
+It is not a proof that the daemon cannot panic. Still uncaught, and still
+fatal:
 
 - `assert!`, `assert_eq!`, `debug_assert!` — including production assertions.
-- **Integer and `Decimal` arithmetic, division, shifts, datetime arithmetic.**
-  `clippy::arithmetic_side_effects` is not enabled. See the backlog below.
 - Panicking library APIs — `B256::from_slice`, `Vec::remove`, `chrono`
   constructors, and anything else that panics on out-of-domain input.
 - `std::process::abort`/`exit`, and allocation failure.
 - Panics inside dependencies on data we hand them.
 
 Treat the gate as removing the *careless* panics, not as a guarantee.
+
+`panic = "abort"` is deliberately **not** part of the release profile, even
+though it sat in `daemon/Cargo.toml` for months. It was written in 2024 when
+this was a single crate and went inert when the workspace split moved the
+profile out of the root, so moving the profile back would have revived it
+rather than introduced it. Under abort the panic hook still runs, but the
+process dies before the shutdown listener can observe the cancelled token — the
+executor, chain trackers, webhook sender and keyring never drain — and Tokio's
+per-task containment goes with it, so a panic in any spawned task takes the
+daemon down instead of surfacing as a `JoinError`. Unwinding keeps the graceful
+path this daemon actually implements.
 
 ### Test code
 
@@ -168,7 +222,9 @@ behaves like `#[test]`.
 
 **Clippy has no equivalent option for `unreachable`, `todo`, `unimplemented` or
 `string_slice`.** Those four fire inside test modules too, and need a local
-`#[expect]` there.
+`#[expect]` there. The same applies to `arithmetic_side_effects` — test-fixture
+arithmetic needs an `#[expect]` with a reason stating why the values are
+bounded.
 
 Example binaries under `client/examples/` get no test exemption and carry
 file-level `#![expect(clippy::unwrap_used)]`. That is a blunt instrument — it
@@ -221,21 +277,6 @@ In order of preference:
 
   These are *not* cleared — some are known-reachable. Prefer converting one to a
   typed error over extending the marker to new code.
-
-- **Arithmetic is not gated.** `clippy::arithmetic_side_effects` would catch
-  overflow, division by zero and `Decimal` panics; 32 sites trip it today (see
-  the measurement above), plus 13 already carrying an `#[expect]`. Division by
-  zero panics unconditionally; overflow currently *wraps silently* in release,
-  which for a daemon computing payment amounts is arguably worse than panicking.
-
-- **`[profile.release]` is in `daemon/Cargo.toml`, a workspace member, so Cargo
-  ignores it** — it prints `profiles for the non root package will be ignored`
-  on every build. `panic = "abort"`, `overflow-checks`, `lto`, `strip` and
-  `codegen-units` are therefore *not* in effect. Moving the block to the
-  workspace root should be sequenced **after** the arithmetic gate above:
-  enabling `overflow-checks` while those sites remain unguarded would turn
-  silent wrapping into live panics, i.e. create the very DoS class this gate
-  exists to close.
 
 ## Logging
 

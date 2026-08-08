@@ -328,6 +328,10 @@ pub fn default_swap_quote(data: &CreateSwapData) -> SwapQuote {
         id: "123".to_string(),
         estimated_to_amount_units: data.from_amount_units,
         estimated_to_amount: Decimal::new(data.from_amount_units as i64, 6),
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "test fixture: `Utc::now()` plus a fixed 1 minute cannot overflow DateTime<Utc>"
+        )]
         valid_till: Utc::now() + TimeDelta::minutes(1),
         quote_details,
     }

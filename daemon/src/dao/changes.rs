@@ -36,6 +36,9 @@ pub enum DaoChangesError {
 
     #[error("Failed to parse JSON from database: {message}")]
     JsonParseError { message: String },
+
+    #[error("Incoming amount total overflowed for invoice {invoice_id}")]
+    AmountOverflow { invoice_id: uuid::Uuid },
 }
 
 impl From<sqlx::Error> for DaoChangesError {
@@ -50,6 +53,9 @@ impl crate::api::ApiErrorExt for DaoChangesError {
             DaoChangesError::DatabaseError
             | DaoChangesError::JsonParseError {
                 ..
+            }
+            | DaoChangesError::AmountOverflow {
+                ..
             } => "INTERNAL_SERVER_ERROR",
         }
     }
@@ -60,6 +66,9 @@ impl crate::api::ApiErrorExt for DaoChangesError {
             DaoChangesError::JsonParseError {
                 ..
             } => "JSON_PARSE_ERROR",
+            DaoChangesError::AmountOverflow {
+                ..
+            } => "INVOICE_AMOUNT_OVERFLOW",
         }
     }
 
@@ -69,6 +78,9 @@ impl crate::api::ApiErrorExt for DaoChangesError {
             DaoChangesError::JsonParseError {
                 ..
             } => "Failed to parse data from database.",
+            DaoChangesError::AmountOverflow {
+                ..
+            } => "Stored invoice amounts cannot be totaled.",
         }
     }
 

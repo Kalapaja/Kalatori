@@ -33,6 +33,11 @@ unused = "warn"
 
 [workspace.lints.clippy]
 allow_attributes = "deny"
+# This is a payment daemon: a silent wrap or truncation in an amount, fee or
+# token-unit conversion is a money bug. Every `+`/`-`/`*`/`/` on a numeric or
+# `Decimal` type must be explicitly checked, saturating, or justified with an
+# `#[expect(..., reason = "...")]` that says why it cannot overflow.
+arithmetic_side_effects = "warn"
 cargo_common_metadata = "warn"
 cast_possible_truncation = "warn"
 ignored_unit_patterns = "warn"
@@ -60,6 +65,34 @@ unwrap_used = "deny"
 # prone to poorly handle the file renaming that can result in their history erasure.
 mod_module_files = "warn"
 # TODO: we'll add docs and remove this later
+
+# Build profiles. These MUST live in the workspace root manifest: Cargo silently
+# ignores `[profile.*]` tables declared in non-root workspace members, which is
+# how `overflow-checks` quietly stopped applying to the release binary.
+[profile.dev]
+debug = "line-tables-only"
+
+# There is deliberately no `[profile.dev.package."*"] opt-level = 3` here. It sat
+# in the daemon manifest, where Cargo ignored it, so nothing has ever actually
+# built that way; switching it on with this move cost about nine minutes per cold
+# build — every CI run, every clean checkout — to speed up a daemon that spends
+# its time waiting on chains and a database. Nothing above depends on it, and no
+# check loses fidelity without it: `overflow-checks` and the rest of the release
+# profile below are what this move exists for.
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+overflow-checks = true
+# Deliberately no `panic = "abort"`. It was added in 2024 when this was a single
+# crate, went inert in `18728dfd` when the workspace split moved the profile into
+# `daemon/Cargo.toml`, and would be revived — not introduced — by moving it back.
+# `set_panic_hook` (daemon/src/utils/shutdown.rs) cancels the shutdown token so
+# the executor, chain trackers, webhook sender and keyring can drain; abort runs
+# the hook and then kills the process before anything observes the token, and it
+# also removes Tokio's per-task panic containment, so a panic in one spawned task
+# takes the daemon down instead of surfacing as a `JoinError`.
 
 [workspace.metadata.bin]
 # Please keep in sync with subxt version in daemon/Cargo.toml and in subxt-cli version in Dockerfile

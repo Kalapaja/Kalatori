@@ -89,6 +89,10 @@ async fn invoice<D: DaoInterface + 'static>(
         .await;
 
     // TODO: rename var, move value to const
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "`Utc::now()` minus a fixed 30 days is nowhere near DateTime<Utc>'s ~262000-year bounds; no runtime input is involved"
+    )]
     let response_if = Utc::now() - TimeDelta::days(30);
 
     match invoice {

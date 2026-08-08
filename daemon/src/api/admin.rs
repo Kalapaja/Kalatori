@@ -419,6 +419,10 @@ mod tests {
         "/settings",
     ];
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "fixed one-hour offset from `Utc::now()`, which is ~250_000 years from `DateTime`'s range limit"
+    )]
     fn user(role: Role) -> AuthenticatedUser {
         let now = Utc::now();
         AuthenticatedUser {

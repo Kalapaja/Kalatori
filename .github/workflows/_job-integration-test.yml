@@ -28,15 +28,55 @@ jobs:
       - name: Create database directory
         run: mkdir database
 
-      - name: Run daemon and chopsticks in background
-        run: make run &
+      # Compile before the readiness poll below, so the build does not race its
+      # timeout. `make run` is `cargo run`, which builds first; with the
+      # workspace-root profiles now actually applying, `[profile.dev.package."*"]
+      # opt-level = 3` rebuilds the whole dependency graph optimised, and on a
+      # cold cache that alone exceeds the poll's budget.
+      - name: Build daemon
+        run: cargo build --bin kalatori
+
+      # Chopsticks builds its own image (it npm-installs the binary) and then
+      # forks Asset Hub from a live RPC. Both belong outside the readiness poll
+      # below, for the same reason the build does — the poll is there to catch a
+      # stuck daemon, and it cannot do that while it is really timing docker.
+      - name: Start chopsticks
+        run: make start-chopsticks
+
+      # `system_chain` is answered from static metadata while the fork is still
+      # loading, so it went green ~10s in and the daemon then met a WebSocket
+      # reset. `chain_getBlockHash` can only answer once a block exists, which
+      # is the condition the daemon actually depends on. Note the daemon dials
+      # `ws://`, and this probe is HTTP on the same port — chopsticks serves
+      # both, but that is why the check must assert real chain state rather
+      # than mere reachability.
+      - name: Wait for chopsticks to serve the forked chain
+        run: |
+          timeout 300 bash -c 'until curl -sf \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"chain_getBlockHash\",\"params\":[]}" \
+            http://localhost:9000 | grep -q "\"result\":\"0x"; do sleep 2; done'
+
+      # Redirected rather than backgrounded bare: `make run &` sends the
+      # daemon's output nowhere the job can reach, so a daemon that fails to
+      # start is indistinguishable from one that is merely slow, and the poll
+      # below just times out with nothing to show for it.
+      - name: Run daemon in background
+        run: make run > daemon.log 2>&1 &
 
       # Poll the public /info endpoint until the daemon answers, capped at 5
       # minutes so a stuck daemon still fails the job in bounded time. Replaces
-      # an unconditional `sleep 300`.
+      # an unconditional `sleep 300`. The binary is already built by the step
+      # above, so this measures startup, not compilation.
       - name: Wait for daemon to be ready
         run: |
           timeout 300 bash -c 'until curl -sf http://localhost:8080/public/info >/dev/null; do sleep 2; done'
 
       - name: Run integration tests
         run: make run-test-examples
+
+      # Whatever went wrong, the daemon's own output is the first thing anyone
+      # will want, and it is otherwise lost with the runner.
+      - name: Daemon log
+        if: failure()
+        run: tail -n 200 daemon.log || echo "daemon.log was never created"

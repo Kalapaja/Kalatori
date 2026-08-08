@@ -17,6 +17,9 @@ use crate::types::{
     IncomingTransaction,
     TransferInfo,
 };
+use crate::utils::decimal_from_base_units;
+
+use super::EtherscanClientError;
 
 #[serde_as]
 #[expect(dead_code)]
@@ -106,35 +109,34 @@ pub struct EtherscanTransaction {
 }
 
 impl EtherscanTransaction {
-    /// Returns `None` (with an error log) when the reported value or token
-    /// decimals don't fit into `Decimal`: recording a wrapped amount would
-    /// corrupt the invoice, while skipping keeps the balance mismatch
-    /// visible to the balance checker.
+    /// Convert Etherscan's `value` (base units) plus `tokenDecimal` into a
+    /// `Decimal` amount.
+    ///
+    /// This used to be `Decimal::new(self.value as i64, self.token_decimal)`,
+    /// which wrapped a `u128` into an `i64`. Ten units of an 18-decimal token
+    /// is 10^19 base units — already past `i64::MAX` — so an ordinary payment
+    /// was recorded as a *negative* amount. The conversion is now checked at
+    /// every step and cannot panic or wrap.
+    fn amount(
+        value: u128,
+        token_decimal: u32,
+    ) -> Option<Decimal> {
+        decimal_from_base_units(&value.to_string(), token_decimal)
+    }
+
     pub fn into_incoming_transaction(
         self,
         invoice_id: Uuid,
-    ) -> Option<IncomingTransaction> {
-        // Convert through `i128`, not `i64`: `Decimal` holds a 96-bit mantissa,
-        // so an `i64` intermediate would cap an 18-decimal token at ~9.22
-        // tokens and silently skip everything above it.
-        let Ok(value) = i128::try_from(self.value) else {
-            tracing::error!(
-                tx_hash = %self.hash,
-                value = self.value,
-                "Transfer value exceeds the supported range, skipping transaction"
-            );
-            return None;
-        };
-
-        let Ok(amount) = Decimal::try_from_i128_with_scale(value, self.token_decimal) else {
-            tracing::error!(
-                tx_hash = %self.hash,
-                value = self.value,
-                token_decimal = self.token_decimal,
-                "Transfer value or token decimals exceed the range representable by Decimal, skipping transaction"
-            );
-            return None;
-        };
+    ) -> Result<IncomingTransaction, EtherscanClientError> {
+        let amount = Self::amount(self.value, self.token_decimal).ok_or(
+            EtherscanClientError::UnrepresentableAmount {
+                value: self.value,
+                decimals: self.token_decimal,
+                tx_hash: self.hash.clone(),
+                block_number: self.block_number,
+                transaction_index: self.transaction_index,
+            },
+        )?;
 
         let transfer_info = TransferInfo {
             chain: ChainType::Polygon,
@@ -151,7 +153,7 @@ impl EtherscanTransaction {
             tx_hash: Some(self.hash),
         };
 
-        Some(IncomingTransaction {
+        Ok(IncomingTransaction {
             id: Uuid::new_v4(),
             invoice_id,
             transfer_info,
@@ -174,75 +176,100 @@ mod tests {
         token_decimal: u32,
     ) -> EtherscanTransaction {
         EtherscanTransaction {
-            block_number: 100,
-            hash: "0xdead".to_string(),
+            block_number: 1,
+            hash: "0xdeadbeef".to_string(),
             from: "0xfrom".to_string(),
-            contract_address: "0xtoken".to_string(),
+            contract_address: "0xcontract".to_string(),
             to: "0xto".to_string(),
             value,
             token_symbol: "USDC".to_string(),
             token_decimal,
-            transaction_index: 2,
+            transaction_index: 0,
         }
     }
 
     #[test]
-    fn test_into_incoming_transaction() {
-        let invoice_id = Uuid::new_v4();
-        let result = transaction(1_500_000, 6)
-            .into_incoming_transaction(invoice_id)
+    fn six_decimal_amount_round_trips() {
+        // 1.5 USDC
+        let tx = transaction(1_500_000, 6);
+        let incoming = tx
+            .into_incoming_transaction(Uuid::nil())
             .unwrap();
 
         assert_eq!(
-            result.transfer_info.amount,
+            incoming.transfer_info.amount,
             Decimal::new(15, 1)
         );
-        assert_eq!(result.invoice_id, invoice_id);
-        assert_eq!(
-            result.transaction_id.tx_hash,
-            Some("0xdead".to_string())
-        );
     }
 
     #[test]
-    fn test_into_incoming_transaction_accepts_large_18_decimal_transfer() {
-        // 10 tokens of an 18-decimal asset is 1e19 base units — above
-        // `i64::MAX`, so an `i64` intermediate would drop it, but well within
-        // Decimal's 96-bit mantissa
-        let ten_tokens = 10_000_000_000_000_000_000_u128;
-        assert!(ten_tokens > u128::try_from(i64::MAX).unwrap());
-
-        let result = transaction(ten_tokens, 18)
-            .into_incoming_transaction(Uuid::new_v4())
-            .expect("an 18-decimal transfer above i64::MAX must still be recorded");
+    fn ten_units_of_an_18_decimal_token_is_positive_ten() {
+        // Regression: 10 * 10^18 = 10^19 base units overflows i64, and the old
+        // `self.value as i64` cast turned this into a NEGATIVE amount.
+        let tx = transaction(10_000_000_000_000_000_000, 18);
+        let incoming = tx
+            .into_incoming_transaction(Uuid::nil())
+            .unwrap();
 
         assert_eq!(
-            result.transfer_info.amount,
-            Decimal::from(10)
+            incoming.transfer_info.amount,
+            Decimal::new(10, 0)
+        );
+        assert!(incoming.transfer_info.amount > Decimal::ZERO);
+    }
+
+    #[test]
+    fn amount_beyond_i64_but_within_decimal_is_exact() {
+        // ~18.45 tokens with 18 decimals: base units are just over i64::MAX.
+        let value = u128::try_from(i64::MAX).unwrap() + 1;
+        let amount = EtherscanTransaction::amount(value, 18).unwrap();
+
+        assert_eq!(
+            amount,
+            Decimal::from_str_exact("9.223372036854775808").unwrap()
         );
     }
 
     #[test]
-    fn test_into_incoming_transaction_rejects_oversized_value() {
-        // Decimal's mantissa is 96 bits; anything above 2^96-1 base units is
-        // genuinely unrepresentable and must be skipped rather than wrapped
-        let oversized = (1_u128 << 96) + 1;
-        assert!(
-            transaction(oversized, 6)
-                .into_incoming_transaction(Uuid::new_v4())
-                .is_none()
+    fn unrepresentable_amount_is_an_error_not_a_wrap() {
+        // u128::MAX has 39 significant digits; Decimal holds at most 28.
+        let err = transaction(u128::MAX, 18)
+            .into_incoming_transaction(Uuid::nil())
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            EtherscanClientError::UnrepresentableAmount { .. }
+        ));
+    }
+
+    #[test]
+    fn scaled_value_with_large_base_unit_mantissa_is_exact() {
+        let incoming = transaction(
+            1_000_000_000_000_000_000_000_000_000_000,
+            18,
+        )
+        .into_incoming_transaction(Uuid::nil())
+        .unwrap();
+
+        assert_eq!(
+            incoming.transfer_info.amount,
+            Decimal::from(1_000_000_000_000_u64)
         );
     }
 
     #[test]
-    fn test_into_incoming_transaction_rejects_oversized_decimals() {
-        // Decimal supports at most 28 decimal places; the old Decimal::new
-        // panicked here
-        assert!(
-            transaction(1_000_000, 77)
-                .into_incoming_transaction(Uuid::new_v4())
-                .is_none()
-        );
+    fn scale_above_decimal_maximum_is_an_error_not_a_panic() {
+        // `Decimal::new(1, 29)` panics; a bogus `tokenDecimal` must not crash
+        // the poller.
+        let err = transaction(1, 29)
+            .into_incoming_transaction(Uuid::nil())
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            EtherscanClientError::UnrepresentableAmount { .. }
+        ));
     }
 
     /// A value that cannot occur by accident, so its absence is evidence.

@@ -22,7 +22,10 @@ use serde::{
 };
 use uuid::Uuid;
 
-use kalatori_client::types::ApiResultStructured;
+use kalatori_client::types::{
+    ApiError,
+    ApiResultStructured,
+};
 
 use crate::auth::session::COOKIE_NAME;
 use crate::auth::token::{
@@ -121,7 +124,26 @@ async fn mint_token_handler(
     );
 
     let now = Utc::now();
-    let exp = now + chrono::Duration::minutes(i64::try_from(req.exp_minutes).unwrap_or(60));
+    // `exp_minutes` is request-controlled: fail the request when it cannot be
+    // represented instead of silently minting a token with a different expiry.
+    let exp = i64::try_from(req.exp_minutes)
+        .ok()
+        .and_then(chrono::TimeDelta::try_minutes)
+        .and_then(|duration| now.checked_add_signed(duration));
+    let Some(exp) = exp else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(ApiResultStructured::<()>::Err {
+                error: ApiError {
+                    category: "INVALID_REQUEST".to_string(),
+                    code: "INVALID_TOKEN_EXPIRY".to_string(),
+                    message: "exp_minutes is outside the supported range".to_string(),
+                    details: None,
+                },
+            }),
+        )
+            .into_response()
+    };
 
     let claims = TokenClaims {
         iss: dev_auth.issuer.clone(),
@@ -180,4 +202,51 @@ pub fn routes(dev_auth: Option<Arc<DevAuthState>>) -> axum::Router<ApiState> {
     }
 
     router
+}
+
+#[cfg(test)]
+mod tests {
+    use pasetors::keys::{
+        AsymmetricKeyPair,
+        Generate,
+    };
+    use pasetors::version4::V4;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn invalid_requested_expiry_returns_structured_bad_request() {
+        let dev_auth = Arc::new(DevAuthState {
+            secret_key: AsymmetricKeyPair::<V4>::generate()
+                .unwrap()
+                .secret,
+            issuer: "test-issuer".to_string(),
+            audience: "test-audience".to_string(),
+        });
+        let request = MintTokenRequest {
+            role: default_role(),
+            email: default_email(),
+            sub: default_sub(),
+            exp_minutes: u64::MAX,
+        };
+
+        let response = mint_token_handler(
+            State(dev_auth),
+            Some(axum::Json(request)),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["error"]["code"],
+            "INVALID_TOKEN_EXPIRY"
+        );
+    }
 }

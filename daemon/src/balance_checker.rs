@@ -31,12 +31,44 @@ use crate::utils::logging::{
     operation,
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum BalanceCheckerError {
+    #[error("Invoice {invoice_id} was not found")]
     InvoiceNotFound { invoice_id: Uuid },
+    #[error("Failed to fetch account balance")]
     FetchBalanceFailed,
+    #[error("Failed to fetch incoming transfers")]
     FetchTransfersFailed,
+    #[error("Incoming transfer total overflowed for invoice {invoice_id}")]
+    AmountOverflow { invoice_id: Uuid },
+    #[error("Failed to record incoming transfer for invoice {invoice_id}")]
+    RecordTransferFailed { invoice_id: Uuid },
+    #[error("Database operation failed")]
     DatabaseError,
+}
+
+fn checked_incoming_total(
+    invoice_id: Uuid,
+    transactions: &[IncomingTransaction],
+) -> Result<Decimal, BalanceCheckerError> {
+    transactions
+        .iter()
+        .try_fold(Decimal::ZERO, |total, transaction| {
+            total
+                .checked_add(transaction.transfer_info.amount)
+                .ok_or_else(|| {
+                    tracing::error!(
+                        %invoice_id,
+                        transaction_id = ?transaction.transaction_id,
+                        accumulated_amount = %total,
+                        transaction_amount = %transaction.transfer_info.amount,
+                        "Incoming transfer total overflowed during balance reconciliation"
+                    );
+                    BalanceCheckerError::AmountOverflow {
+                        invoice_id,
+                    }
+                })
+        })
 }
 
 #[derive(Clone)]
@@ -366,10 +398,7 @@ impl<
                 BalanceCheckerError::FetchTransfersFailed
             })?;
 
-        let total_amount: Decimal = incoming_transactions
-            .iter()
-            .map(|trans| trans.transfer_info.amount)
-            .sum();
+        let total_amount = checked_incoming_total(invoice_id, &incoming_transactions)?;
 
         if total_amount != balance {
             // TODO: build event and send it as a webhook. It'll be a way to
@@ -392,6 +421,7 @@ impl<
                 // period) so we probably need to handle that case and initiate
                 // refund. Perhaps it will happen on the next iteration
                 // automatically? Need to check it out when refunds will be implemented
+                let transaction_id = transaction.transaction_id.clone();
                 match self
                     .transactions_recorder
                     .process_invoice_transaction(invoice, transaction)
@@ -401,9 +431,19 @@ impl<
                     Err(TransactionsRecorderError::TransactionDuplication {
                         ..
                     }) => tracing::debug!("Transaction is already presented in the database"),
-                    Err(_) => tracing::warn!(
-                        "Database error occurred while trying to record potentially missing transaction"
-                    ),
+                    Err(error) => {
+                        tracing::error!(
+                            %invoice_id,
+                            ?transaction_id,
+                            error = ?error,
+                            "Failed to record reconciled transaction; invoice remains eligible for a later reconciliation pass"
+                        );
+                        return Err(
+                            BalanceCheckerError::RecordTransferFailed {
+                                invoice_id,
+                            },
+                        )
+                    },
                 };
             }
         }
@@ -487,6 +527,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::types::default_incoming_transaction;
 
     fn balance_checker() -> BalanceChecker<
         MockDaoInterface,
@@ -745,6 +786,22 @@ mod tests {
         assert_eq!(
             stale_invoice.total_received_amount,
             balance
+        );
+    }
+
+    #[test]
+    fn incoming_transfer_total_overflow_is_an_error() {
+        let invoice_id = Uuid::new_v4();
+        let mut first = default_incoming_transaction(invoice_id);
+        first.transfer_info.amount = Decimal::MAX;
+        let mut second = default_incoming_transaction(invoice_id);
+        second.transfer_info.amount = Decimal::ONE;
+
+        assert_eq!(
+            checked_incoming_total(invoice_id, &[first, second]),
+            Err(BalanceCheckerError::AmountOverflow {
+                invoice_id,
+            })
         );
     }
 }

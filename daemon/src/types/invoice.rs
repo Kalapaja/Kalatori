@@ -65,6 +65,12 @@ pub struct InvoiceWithReceivedAmount {
     pub total_received_amount: Decimal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvoiceAmountError {
+    #[error("Invoice {invoice_id} amount remainder cannot be represented")]
+    UnrepresentableRemainder { invoice_id: Uuid },
+}
+
 impl InvoiceWithReceivedAmount {
     pub fn into_public_invoice(
         self,
@@ -94,9 +100,21 @@ impl InvoiceWithReceivedAmount {
         }
     }
 
-    /// Returns invoice's unfilled amount or 0 if it's filled or overpaid
-    pub fn unfilled_amount(&self) -> Decimal {
-        (self.invoice.amount - self.total_received_amount).max(Decimal::ZERO)
+    /// Returns invoice's unfilled amount or 0 if it's filled or overpaid.
+    ///
+    /// The subtraction is fallible because extreme/corrupt signed amounts can
+    /// exceed Decimal's representable range. Only a successfully computed
+    /// negative remainder is clamped to zero.
+    pub fn unfilled_amount(&self) -> Result<Decimal, InvoiceAmountError> {
+        self.invoice
+            .amount
+            .checked_sub(self.total_received_amount)
+            .map(|remainder| remainder.max(Decimal::ZERO))
+            .ok_or(
+                InvoiceAmountError::UnrepresentableRemainder {
+                    invoice_id: self.invoice.id,
+                },
+            )
     }
 }
 
@@ -201,7 +219,10 @@ pub fn default_create_invoice_data() -> CreateInvoiceData {
         payment_address: "0x45f077823C8d036a1a9f7Cd28e86Bd98191dF2b7".to_string(),
         cart: InvoiceCart::empty(),
         redirect_url: "http://localhost:8080/thankyou".to_string(),
-        #[expect(clippy::arithmetic_side_effects)]
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "test fixture: `Utc::now()` plus a fixed 24 hours cannot overflow DateTime<Utc>"
+        )]
         valid_till: now + chrono::Duration::hours(24),
     }
 }
@@ -214,7 +235,90 @@ pub fn default_update_invoice_data(invoice_id: Uuid) -> UpdateInvoiceData {
         invoice_id,
         amount: Decimal::new(15000, 2),
         cart: InvoiceCart::empty(),
-        #[expect(clippy::arithmetic_side_effects)]
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "test fixture: `Utc::now()` plus a fixed 24 hours cannot overflow DateTime<Utc>"
+        )]
         valid_till: now + chrono::Duration::hours(24),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_received(
+        amount: Decimal,
+        total_received_amount: Decimal,
+    ) -> InvoiceWithReceivedAmount {
+        let mut invoice = default_invoice();
+        invoice.amount = amount;
+
+        InvoiceWithReceivedAmount {
+            invoice,
+            total_received_amount,
+        }
+    }
+
+    #[test]
+    fn unfilled_amount_reports_the_remainder() {
+        assert_eq!(
+            with_received(
+                Decimal::new(100, 0),
+                Decimal::new(40, 0)
+            )
+            .unfilled_amount()
+            .unwrap(),
+            Decimal::new(60, 0)
+        );
+    }
+
+    #[test]
+    fn unfilled_amount_is_zero_when_filled_or_overpaid() {
+        assert_eq!(
+            with_received(
+                Decimal::new(100, 0),
+                Decimal::new(100, 0)
+            )
+            .unfilled_amount()
+            .unwrap(),
+            Decimal::ZERO
+        );
+        assert_eq!(
+            with_received(
+                Decimal::new(100, 0),
+                Decimal::new(250, 0)
+            )
+            .unfilled_amount()
+            .unwrap(),
+            Decimal::ZERO
+        );
+    }
+
+    #[test]
+    fn unfilled_amount_rejects_unrepresentable_remainders() {
+        // `Decimal::MAX - Decimal::MIN` overflows; the plain `-` this used to
+        // use would panic inside a request handler.
+        let invoice = with_received(Decimal::MAX, Decimal::MIN);
+        assert_eq!(
+            invoice.unfilled_amount(),
+            Err(
+                InvoiceAmountError::UnrepresentableRemainder {
+                    invoice_id: invoice.invoice.id,
+                }
+            )
+        );
+
+        // The opposite direction is just as unrepresentable; zero is only used
+        // after a successful negative subtraction.
+        let invoice = with_received(Decimal::MIN, Decimal::MAX);
+        assert_eq!(
+            invoice.unfilled_amount(),
+            Err(
+                InvoiceAmountError::UnrepresentableRemainder {
+                    invoice_id: invoice.invoice.id,
+                }
+            )
+        );
     }
 }

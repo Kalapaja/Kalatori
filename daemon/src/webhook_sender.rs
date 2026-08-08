@@ -179,7 +179,11 @@ impl<D: DaoInterface + 'static> WebhookSender<D> {
     async fn prepare_webhook_events(
         &mut self
     ) -> Vec<Pin<Box<dyn Future<Output = SendWebhookResult> + Send + 'static>>> {
-        let limit = WEBHOOK_SENDER_MAX_CONCURRENT_REQUESTS - self.processing_events_ids.len();
+        // `saturating_sub` rather than `-`: if the in-flight set ever exceeds
+        // the cap, a `usize` underflow here would wrap to ~1.8e19 and ask the
+        // DAO for every pending webhook at once.
+        let limit =
+            WEBHOOK_SENDER_MAX_CONCURRENT_REQUESTS.saturating_sub(self.processing_events_ids.len());
 
         if limit == 0 {
             return Vec::new();
