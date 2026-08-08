@@ -27,6 +27,7 @@ use crate::types::ChainType;
 use super::{
     AssetInfo,
     AssetInfoStore,
+    BackfillError,
     BlockChainClient,
     BlockChainClientExt,
     ChainConfig,
@@ -684,6 +685,25 @@ impl BlockChainClient<AssetHubChainConfig> for AssetHubClient {
         };
 
         Ok(Box::pin(stream))
+    }
+
+    // Backfill is not implemented here. Re-reading a past range over subxt
+    // needs a block hash per block number, which means carrying an `RpcClient`
+    // alongside the `OnlineClient` and reworking how this client is built —
+    // work that would be thrown away with the chain itself. The tracker turns
+    // the sweep off after the first `Unsupported` and says so in the log, so
+    // the gap this leaves is visible rather than assumed closed.
+    async fn latest_confirmed_block(&self) -> Result<u64, BackfillError> {
+        Err(BackfillError::Unsupported)
+    }
+
+    async fn fetch_transfers_in_range(
+        &self,
+        _asset_ids: &[u32],
+        _from_block: u64,
+        _to_block: u64,
+    ) -> Result<Vec<ChainTransfer<AssetHubChainConfig>>, BackfillError> {
+        Err(BackfillError::Unsupported)
     }
 
     #[instrument(skip(self))]

@@ -428,6 +428,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         asset_hub_client.clone(),
         invoice_registry.clone(),
         transactions_recorder.clone(),
+        dao.clone(),
     );
 
     let asset_hub_tracker_handle = asset_hub_tracker.ignite(
@@ -440,6 +441,7 @@ async fn async_try_main(shutdown_notification: ShutdownNotification) -> Result<(
         polygon_client.clone(),
         invoice_registry.clone(),
         transactions_recorder,
+        dao.clone(),
     );
 
     let polygon_tracker_handle = polygon_tracker.ignite(

@@ -29,6 +29,7 @@ pub use asset_hub::{
     AssetHubClient,
 };
 pub use errors::{
+    BackfillError,
     ClientError,
     QueryError,
     SubscriptionError,
@@ -291,6 +292,24 @@ pub trait BlockChainClient<T: ChainConfig>: Sync {
         &self,
         asset_ids: &[T::AssetId],
     ) -> Result<TransfersStream<T>, SubscriptionError>;
+
+    /// Highest block whose transfers are safe to credit.
+    ///
+    /// This is the same depth the live path waits for, so the catch-up sweep
+    /// never releases a transfer earlier than the subscription would.
+    async fn latest_confirmed_block(&self) -> Result<u64, BackfillError>;
+
+    /// Re-read transfers in an inclusive block range.
+    ///
+    /// Used by the catch-up sweep to recover transfers the subscription missed
+    /// (issue #333). Re-delivering transfers already recorded is safe: they are
+    /// deduplicated by `(chain, tx_hash)` in the database.
+    async fn fetch_transfers_in_range(
+        &self,
+        asset_ids: &[T::AssetId],
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<Vec<ChainTransfer<T>>, BackfillError>;
 
     /// Build transaction to transfer exact amount to recipient
     async fn build_transfer(

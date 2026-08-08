@@ -50,6 +50,7 @@ use crate::utils::logging::category::CHAIN_CLIENT;
 use super::{
     AssetInfo,
     AssetInfoStore,
+    BackfillError,
     BlockChainClient,
     BlockChainClientExt,
     ChainConfig,
@@ -1076,6 +1077,95 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
         };
 
         Ok(Box::pin(stream))
+    }
+
+    #[instrument(skip(self))]
+    async fn latest_confirmed_block(&self) -> Result<u64, BackfillError> {
+        let head = self
+            .provider
+            .get_block_number()
+            .await
+            .inspect_err(|e| {
+                tracing::debug!(
+                    error.category = CHAIN_CLIENT,
+                    error.operation = "latest_confirmed_block",
+                    error.source = ?e,
+                    "Failed to fetch the current block number"
+                );
+            })
+            .map_err(|_e| BackfillError::RequestFailed)?;
+
+        // Same depth the live path waits for, so the sweep cannot credit a
+        // transfer the confirmation buffer is still holding back.
+        Ok(head.saturating_sub(self.config.confirmations))
+    }
+
+    #[instrument(skip(self, asset_ids))]
+    async fn fetch_transfers_in_range(
+        &self,
+        asset_ids: &[PolygonAssetId],
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<Vec<ChainTransfer<PolygonChainConfig>>, BackfillError> {
+        // The same filter the subscription uses, bounded to a past range. This
+        // runs on `provider`, not `subscription_provider`: a websocket that is
+        // reconnecting must not hold up the recovery of what it dropped.
+        let filter = Filter::new()
+            .address(asset_ids.to_vec())
+            .event_signature(IERC20::Transfer::SIGNATURE_HASH)
+            .from_block(from_block)
+            .to_block(to_block);
+
+        let logs = self
+            .provider
+            .get_logs(&filter)
+            .await
+            .inspect_err(|e| {
+                tracing::debug!(
+                    error.category = CHAIN_CLIENT,
+                    error.operation = "fetch_transfers_in_range",
+                    error.source = ?e,
+                    from_block,
+                    to_block,
+                    "Failed to fetch logs for the block range"
+                );
+            })
+            .map_err(|_e| BackfillError::RequestFailed)?;
+
+        let mut transfers = Vec::with_capacity(logs.len());
+
+        for log in logs {
+            // Undecodable and unprocessable logs are skipped here exactly as
+            // they are on the live path (issue #341). Failing the whole range
+            // instead would stall the cursor permanently on a log that can
+            // never be decoded, trading a rare loss for a certain one.
+            match log.log_decode::<IERC20::Transfer>() {
+                Ok(decoded) => {
+                    let event = decoded.inner.data;
+                    match self.log_to_transfer(&log, &event).await {
+                        Ok(transfer) => transfers.push(transfer),
+                        Err(e) => tracing::error!(
+                            error = ?e,
+                            tx_hash = ?log.transaction_hash,
+                            "Failed to process backfilled transfer event, skipping it"
+                        ),
+                    }
+                },
+                Err(e) => tracing::debug!(
+                    error = ?e,
+                    "Failed to decode backfilled Transfer event from log, skipping it"
+                ),
+            }
+        }
+
+        tracing::debug!(
+            from_block,
+            to_block,
+            transfers = transfers.len(),
+            "Fetched transfers for a backfill range"
+        );
+
+        Ok(transfers)
     }
 
     #[instrument(skip(self))]

@@ -58,6 +58,28 @@ pub enum QueryError {
 }
 
 // ============================================================================
+// Domain 2a: Backfill Errors (re-reading a past block range)
+// ============================================================================
+
+/// Errors for the catch-up sweep that re-reads blocks the live subscription
+/// may have missed (issue #333).
+///
+/// Split from [`QueryError`] because the caller has to tell apart "this chain
+/// will never answer" from "this call failed": the first stops the sweep for
+/// good, the second is retried on the next tick.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum BackfillError {
+    /// This client cannot re-read a past block range, so gaps in its
+    /// subscription are not recoverable. Permanent — do not retry.
+    #[error("Backfill is not supported for this chain")]
+    Unsupported,
+
+    /// The node call failed. Transient — the next sweep retries the same range.
+    #[error("Backfill request failed")]
+    RequestFailed,
+}
+
+// ============================================================================
 // Domain 3: Subscription Operation Errors (block streaming)
 // ============================================================================
 

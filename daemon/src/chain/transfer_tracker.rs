@@ -5,6 +5,7 @@ use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::chain_client::{
+    BackfillError,
     BlockChainClient,
     ChainConfig,
     ChainTransfer,
@@ -24,6 +25,47 @@ use super::{
 const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 const DEGRADED_WARNING_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How often the catch-up sweep re-reads what the subscription may have missed
+/// (issue #333). Every tick costs one `eth_getLogs` per chain, so this is also
+/// the knob that decides whether a free public endpoint can carry a daemon.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Widest range a single sweep asks for. Providers cap `eth_getLogs` spans, and
+/// after a long outage the gap can be arbitrarily large; the cursor makes the
+/// remainder the next tick's problem.
+const MAX_SWEEP_RANGE: u64 = 1_000;
+
+/// Whether the catch-up sweep is running for this chain.
+struct SweepState {
+    enabled: bool,
+}
+
+impl SweepState {
+    fn new() -> Self {
+        Self {
+            enabled: true,
+        }
+    }
+
+    /// Stop sweeping this chain, and say so once. A chain whose client cannot
+    /// re-read past blocks keeps the gap described in #333, and a silent skip
+    /// would leave a clean log reading as "nothing to recover here".
+    fn disable(
+        &mut self,
+        chain: crate::types::ChainType,
+    ) {
+        if !self.enabled {
+            return;
+        }
+
+        tracing::warn!(
+            %chain,
+            "Chain client cannot re-read past blocks, so transfers missed while the subscription is down are recovered only by the balance check at invoice expiry"
+        );
+        self.enabled = false;
+    }
+}
 
 struct RetryState {
     delay: Duration,
@@ -111,6 +153,9 @@ pub struct TransfersTracker<
     client: C,
     registry: InvoiceRegistry,
     transactions_recorder: TransactionsRecorder<D>,
+    /// Owned separately from the recorder: the sweep cursor is the tracker's
+    /// own progress, not a property of any transaction it records.
+    dao: D,
     phantom: std::marker::PhantomData<T>,
 }
 
@@ -121,11 +166,13 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
         client: C,
         registry: InvoiceRegistry,
         transactions_recorder: TransactionsRecorder<D>,
+        dao: D,
     ) -> Self {
         TransfersTracker {
             client,
             registry,
             transactions_recorder,
+            dao,
             phantom: std::marker::PhantomData,
         }
     }
@@ -153,11 +200,17 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
             .ok()
     }
 
+    /// Record a transfer against its invoice, if any invoice matches.
+    ///
+    /// A transfer nobody is waiting for, and a transfer already in the
+    /// database, are both `Ok`: nothing is left to do. Only a failed write is
+    /// an error, and only the sweep acts on it — it must not move its cursor
+    /// past a transfer that did not land.
     #[tracing::instrument(skip(self))]
     async fn process_transfer(
         &self,
         transfer: GeneralChainTransfer,
-    ) {
+    ) -> Result<(), TransactionsRecorderError> {
         if let Some(mut invoice) = self
             .registry
             .find_invoice_by_address(
@@ -193,13 +246,19 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                     %invoice_id,
                     "Transfer is already presented in database, invoice hasn't been updated"
                 ),
-                Err(e) => tracing::warn!(
-                    %invoice_id,
-                    error = ?e,
-                    "Error while trying to store transfer in database, invoice hasn't been updated"
-                ),
+                Err(e) => {
+                    tracing::warn!(
+                        %invoice_id,
+                        error = ?e,
+                        "Error while trying to store transfer in database, invoice hasn't been updated"
+                    );
+
+                    return Err(e);
+                },
             };
         }
+
+        Ok(())
     }
 
     async fn handle_subscription_event(
@@ -209,7 +268,10 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
         match event {
             Some(Ok(transfers)) => {
                 for transfer in transfers {
-                    self.process_transfer(transfer.into())
+                    // The live path has nowhere to retry to: the event is gone
+                    // once handled. The sweep is what recovers a failed write.
+                    let _result = self
+                        .process_transfer(transfer.into())
                         .await;
                 }
 
@@ -231,6 +293,166 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
         }
     }
 
+    /// Re-read the blocks between the stored cursor and the chain head, and
+    /// record whatever the live subscription did not deliver (issue #333).
+    ///
+    /// Runs off the subscription entirely: alloy reconnects and resubscribes
+    /// underneath us without the stream ever ending, so there is no moment we
+    /// could hook "the subscription just came back" onto. Polling is the only
+    /// signal that does not depend on noticing the gap.
+    async fn sweep(
+        &self,
+        assets: &[T::AssetId],
+        state: &mut SweepState,
+    ) {
+        let chain = T::CHAIN_TYPE;
+
+        let head = match self
+            .client
+            .latest_confirmed_block()
+            .await
+        {
+            Ok(head) => head,
+            Err(BackfillError::Unsupported) => {
+                state.disable(chain);
+                return;
+            },
+            Err(BackfillError::RequestFailed) => {
+                tracing::debug!(
+                    %chain,
+                    "Could not read the chain head for the catch-up sweep, retrying next tick"
+                );
+                return;
+            },
+        };
+
+        let cursor = match self
+            .dao
+            .get_chain_sync_cursor(chain)
+            .await
+        {
+            Ok(cursor) => cursor,
+            Err(e) => {
+                tracing::warn!(
+                    %chain,
+                    error = ?e,
+                    "Could not read the sweep cursor, skipping this catch-up sweep"
+                );
+                return;
+            },
+        };
+
+        let Some(cursor) = cursor else {
+            // First run against this database. Starting from the head rather
+            // than from genesis: the sweep exists to close gaps in this
+            // daemon's own tracking, and invoices older than it are covered by
+            // the balance check.
+            self.store_cursor(chain, head).await;
+            tracing::info!(
+                %chain,
+                block_number = head,
+                "Catch-up sweep starting from the current chain head"
+            );
+            return;
+        };
+
+        let last_processed_block = cursor.last_processed_block;
+
+        // `head` below the cursor is not a rollback: public RPC pools answer
+        // from whichever node picked up the request, and some of them lag.
+        if head <= last_processed_block {
+            return;
+        }
+
+        let from_block = last_processed_block.saturating_add(1);
+        let to_block = head.min(
+            from_block
+                .saturating_add(MAX_SWEEP_RANGE)
+                .saturating_sub(1),
+        );
+
+        let transfers = match self
+            .client
+            .fetch_transfers_in_range(assets, from_block, to_block)
+            .await
+        {
+            Ok(transfers) => transfers,
+            Err(BackfillError::Unsupported) => {
+                state.disable(chain);
+                return;
+            },
+            Err(BackfillError::RequestFailed) => {
+                tracing::debug!(
+                    %chain,
+                    from_block,
+                    to_block,
+                    "Catch-up sweep could not read the block range, retrying next tick"
+                );
+                return;
+            },
+        };
+
+        let fetched = transfers.len();
+        let mut failed = 0_usize;
+
+        for transfer in transfers {
+            if self
+                .process_transfer(transfer.into())
+                .await
+                .is_err()
+            {
+                failed = failed.saturating_add(1);
+            }
+        }
+
+        if failed > 0 {
+            // Leaving the cursor where it is re-reads this range next tick.
+            // Re-delivering what did land is free: transfers are deduplicated
+            // by `(chain, tx_hash)` in the database.
+            tracing::warn!(
+                %chain,
+                from_block,
+                to_block,
+                failed,
+                "Catch-up sweep could not record every transfer, holding the cursor to retry the range"
+            );
+            return;
+        }
+
+        self.store_cursor(chain, to_block).await;
+
+        if fetched > 0 {
+            tracing::info!(
+                %chain,
+                from_block,
+                to_block,
+                transfers = fetched,
+                "Catch-up sweep recovered transfers the subscription did not deliver"
+            );
+        }
+    }
+
+    async fn store_cursor(
+        &self,
+        chain: crate::types::ChainType,
+        block_number: u64,
+    ) {
+        if let Err(e) = self
+            .dao
+            .advance_chain_sync_cursor(chain, block_number)
+            .await
+        {
+            // The range was processed, so nothing is lost — the next sweep
+            // re-reads it against the older cursor.
+            tracing::warn!(
+                %chain,
+                block_number,
+                error = ?e,
+                "Could not persist the sweep cursor, the next sweep will re-read this range"
+            );
+        }
+    }
+
     #[tracing::instrument(skip(self, token), fields(chain = %T::CHAIN_TYPE))]
     async fn perform(
         mut self,
@@ -244,6 +466,11 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
 
         let mut subscription = None;
         let mut retry_state = RetryState::new();
+        let mut sweep_state = SweepState::new();
+        // The first tick fires immediately, which is what establishes the
+        // cursor on a fresh database before any gap can open.
+        let mut sweep_ticker = tokio::time::interval(SWEEP_INTERVAL);
+        sweep_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             subscription = self
@@ -273,15 +500,24 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                     },
                 }
 
-                let retry_delay = retry_state.record_failure();
-                tokio::select! {
-                    () = tokio::time::sleep(retry_delay) => {},
-                    () = token.cancelled() => {
-                        tracing::info!(
-                            "Transfers tracker received cancellation signal, shutting down"
-                        );
-                        break;
-                    },
+                // A dead subscription is exactly when the sweep earns its keep,
+                // so it keeps ticking here. The wait runs to a fixed deadline
+                // rather than a plain sleep, so a sweep in the middle of it
+                // cannot cut the backoff short.
+                let retry_deadline = tokio::time::Instant::now() + retry_state.record_failure();
+                loop {
+                    tokio::select! {
+                        () = tokio::time::sleep_until(retry_deadline) => break,
+                        _instant = sweep_ticker.tick(), if sweep_state.enabled => {
+                            self.sweep(&assets, &mut sweep_state).await;
+                        },
+                        () = token.cancelled() => {
+                            tracing::info!(
+                                "Transfers tracker received cancellation signal, shutting down"
+                            );
+                            return;
+                        },
+                    }
                 }
 
                 continue;
@@ -311,6 +547,9 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                             }
                         },
                     }
+                },
+                _instant = sweep_ticker.tick(), if sweep_state.enabled => {
+                    self.sweep(&assets, &mut sweep_state).await;
                 },
                 () = token.cancelled() => {
                     tracing::info!(
@@ -369,8 +608,9 @@ mod tests {
         PolygonChainConfig,
         default_general_chain_transfer,
     };
-    use crate::dao::DAO;
+    use crate::dao::MockDaoInterface;
     use crate::types::{
+        ChainSyncCursor,
         ChainType,
         Invoice,
         default_invoice,
@@ -390,6 +630,9 @@ mod tests {
         chain_client
             .expect_chain_name()
             .return_const("test-chain");
+        chain_client
+            .expect_latest_confirmed_block()
+            .returning(|| Err(BackfillError::Unsupported));
         let recorded_times = std::sync::Arc::clone(&attempt_times);
         chain_client
             .expect_subscribe_transfers()
@@ -405,8 +648,13 @@ mod tests {
             .returning(|| Err(ClientError::AllEndpointsUnreachable));
 
         let registry = InvoiceRegistry::new();
-        let recorder = TransactionsRecorder::<DAO>::default();
-        let tracker = TransfersTracker::new(chain_client, registry, recorder);
+        let recorder = TransactionsRecorder::<MockDaoInterface>::default();
+        let tracker = TransfersTracker::new(
+            chain_client,
+            registry,
+            recorder,
+            MockDaoInterface::default(),
+        );
 
         let token = CancellationToken::new();
         let tracker_task = tokio::spawn(tracker.perform(vec![], token.clone()));
@@ -442,6 +690,9 @@ mod tests {
         replacement_client
             .expect_chain_name()
             .return_const("replacement-chain");
+        replacement_client
+            .expect_latest_confirmed_block()
+            .returning(|| Err(BackfillError::Unsupported));
         let replacement_attempts = Arc::clone(&subscription_attempts);
         replacement_client
             .expect_subscribe_transfers()
@@ -458,6 +709,9 @@ mod tests {
         chain_client
             .expect_chain_name()
             .return_const("initial-chain");
+        chain_client
+            .expect_latest_confirmed_block()
+            .returning(|| Err(BackfillError::Unsupported));
         let initial_attempts = Arc::clone(&subscription_attempts);
         chain_client
             .expect_subscribe_transfers()
@@ -477,7 +731,8 @@ mod tests {
         let tracker = TransfersTracker::new(
             chain_client,
             InvoiceRegistry::new(),
-            TransactionsRecorder::<DAO>::default(),
+            TransactionsRecorder::<MockDaoInterface>::default(),
+            MockDaoInterface::default(),
         );
         let token = CancellationToken::new();
         let tracker_task = tokio::spawn(tracker.perform(vec![], token.clone()));
@@ -537,6 +792,9 @@ mod tests {
         chain_client
             .expect_chain_name()
             .return_const("test-chain");
+        chain_client
+            .expect_latest_confirmed_block()
+            .returning(|| Err(BackfillError::Unsupported));
         let recorded_attempts = Arc::clone(&subscription_attempts);
         chain_client
             .expect_subscribe_transfers()
@@ -556,7 +814,8 @@ mod tests {
         let tracker = TransfersTracker::new(
             chain_client,
             InvoiceRegistry::new(),
-            TransactionsRecorder::<DAO>::default(),
+            TransactionsRecorder::<MockDaoInterface>::default(),
+            MockDaoInterface::default(),
         );
         let token = CancellationToken::new();
         let tracker_task = tokio::spawn(tracker.perform(vec![], token.clone()));
@@ -601,6 +860,9 @@ mod tests {
             .expect_chain_name()
             .return_const("test-chain");
         chain_client
+            .expect_latest_confirmed_block()
+            .returning(|| Err(BackfillError::Unsupported));
+        chain_client
             .expect_subscribe_transfers()
             .once()
             .returning(|_| Ok(pending_transfers_stream()));
@@ -609,7 +871,8 @@ mod tests {
         let tracker = TransfersTracker::new(
             chain_client,
             InvoiceRegistry::new(),
-            TransactionsRecorder::<DAO>::default(),
+            TransactionsRecorder::<MockDaoInterface>::default(),
+            MockDaoInterface::default(),
         );
         let token = CancellationToken::new();
         let started_at = tokio::time::Instant::now();
@@ -726,8 +989,13 @@ mod tests {
         // expected flows
         let chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
         let registry = InvoiceRegistry::new();
-        let recorder = TransactionsRecorder::<DAO>::default();
-        let mut tracker = TransfersTracker::new(chain_client, registry.clone(), recorder);
+        let recorder = TransactionsRecorder::<MockDaoInterface>::default();
+        let mut tracker = TransfersTracker::new(
+            chain_client,
+            registry.clone(),
+            recorder,
+            MockDaoInterface::default(),
+        );
 
         // Test case 1:
         // - No invoices with related address
@@ -735,7 +1003,7 @@ mod tests {
         //   - No recorder calls
         let transfer = default_general_chain_transfer();
 
-        tracker.process_transfer(transfer).await;
+        let _result = tracker.process_transfer(transfer).await;
         tracker
             .transactions_recorder
             .checkpoint();
@@ -779,7 +1047,7 @@ mod tests {
             .once()
             .returning(|_, _| Ok(()));
 
-        tracker
+        let _result = tracker
             .process_transfer(transfer.clone())
             .await;
         tracker
@@ -818,7 +1086,7 @@ mod tests {
                 )
             });
 
-        tracker
+        let _result = tracker
             .process_transfer(transfer.clone())
             .await;
         tracker
@@ -847,7 +1115,7 @@ mod tests {
             .once()
             .returning(|_, _| Err(TransactionsRecorderError::DaoTransactionError));
 
-        tracker.process_transfer(transfer).await;
+        let _result = tracker.process_transfer(transfer).await;
         tracker
             .transactions_recorder
             .checkpoint();
@@ -860,8 +1128,13 @@ mod tests {
     async fn test_handle_subscription_event() {
         let chain_client = MockBlockChainClient::<AssetHubChainConfig>::default();
         let registry = InvoiceRegistry::new();
-        let recorder = TransactionsRecorder::<DAO>::default();
-        let mut tracker = TransfersTracker::new(chain_client, registry.clone(), recorder);
+        let recorder = TransactionsRecorder::<MockDaoInterface>::default();
+        let mut tracker = TransfersTracker::new(
+            chain_client,
+            registry.clone(),
+            recorder,
+            MockDaoInterface::default(),
+        );
 
         // Test case 1:
         // - Successful case
@@ -935,5 +1208,308 @@ mod tests {
             result,
             Err(SubscriptionError::SubscriptionFailed)
         );
+    }
+
+    // ========================================================================
+    // Catch-up sweep (issue #333)
+    // ========================================================================
+
+    fn sweep_tracker(
+        chain_client: MockBlockChainClient<PolygonChainConfig>,
+        dao: MockDaoInterface,
+        registry: InvoiceRegistry,
+    ) -> TransfersTracker<
+        PolygonChainConfig,
+        MockBlockChainClient<PolygonChainConfig>,
+        MockDaoInterface,
+    > {
+        TransfersTracker::new(
+            chain_client,
+            registry,
+            TransactionsRecorder::<MockDaoInterface>::default(),
+            dao,
+        )
+    }
+
+    fn cursor_at(block_number: u64) -> ChainSyncCursor {
+        ChainSyncCursor {
+            chain: ChainType::Polygon,
+            last_processed_block: block_number,
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn polygon_transfer_to(recipient: &str) -> ChainTransfer<PolygonChainConfig> {
+        ChainTransfer {
+            asset_id: alloy::primitives::Address::from_str(
+                "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+            )
+            .expect("asset address fixture parses"),
+            asset_name: "USDC".to_string(),
+            amount: Decimal::new(10, 0),
+            sender: alloy::primitives::Address::ZERO,
+            recipient: alloy::primitives::Address::from_str(recipient)
+                .expect("recipient address fixture parses"),
+            transaction_id: "0x1234567890abcdef".to_string(),
+            timestamp: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn sweep_starts_from_the_head_when_no_cursor_exists() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_latest_confirmed_block()
+            .once()
+            .returning(|| Ok(500));
+        // Nothing to recover yet, so nothing is read.
+        chain_client
+            .expect_fetch_transfers_in_range()
+            .never();
+
+        let mut dao = MockDaoInterface::default();
+        dao.expect_get_chain_sync_cursor()
+            .once()
+            .returning(|_chain| Ok(None));
+        dao.expect_advance_chain_sync_cursor()
+            .withf(|chain, block_number| *chain == ChainType::Polygon && *block_number == 500)
+            .once()
+            .returning(|_chain, block_number| Ok(cursor_at(block_number)));
+
+        let tracker = sweep_tracker(
+            chain_client,
+            dao,
+            InvoiceRegistry::new(),
+        );
+        let mut state = SweepState::new();
+
+        tracker.sweep(&[], &mut state).await;
+
+        assert!(state.enabled);
+    }
+
+    #[tokio::test]
+    async fn sweep_reads_the_gap_and_advances_the_cursor() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_latest_confirmed_block()
+            .once()
+            .returning(|| Ok(120));
+        chain_client
+            .expect_fetch_transfers_in_range()
+            .withf(|_assets, from_block, to_block| *from_block == 101 && *to_block == 120)
+            .once()
+            .returning(|_assets, _from, _to| Ok(vec![]));
+
+        let mut dao = MockDaoInterface::default();
+        dao.expect_get_chain_sync_cursor()
+            .once()
+            .returning(|_chain| Ok(Some(cursor_at(100))));
+        dao.expect_advance_chain_sync_cursor()
+            .withf(|_chain, block_number| *block_number == 120)
+            .once()
+            .returning(|_chain, block_number| Ok(cursor_at(block_number)));
+
+        let tracker = sweep_tracker(
+            chain_client,
+            dao,
+            InvoiceRegistry::new(),
+        );
+
+        tracker
+            .sweep(&[], &mut SweepState::new())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn sweep_clamps_a_long_gap_to_the_range_limit() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_latest_confirmed_block()
+            .once()
+            .returning(|| Ok(5_000));
+        chain_client
+            .expect_fetch_transfers_in_range()
+            .withf(|_assets, from_block, to_block| *from_block == 1 && *to_block == MAX_SWEEP_RANGE)
+            .once()
+            .returning(|_assets, _from, _to| Ok(vec![]));
+
+        let mut dao = MockDaoInterface::default();
+        dao.expect_get_chain_sync_cursor()
+            .once()
+            .returning(|_chain| Ok(Some(cursor_at(0))));
+        // The rest of the gap is the next tick's problem, so the cursor stops
+        // at the end of the range actually read.
+        dao.expect_advance_chain_sync_cursor()
+            .withf(|_chain, block_number| *block_number == MAX_SWEEP_RANGE)
+            .once()
+            .returning(|_chain, block_number| Ok(cursor_at(block_number)));
+
+        let tracker = sweep_tracker(
+            chain_client,
+            dao,
+            InvoiceRegistry::new(),
+        );
+
+        tracker
+            .sweep(&[], &mut SweepState::new())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn sweep_ignores_a_head_behind_the_cursor() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        // A lagging node in a public RPC pool answers with an older head.
+        chain_client
+            .expect_latest_confirmed_block()
+            .once()
+            .returning(|| Ok(150));
+        chain_client
+            .expect_fetch_transfers_in_range()
+            .never();
+
+        let mut dao = MockDaoInterface::default();
+        dao.expect_get_chain_sync_cursor()
+            .once()
+            .returning(|_chain| Ok(Some(cursor_at(200))));
+        dao.expect_advance_chain_sync_cursor()
+            .never();
+
+        let tracker = sweep_tracker(
+            chain_client,
+            dao,
+            InvoiceRegistry::new(),
+        );
+
+        tracker
+            .sweep(&[], &mut SweepState::new())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn sweep_records_what_the_subscription_missed() {
+        let invoice = default_invoice().with_amount(Decimal::ZERO);
+        let registry = InvoiceRegistry::new();
+        registry
+            .add_invoice(invoice.clone())
+            .await;
+        let payment_address = invoice.invoice.payment_address.clone();
+
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_latest_confirmed_block()
+            .once()
+            .returning(|| Ok(120));
+        chain_client
+            .expect_fetch_transfers_in_range()
+            .once()
+            .returning(move |_assets, _from, _to| {
+                Ok(vec![polygon_transfer_to(
+                    &payment_address,
+                )])
+            });
+
+        let mut dao = MockDaoInterface::default();
+        dao.expect_get_chain_sync_cursor()
+            .once()
+            .returning(|_chain| Ok(Some(cursor_at(100))));
+        dao.expect_advance_chain_sync_cursor()
+            .once()
+            .returning(|_chain, block_number| Ok(cursor_at(block_number)));
+
+        let mut tracker = sweep_tracker(chain_client, dao, registry);
+        tracker
+            .transactions_recorder
+            .expect_process_invoice_transaction()
+            .once()
+            .returning(|_invoice, _transaction| Ok(()));
+
+        tracker
+            .sweep(&[], &mut SweepState::new())
+            .await;
+
+        tracker
+            .transactions_recorder
+            .checkpoint();
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn sweep_holds_the_cursor_when_a_transfer_cannot_be_recorded() {
+        let invoice = default_invoice().with_amount(Decimal::ZERO);
+        let registry = InvoiceRegistry::new();
+        registry
+            .add_invoice(invoice.clone())
+            .await;
+        let payment_address = invoice.invoice.payment_address.clone();
+
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_latest_confirmed_block()
+            .once()
+            .returning(|| Ok(120));
+        chain_client
+            .expect_fetch_transfers_in_range()
+            .once()
+            .returning(move |_assets, _from, _to| {
+                Ok(vec![polygon_transfer_to(
+                    &payment_address,
+                )])
+            });
+
+        let mut dao = MockDaoInterface::default();
+        dao.expect_get_chain_sync_cursor()
+            .once()
+            .returning(|_chain| Ok(Some(cursor_at(100))));
+        // Advancing here would lose the payment: the range would never be read
+        // again, and nothing else re-reads it before invoice expiry.
+        dao.expect_advance_chain_sync_cursor()
+            .never();
+
+        let mut tracker = sweep_tracker(chain_client, dao, registry);
+        tracker
+            .transactions_recorder
+            .expect_process_invoice_transaction()
+            .once()
+            .returning(|_invoice, _transaction| {
+                Err(TransactionsRecorderError::DaoTransactionError)
+            });
+
+        tracker
+            .sweep(&[], &mut SweepState::new())
+            .await;
+
+        assert!(logs_contain(
+            "holding the cursor to retry the range"
+        ));
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn sweep_stops_and_says_so_when_the_chain_cannot_backfill() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        // Called once for the first sweep, and never again once disabled.
+        chain_client
+            .expect_latest_confirmed_block()
+            .once()
+            .returning(|| Err(BackfillError::Unsupported));
+
+        let mut dao = MockDaoInterface::default();
+        dao.expect_get_chain_sync_cursor()
+            .never();
+
+        let tracker = sweep_tracker(
+            chain_client,
+            dao,
+            InvoiceRegistry::new(),
+        );
+        let mut state = SweepState::new();
+
+        tracker.sweep(&[], &mut state).await;
+
+        assert!(!state.enabled);
+        assert!(logs_contain(
+            "Chain client cannot re-read past blocks"
+        ));
     }
 }
