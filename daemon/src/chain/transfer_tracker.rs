@@ -507,13 +507,13 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                 }
 
                 // A dead subscription is exactly when the sweep earns its keep,
-                // so it keeps ticking here. The wait runs to a fixed deadline
-                // rather than a plain sleep, so a sweep in the middle of it
-                // cannot cut the backoff short.
-                // Built once and polled by reference: a `select!` arm that
-                // fires does not restart it, so a sweep in the middle of the
-                // wait cannot cut the backoff short. (`Instant + Duration`
-                // would trip the arithmetic gate for no gain.)
+                // so it keeps ticking here. The sleep is built once and polled
+                // by reference: a `select!` arm that fires drops the futures it
+                // did not pick, so a sleep recreated each iteration would have
+                // its countdown restarted by every sweep tick and the backoff
+                // would never grow. Pinning keeps the deadline inside the
+                // future. (An explicit `Instant + Duration` deadline would do
+                // the same, at the cost of tripping the arithmetic gate.)
                 let retry_sleep = tokio::time::sleep(retry_state.record_failure());
                 tokio::pin!(retry_sleep);
 

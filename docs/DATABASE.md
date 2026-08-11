@@ -94,7 +94,9 @@ How far the catch-up sweep has processed each chain (`daemon/src/chain/transfer_
 |--------|------|-------|
 | chain | TEXT | Primary key |
 | last_processed_block | INTEGER | Highest block whose transfers are recorded, `CHECK(>= 0)` |
-| updated_at | TEXT | ISO 8601; moves only when the cursor advances |
+| updated_at | TEXT | SQLite datetime string, see below; moves only when the cursor advances |
+
+Timestamps here are **not** ISO 8601, despite the column being TEXT: the schema default writes `datetime('now')` (`2026-08-11 04:29:03` — space separator, no timezone designator, UTC by definition) and sqlx binds a `NaiveDateTime` as `%F %T%.f`, i.e. the same shape with fractional seconds. Both sort correctly as strings, which is what the comparisons rely on; but a hand-written query filtering with an ISO string like `2026-08-11T04:29:03Z` will silently match nothing. The same applies to every other timestamp column in this schema.
 
 Two properties are load-bearing and easy to break:
 
