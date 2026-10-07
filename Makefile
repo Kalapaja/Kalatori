@@ -2,8 +2,9 @@
 
 include front-end.mk
 
-# rustfmt only ships on nightly (rustfmt.toml uses unstable options such as
-# `wrap_comments`), and their output drifts between nightlies: the one from
+# Formatting needs a nightly rustfmt because rustfmt.toml enables unstable
+# options such as `wrap_comments` (stable rustfmt ignores them), and their
+# output drifts between nightlies: the one from
 # 2026-10-06 rewraps comments in 32 files that the August ones leave alone.
 # Pinning the date keeps `make cargo-fmt` and the CI fmt job agreeing on
 # what "formatted" means. Bump deliberately, together with a reformat commit.
