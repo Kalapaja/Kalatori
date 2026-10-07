@@ -2,6 +2,13 @@
 
 include front-end.mk
 
+# rustfmt only ships on nightly (rustfmt.toml uses unstable options such as
+# `wrap_comments`), and their output drifts between nightlies: the one from
+# 2026-10-06 rewraps comments in 32 files that the August ones leave alone.
+# Pinning the date keeps `make cargo-fmt` and the CI fmt job agreeing on
+# what "formatted" means. Bump deliberately, together with a reformat commit.
+RUSTFMT_TOOLCHAIN ?= nightly-2026-08-20
+
 help: # Show help for each of the Makefile recipes
 	@grep -E '^[a-zA-Z0-9 -]+:.*#'  Makefile | sort | while read -r l; do printf "\033[1;32m$$(echo $$l | cut -f 1 -d':')\033[00m:$$(echo $$l | cut -f 2- -d'#')\n"; done
 
@@ -97,7 +104,7 @@ cargo-clippy: # Run cargo clippy checks
 	RUSTFLAGS="-Dwarnings" cargo clippy --all-targets --all-features
 
 cargo-fmt: # Run cargo fmt checks
-	cargo +nightly fmt --all -- --check
+	cargo +$(RUSTFMT_TOOLCHAIN) fmt --all -- --check
 
 cargo-deny: # Run cargo deny checks
 	cargo deny -L error check
@@ -109,8 +116,11 @@ cargo-mutants-for-diff: # Run cargo mutants for git diff
 ### Tools ###
 #############
 
+print-rustfmt-toolchain: # Print the pinned nightly used for rustfmt
+	@echo $(RUSTFMT_TOOLCHAIN)
+
 cargo-fmt-apply: # Apply cargo fmt style changes
-	cargo +nightly fmt --all
+	cargo +$(RUSTFMT_TOOLCHAIN) fmt --all
 
 insta-review: # Interactively review pending snapshots
 	cargo bin cargo-insta review

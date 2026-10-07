@@ -4,7 +4,7 @@ You can find issues waiting to be solved or create a new one in the [issues](htt
 
 ## Prerequisites
 
-- Rust: stable version (MSRV 1.91), nightly for rustfmt
+- Rust: stable version (MSRV 1.91), plus the pinned nightly for rustfmt (`RUSTFMT_TOOLCHAIN` in `Makefile`)
 - SQLite: >= 3.47.0 (see README.md for build-from-source instructions on Linux)
 - Docker: to run tests and spawn Chopsticks instances
 - subxt-cli, sqlx-cli and the test tooling: install via `make setup-utils`, which
