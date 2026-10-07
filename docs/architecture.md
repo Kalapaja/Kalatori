@@ -78,12 +78,15 @@ The subscription alone loses events without ever reporting it ([#333](https://gi
 
 The sweep therefore polls instead of reacting. Every `SWEEP_INTERVAL` (30 s) it reads `chain_sync_cursors` (see [DATABASE.md](DATABASE.md)), asks the client for the confirmed head, re-reads the gap with a bounded range request, and feeds whatever it finds through the same recording path as the live subscription. This covers every cause of a miss — reconnects, endpoint rotation, a daemon restart — not just the alloy defect that exposed it.
 
-Four properties carry the correctness:
+These properties carry the correctness:
 
 - **The cursor advances only after every transfer in a range is recorded.** A failed write holds it, so the next tick retries the range. Re-delivery costs nothing: incoming transfers are deduplicated by `(chain, tx_hash)`, which makes the sweep an at-least-once mechanism rather than an exactly-once one.
 - **Reading stops at `head - confirmations`**, the same depth the live path waits for, so the sweep cannot credit a transfer the confirmation buffer is still holding back.
-- **Requests go through the HTTP provider**, not the websocket, so a socket that is reconnecting does not hold up recovery of what it dropped.
-- **A range is capped at `MAX_SWEEP_RANGE` (1000 blocks).** Providers cap `eth_getLogs` spans; the remainder of a long gap is the next tick's problem.
+- **Requests go through the request provider**, a second websocket separate from the subscription one, so a subscription socket that is reconnecting does not hold up recovery of what it dropped. The same connection carries balance checks and payouts, which is one more reason the range below is kept small.
+- **A range is capped at `MAX_SWEEP_RANGE` (1000 blocks) and narrows on failure.** Providers cap `eth_getLogs` by span and by result count (10,000 logs is common), and a single busy token such as USDC on Polygon fills that in under 1000 blocks. A failed read halves the next request, down to one block; a successful read at the full current width doubles it back (a short read at the head proves nothing about a wider one). Without this a capped provider would fail the same range forever.
+- **Every sweep RPC call is bounded by `SWEEP_REQUEST_TIMEOUT` (20 s).** The request provider sets no timeout, and the sweep runs inline in the tracker's `select!`, so an endpoint that never answers would otherwise stall the live subscription, endpoint rotation and shutdown with it. A timeout is a failed read like any other.
+- **A stuck cursor is reported.** Single failures log at `debug`; every `SWEEP_FAILURE_WARN_THRESHOLD` (10) consecutive failed sweeps logs a `warn`, since a cursor that does not move looks exactly like a chain with nothing to recover.
+- **A response with a log outside the requested range is rejected whole**, and logs flagged `removed` are dropped, so an endpoint cannot get a transfer credited past the confirmation depth.
 
 Chain support is expressed in `BlockChainClient::latest_confirmed_block` and `fetch_transfers_in_range`, both returning `BackfillError`. Polygon implements them over `eth_blockNumber` and `eth_getLogs`. **Asset Hub returns `Unsupported`**: re-reading a range over subxt needs a block hash per block number, which means carrying an `RpcClient` beside the `OnlineClient`. The tracker disables the sweep on the first `Unsupported` and logs which chain is left uncovered — for that chain the only net remains the balance check at invoice expiry.
 

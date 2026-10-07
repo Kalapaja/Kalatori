@@ -507,6 +507,18 @@ pub struct PolygonClient {
     pimlico_client: PimlicoClient,
 }
 
+/// First log in `logs` whose block is missing or outside `from..=to`.
+fn log_outside_range(
+    logs: &[Log],
+    from_block: u64,
+    to_block: u64,
+) -> Option<&Log> {
+    logs.iter().find(|log| {
+        log.block_number
+            .is_none_or(|block| block < from_block || block > to_block)
+    })
+}
+
 impl PolygonClient {
     /// Connect to one request endpoint and read its chain id.
     ///
@@ -1360,9 +1372,31 @@ impl BlockChainClient<PolygonChainConfig> for PolygonClient {
             })
             .map_err(|_e| BackfillError::RequestFailed)?;
 
+        // A log outside the requested range means the endpoint answered a
+        // different question; one above `to_block` would also skip the
+        // confirmation depth the range was cut at. Neither is safe to credit
+        // or to advance the cursor past, so the whole response is rejected
+        // and the range retried.
+        if let Some(stray) = log_outside_range(&logs, from_block, to_block) {
+            tracing::debug!(
+                error.category = CHAIN_CLIENT,
+                error.operation = "fetch_transfers_in_range",
+                from_block,
+                to_block,
+                log_block = ?stray.block_number,
+                tx_hash = ?stray.transaction_hash,
+                "Endpoint returned a log outside the requested block range"
+            );
+            return Err(BackfillError::RequestFailed);
+        }
+
         let mut transfers = Vec::with_capacity(logs.len());
 
-        for log in logs {
+        // A log reorged out between the node's answer and ours is not a payment.
+        for log in logs
+            .into_iter()
+            .filter(|log| !log.removed)
+        {
             // Undecodable and unprocessable logs are skipped here exactly as
             // they are on the live path (issue #341). Failing the whole range
             // instead would stall the cursor permanently on a log that can
@@ -1810,6 +1844,36 @@ mod tests {
     };
 
     use super::*;
+
+    fn log_at(block_number: Option<u64>) -> Log {
+        Log {
+            block_number,
+            ..Log::default()
+        }
+    }
+
+    #[test]
+    fn logs_inside_the_requested_range_pass() {
+        let logs = [log_at(Some(10)), log_at(Some(15)), log_at(Some(20))];
+
+        assert!(log_outside_range(&logs, 10, 20).is_none());
+    }
+
+    /// A log above `to_block` would be credited without the confirmation
+    /// depth the range was cut at; one below it or without a block at all
+    /// means the endpoint answered a different question.
+    #[test]
+    fn a_log_outside_the_requested_range_is_caught() {
+        for stray in [Some(9), Some(21), None] {
+            let logs = [log_at(Some(15)), log_at(stray)];
+
+            assert_eq!(
+                log_outside_range(&logs, 10, 20).map(|log| log.block_number),
+                Some(stray),
+                "block {stray:?} must be rejected for range 10..=20"
+            );
+        }
+    }
 
     // Known-answer tests for the hashes that money depends on.
     //

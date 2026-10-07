@@ -75,7 +75,8 @@ pub enum BackfillError {
     #[error("Backfill is not supported for this chain")]
     Unsupported,
 
-    /// The node call failed. Transient — the next sweep retries the same range.
+    /// The node call failed, timed out, or answered outside the requested
+    /// range. Transient — the next sweep retries a narrower range.
     #[error("Backfill request failed")]
     RequestFailed,
 }

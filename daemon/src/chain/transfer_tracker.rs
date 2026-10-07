@@ -36,15 +36,91 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 /// remainder the next tick's problem.
 const MAX_SWEEP_RANGE: u64 = 1_000;
 
-/// Whether the catch-up sweep is running for this chain.
+/// Upper bound on one sweep RPC call. The request provider sets no timeout of
+/// its own, and the sweep runs inline in the tracker's `select!`: a node that
+/// accepts `eth_getLogs` and never answers would otherwise freeze the live
+/// subscription, endpoint rotation and shutdown together. A sweep makes two
+/// such calls in a row, so the tracker is held for at most twice this plus the
+/// recording; a tick that falls inside that window fires late rather than
+/// being lost (`MissedTickBehavior::Delay`).
+const SWEEP_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Consecutive failed sweeps after which the stall is reported as a warning.
+/// One failure is routine on a public endpoint; ten in a row (five minutes at
+/// `SWEEP_INTERVAL`) means the cursor is not moving and someone should look.
+const SWEEP_FAILURE_WARN_THRESHOLD: u32 = 10;
+
+/// Whether the catch-up sweep is running for this chain, and how hard it can
+/// currently ask.
 struct SweepState {
     enabled: bool,
+    /// Span of the next range request. Halved on every failed read and doubled
+    /// back on every successful one, so a provider that rejects a busy range
+    /// (result-count caps of 10,000 logs are common, and one busy token fills
+    /// that in under 1000 Polygon blocks) shrinks the request until it fits
+    /// instead of failing on the same range forever.
+    range: u64,
+    consecutive_failures: u32,
 }
 
 impl SweepState {
     fn new() -> Self {
         Self {
             enabled: true,
+            range: MAX_SWEEP_RANGE,
+            consecutive_failures: 0,
+        }
+    }
+
+    /// A range read succeeded. Widen only when the full current width was
+    /// asked for: a few-block read at the head proves nothing about whether a
+    /// wider one would fit, and widening on it would walk straight back into
+    /// the cap the narrowing just escaped.
+    fn record_success(
+        &mut self,
+        requested_span: u64,
+    ) {
+        if requested_span >= self.range {
+            self.range = self
+                .range
+                .saturating_mul(2)
+                .min(MAX_SWEEP_RANGE);
+        }
+        self.consecutive_failures = 0;
+    }
+
+    /// A sweep finished without a failed call, whether or not there was
+    /// anything to read, so the failure run is over.
+    fn record_healthy(&mut self) {
+        self.consecutive_failures = 0;
+    }
+
+    /// A range read failed: the next request asks for half as much.
+    fn narrow_range(&mut self) {
+        self.range = self.range.saturating_div(2).max(1);
+    }
+
+    /// Count a failed sweep. Individual failures stay at `debug`; a run of
+    /// them is a warning, because a stuck cursor reads exactly like "nothing
+    /// was missed" — the failure mode this sweep exists to remove.
+    fn record_failure(
+        &mut self,
+        chain: crate::types::ChainType,
+    ) {
+        self.consecutive_failures = self
+            .consecutive_failures
+            .saturating_add(1);
+
+        if self
+            .consecutive_failures
+            .is_multiple_of(SWEEP_FAILURE_WARN_THRESHOLD)
+        {
+            tracing::warn!(
+                %chain,
+                consecutive_failures = self.consecutive_failures,
+                next_range = self.range,
+                "Catch-up sweep keeps failing, the cursor is not moving and missed transfers are not being recovered"
+            );
         }
     }
 
@@ -65,6 +141,23 @@ impl SweepState {
         );
         self.enabled = false;
     }
+}
+
+/// Run one sweep RPC call under `SWEEP_REQUEST_TIMEOUT`. A call that runs out
+/// of time is a failed read like any other: the range is retried, narrower,
+/// on the next tick.
+async fn bounded<R>(
+    request: impl Future<Output = Result<R, BackfillError>>
+) -> Result<R, BackfillError> {
+    tokio::time::timeout(SWEEP_REQUEST_TIMEOUT, request)
+        .await
+        .unwrap_or_else(|_elapsed| {
+            tracing::debug!(
+                timeout_seconds = SWEEP_REQUEST_TIMEOUT.as_secs(),
+                "Catch-up sweep request timed out"
+            );
+            Err(BackfillError::RequestFailed)
+        })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -313,11 +406,7 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
     ) {
         let chain = T::CHAIN_TYPE;
 
-        let head = match self
-            .client
-            .latest_confirmed_block()
-            .await
-        {
+        let head = match bounded(self.client.latest_confirmed_block()).await {
             Ok(head) => head,
             Err(BackfillError::Unsupported) => {
                 state.disable(chain);
@@ -328,6 +417,9 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                     %chain,
                     "Could not read the chain head for the catch-up sweep, retrying next tick"
                 );
+                // The range is not at fault, so it keeps its width, but the
+                // stall still counts towards the warning.
+                state.record_failure(chain);
                 return;
             },
         };
@@ -353,6 +445,7 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
             // than from genesis: the sweep exists to close gaps in this
             // daemon's own tracking, and invoices older than it are covered by
             // the balance check.
+            state.record_healthy();
             self.store_cursor(chain, head).await;
             tracing::info!(
                 %chain,
@@ -367,20 +460,22 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
         // `head` below the cursor is not a rollback: public RPC pools answer
         // from whichever node picked up the request, and some of them lag.
         if head <= last_processed_block {
+            state.record_healthy();
             return;
         }
 
         let from_block = last_processed_block.saturating_add(1);
         let to_block = head.min(
             from_block
-                .saturating_add(MAX_SWEEP_RANGE)
+                .saturating_add(state.range)
                 .saturating_sub(1),
         );
 
-        let transfers = match self
-            .client
-            .fetch_transfers_in_range(assets, from_block, to_block)
-            .await
+        let transfers = match bounded(
+            self.client
+                .fetch_transfers_in_range(assets, from_block, to_block),
+        )
+        .await
         {
             Ok(transfers) => transfers,
             Err(BackfillError::Unsupported) => {
@@ -392,11 +487,19 @@ impl<T: ChainConfig, C: BlockChainClient<T> + 'static, D: DaoInterface + 'static
                     %chain,
                     from_block,
                     to_block,
-                    "Catch-up sweep could not read the block range, retrying next tick"
+                    "Catch-up sweep could not read the block range, retrying a narrower one next tick"
                 );
+                state.narrow_range();
+                state.record_failure(chain);
                 return;
             },
         };
+
+        state.record_success(
+            to_block
+                .saturating_sub(from_block)
+                .saturating_add(1),
+        );
 
         let fetched = transfers.len();
         let mut failed = 0_usize;
@@ -1584,5 +1687,169 @@ mod tests {
         assert!(logs_contain(
             "Chain client cannot re-read past blocks"
         ));
+    }
+
+    #[tokio::test]
+    async fn sweep_narrows_the_range_after_a_failed_read_and_widens_it_back() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_latest_confirmed_block()
+            .times(2)
+            .returning(|| Ok(5_000));
+        let mut sequence = mockall::Sequence::new();
+        // A provider with a result cap rejects the full range...
+        chain_client
+            .expect_fetch_transfers_in_range()
+            .withf(|_assets, from_block, to_block| *from_block == 1 && *to_block == MAX_SWEEP_RANGE)
+            .once()
+            .in_sequence(&mut sequence)
+            .returning(|_assets, _from, _to| Err(BackfillError::RequestFailed));
+        // ...and the next tick asks for half of it instead of the same range.
+        chain_client
+            .expect_fetch_transfers_in_range()
+            .withf(|_assets, from_block, to_block| {
+                *from_block == 1 && *to_block == MAX_SWEEP_RANGE / 2
+            })
+            .once()
+            .in_sequence(&mut sequence)
+            .returning(|_assets, _from, _to| Ok(vec![]));
+
+        let mut dao = MockDaoInterface::default();
+        dao.expect_get_chain_sync_cursor()
+            .times(2)
+            .returning(|_chain| Ok(Some(cursor_at(0))));
+        dao.expect_advance_chain_sync_cursor()
+            .withf(|_chain, block_number| *block_number == MAX_SWEEP_RANGE / 2)
+            .once()
+            .returning(|_chain, block_number| Ok(cursor_at(block_number)));
+
+        let tracker = sweep_tracker(
+            chain_client,
+            dao,
+            InvoiceRegistry::new(),
+        );
+        let mut state = SweepState::new();
+
+        tracker.sweep(&[], &mut state).await;
+        assert_eq!(state.range, MAX_SWEEP_RANGE / 2);
+        assert_eq!(state.consecutive_failures, 1);
+
+        tracker.sweep(&[], &mut state).await;
+        assert_eq!(state.range, MAX_SWEEP_RANGE);
+        assert_eq!(state.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn the_range_narrows_to_one_block_and_no_further() {
+        let mut state = SweepState::new();
+
+        for _ in 0..64 {
+            state.narrow_range();
+        }
+
+        assert_eq!(state.range, 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_head_read_counts_as_a_failure_but_keeps_the_range() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_latest_confirmed_block()
+            .once()
+            .returning(|| Err(BackfillError::RequestFailed));
+
+        let tracker = sweep_tracker(
+            chain_client,
+            MockDaoInterface::default(),
+            InvoiceRegistry::new(),
+        );
+        let mut state = SweepState::new();
+
+        tracker.sweep(&[], &mut state).await;
+
+        assert_eq!(state.range, MAX_SWEEP_RANGE);
+        assert_eq!(state.consecutive_failures, 1);
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn a_run_of_failed_sweeps_is_a_warning_not_a_debug_line() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_latest_confirmed_block()
+            .returning(|| Err(BackfillError::RequestFailed));
+
+        let tracker = sweep_tracker(
+            chain_client,
+            MockDaoInterface::default(),
+            InvoiceRegistry::new(),
+        );
+        let mut state = SweepState::new();
+
+        for _ in 1..SWEEP_FAILURE_WARN_THRESHOLD {
+            tracker.sweep(&[], &mut state).await;
+        }
+        assert!(!logs_contain(
+            "Catch-up sweep keeps failing"
+        ));
+
+        tracker.sweep(&[], &mut state).await;
+        assert!(logs_contain(
+            "Catch-up sweep keeps failing"
+        ));
+    }
+
+    #[test]
+    fn a_short_read_at_the_head_does_not_widen_the_range() {
+        let mut state = SweepState::new();
+        state.narrow_range();
+        state.narrow_range();
+
+        state.record_success(3);
+        assert_eq!(state.range, MAX_SWEEP_RANGE / 4);
+
+        state.record_success(MAX_SWEEP_RANGE / 4);
+        assert_eq!(state.range, MAX_SWEEP_RANGE / 2);
+    }
+
+    #[tokio::test]
+    async fn a_sweep_with_nothing_to_read_ends_the_failure_run() {
+        let mut chain_client = MockBlockChainClient::<PolygonChainConfig>::default();
+        chain_client
+            .expect_latest_confirmed_block()
+            .once()
+            .returning(|| Ok(100));
+
+        let mut dao = MockDaoInterface::default();
+        dao.expect_get_chain_sync_cursor()
+            .once()
+            .returning(|_chain| Ok(Some(cursor_at(100))));
+
+        let tracker = sweep_tracker(
+            chain_client,
+            dao,
+            InvoiceRegistry::new(),
+        );
+        let mut state = SweepState::new();
+        state.consecutive_failures = SWEEP_FAILURE_WARN_THRESHOLD - 1;
+
+        tracker.sweep(&[], &mut state).await;
+
+        assert_eq!(state.consecutive_failures, 0);
+    }
+
+    /// A node that accepts the request and never answers must not hold the
+    /// tracker's `select!` — and with it the live subscription and shutdown.
+    #[tokio::test(start_paused = true)]
+    async fn a_sweep_request_that_never_answers_times_out_as_a_failed_read() {
+        let result = bounded(std::future::pending::<
+            Result<u64, BackfillError>,
+        >())
+        .await;
+
+        assert_eq!(
+            result,
+            Err(BackfillError::RequestFailed)
+        );
     }
 }
