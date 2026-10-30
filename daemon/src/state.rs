@@ -76,6 +76,7 @@ use crate::types::{
     PublicTransaction,
     RefundChanges,
     ShopPlatform,
+    ShopPlatformConfig,
     Swap,
     SwapChainType,
     Transaction,
@@ -96,6 +97,56 @@ pub struct AppState<D: DaoInterface = DAO> {
     payments_config: PaymentsConfig,
     shop_config: ShopConfig,
     api_secret_key: SecretString,
+}
+
+/// Adds `platform`'s configuration file to its plugin release archive, keeping
+/// every entry the release already has.
+fn append_plugin_config(
+    plugin: Vec<u8>,
+    platform: ShopPlatform,
+    config: &ShopPlatformConfig,
+) -> Result<Vec<u8>, GithubClientError> {
+    let mut archive = ZipWriter::new_append(Cursor::new(plugin)).map_err(|error| {
+        tracing::error!(
+            ?error,
+            "Error while trying to open plugin archive"
+        );
+
+        GithubClientError::UnknownApiError
+    })?;
+
+    let options = SimpleFileOptions::default();
+
+    archive
+        .start_file(platform.config_file_name(), options)
+        .map_err(|error| {
+            tracing::error!(
+                ?error,
+                "Error while trying to append file to plugin archive"
+            );
+
+            GithubClientError::UnknownApiError
+        })?;
+
+    serde_json::to_writer(&mut archive, config).map_err(|error| {
+        tracing::error!(
+            ?error,
+            "Error while trying to write config to plugin archive"
+        );
+
+        GithubClientError::UnknownApiError
+    })?;
+
+    let finished = archive.finish().map_err(|error| {
+        tracing::error!(
+            ?error,
+            "Error while trying to finish archive after config write"
+        );
+
+        GithubClientError::UnknownApiError
+    })?;
+
+    Ok(finished.into_inner())
 }
 
 /// Expiry timestamp for a freshly created or updated invoice.
@@ -856,28 +907,6 @@ impl<D: DaoInterface> AppState<D> {
             )
             .await?;
 
-        let mut archive = ZipWriter::new_append(Cursor::new(plugin.to_vec())).map_err(|error| {
-            tracing::error!(
-                ?error,
-                "Error while trying to open plugin archive"
-            );
-
-            GithubClientError::UnknownApiError
-        })?;
-
-        let options = SimpleFileOptions::default();
-
-        archive
-            .start_file(platform.config_file_name(), options)
-            .map_err(|error| {
-                tracing::error!(
-                    ?error,
-                    "Error while trying to append file to plugin archive"
-                );
-
-                GithubClientError::UnknownApiError
-            })?;
-
         let url = self
             .shop_config
             .private_api_base_url
@@ -895,27 +924,7 @@ impl<D: DaoInterface> AppState<D> {
             admin_url,
         );
 
-        serde_json::to_writer(&mut archive, &config).map_err(|error| {
-            tracing::error!(
-                ?error,
-                "Error while trying to write config to plugin archive"
-            );
-
-            GithubClientError::UnknownApiError
-        })?;
-
-        let finished = archive.finish().map_err(|error| {
-            tracing::error!(
-                ?error,
-                "Error while trying to finish archive after config write"
-            );
-
-            GithubClientError::UnknownApiError
-        })?;
-
-        let result = finished.into_inner();
-
-        Ok(result)
+        append_plugin_config(plugin.to_vec(), platform, &config)
     }
 
     pub async fn create_front_end_swap(
@@ -1394,5 +1403,103 @@ mod tests {
             .invoices_count()
             .await;
         assert_eq!(registry_records_count, 1); // Only the first successful invoice is present
+    }
+
+    fn plugin_release(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+
+        let mut release = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, contents) in entries {
+            release
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            release.write_all(contents).unwrap();
+        }
+        release.finish().unwrap().into_inner()
+    }
+
+    fn plugin_config() -> ShopPlatformConfig {
+        ShopPlatformConfig {
+            daemon_url: "https://payments.example.com".to_string(),
+            secret_key: "secret".to_string(),
+            admin_url: "https://payments.example.com/admin".to_string(),
+        }
+    }
+
+    #[test]
+    fn append_plugin_config_keeps_the_release_and_adds_the_config() {
+        use std::io::Read;
+
+        let platform = ShopPlatform::WooCommerce;
+        let release = plugin_release(&[
+            (
+                "kalatori-woocommerce-plugin/plugin.php",
+                b"<?php // plugin",
+            ),
+            (
+                "kalatori-woocommerce-plugin/readme.txt",
+                b"readme",
+            ),
+        ]);
+
+        let patched = append_plugin_config(release, platform, &plugin_config()).unwrap();
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(patched)).unwrap();
+        assert_eq!(archive.len(), 3);
+
+        let mut php = String::new();
+        archive
+            .by_name("kalatori-woocommerce-plugin/plugin.php")
+            .unwrap()
+            .read_to_string(&mut php)
+            .unwrap();
+        assert_eq!(php, "<?php // plugin");
+
+        let mut config_file = archive
+            .by_name(platform.config_file_name())
+            .unwrap();
+        assert_eq!(
+            config_file.compression(),
+            zip::CompressionMethod::Deflated
+        );
+        let mut json = String::new();
+        config_file
+            .read_to_string(&mut json)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+            serde_json::json!({
+                "daemon_url": "https://payments.example.com",
+                "secret_key": "secret",
+                "admin_url": "https://payments.example.com/admin",
+            })
+        );
+    }
+
+    #[test]
+    fn append_plugin_config_rejects_a_release_that_is_not_a_zip() {
+        let result = append_plugin_config(
+            b"not a zip".to_vec(),
+            ShopPlatform::WooCommerce,
+            &plugin_config(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(GithubClientError::UnknownApiError)
+        ));
+    }
+
+    #[test]
+    fn append_plugin_config_rejects_a_release_that_already_has_a_config() {
+        let platform = ShopPlatform::WooCommerce;
+        let release = plugin_release(&[(platform.config_file_name(), b"{}")]);
+
+        let result = append_plugin_config(release, platform, &plugin_config());
+
+        assert!(matches!(
+            result,
+            Err(GithubClientError::UnknownApiError)
+        ));
     }
 }
