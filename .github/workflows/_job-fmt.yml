@@ -11,10 +11,12 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install nightly toolchain with rustfmt
+      # The date is pinned in the Makefile (RUSTFMT_TOOLCHAIN), so the job and
+      # `make cargo-fmt` on a laptop format with the same rustfmt.
+      - name: Install pinned nightly toolchain with rustfmt
         run: |
-          rustup toolchain install nightly --profile minimal --component rustfmt
-          rustup override set nightly
+          toolchain="$(make -s print-rustfmt-toolchain)"
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt
 
       - name: Check formatting
         run: make cargo-fmt

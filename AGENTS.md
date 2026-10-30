@@ -10,7 +10,7 @@ Self-hosted, non-custodial blockchain payment gateway daemon for Polkadot Asset 
 - **Checked arithmetic**: `clippy::arithmetic_side_effects` is enabled workspace-wide. `Decimal`'s operators panic on overflow — money/fee/gas paths must use `checked_*`/`saturating_*` and return a domain error, not `#[expect]`
 - **Profiles live in the root manifest**: Cargo silently ignores `[profile.*]` in non-root workspace members. Never put them in `daemon/Cargo.toml`; verify with `cargo build --release -vv`
 - **Never use `mod.rs`** — self-named modules only (enforced by `mod_module_files` clippy lint)
-- **Nightly rustfmt**: `cargo +nightly fmt --all`
+- **Pinned nightly rustfmt**: `make cargo-fmt-apply` (date in `RUSTFMT_TOOLCHAIN`, `Makefile`), not `cargo +nightly fmt` — a newer nightly reformats code nobody touched
 - **SQLite >= 3.47.0** required at runtime (see README.md for build-from-source instructions)
 - **Seed security**: Zeroized on drop, env vars removed after loading, never log private keys
 - **Legacy vs new errors**: `daemon/src/error.rs` is the legacy monolithic enum; new code should use domain-specific error types per [docs/error-handling.md](docs/error-handling.md)
