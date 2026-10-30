@@ -4,6 +4,63 @@ All notable changes to this project will be documented in this file.
 **Please note:**
 This is a public beta release of the Kalatori daemon. While it adheres to the [API specs](https://kalapaja.github.io/kalatori-api), it is still under active development. We encourage you to test it and provide feedback.
 
+## [0.9.6] - 2026-10-30
+
+A security update on top of 0.9.5, which was billed as the last 0.9 point
+release. Since 0.9.5, 21 RUSTSEC advisories have been published (2026-08-17
+to 2026-10-30) against crates in the daemon's dependency tree; 20 are fixed
+here by upgrading, and one is accepted with a written reason. Nothing else
+changes for operators: no migrations, no configuration or API changes, the same Dockerfile,
+and the same front-end (Kassette 0.1.0). Operators running the kokpitti admin
+UI still need 0.2.0 or later, as for 0.9.5. Upgrading from 0.9.5 is a drop-in
+image swap.
+
+### 🛡️ Security
+
+- TLS (rustls, used for every outbound connection — chain RPC, Pimlico,
+  Etherscan, webhooks): `Debug` output could expose session secrets
+  (RUSTSEC-2026-0346), application data could reach the outer server after an
+  ECH rejection (-0347), Brotli certificate decompression could allocate up to
+  1 GiB before authentication (-0348), an unauthenticated ServerHello could
+  downgrade later connections to classical key exchange (-0349), and TLS 1.3
+  handshake messages were accepted across encryption-level boundaries (-0285).
+  rustls is now 0.23.46 (#411, #416)
+- Certificate validation: rustls-webpki could accept distrusted intermediates
+  (-0382), and the bundled root stores still trusted distrusted emSign
+  intermediates (webpki-roots -0381, webpki-root-certs -0383) (#416)
+- HTTP/2: unbounded empty DATA frames in h2 (-0258) (#411)
+- Constant-time helpers under the HMAC crates used for webhook signing (ctutils
+  -0385), and two advisories in orion, which the auth-token library (pasetors)
+  depends on (-0426, -0428) (#416)
+- tokio 1.47.1 -> 1.54.1 for an I/O-safety soundness issue in
+  `AsyncFd` constructors that nothing in the daemon calls (-0386) (#416)
+- zip 8 -> 9 and zstd 0.13 -> 0.14 for extraction and decompression issues
+  (zip -0367/-0368/-0369, zstd -0391, zstd-safe -0398/-0403, zstd-sys -0410).
+  The daemon only appends a configuration file to the shop plugin archive and
+  never extracts one; the archive it produces is unchanged apart from one
+  timestamp extra field no longer repeated in the central directory (#416)
+
+### ⚠️ Known Limitations
+
+- RUSTSEC-2026-0387 (crypto-bigint 0.5: secret-dependent branches in
+  operations meant to be constant-time) is accepted rather than fixed. It is
+  reached through k256 0.13, which the Polygon signer uses for signing and key
+  derivation, and every alloy 2.x release still depends on it. Exploiting it
+  requires fine-grained timing or microarchitectural observation of those
+  operations. It will be fixed when alloy moves to k256 0.14 (#416)
+
+### 🧪 Testing
+
+- The plugin-archive append behind `/admin/api/get-plugin` is covered by tests
+  for the first time: existing entries survive, the configuration is added with
+  the expected content, and invalid or already-configured archives are rejected
+  (#416)
+
+### ⚙️ Miscellaneous Tasks
+
+- Formatting uses a pinned nightly rustfmt (`RUSTFMT_TOOLCHAIN` in the
+  `Makefile`), so a new nightly no longer fails CI on code nobody touched (#412)
+
 ## [0.9.5] - 2026-08-08
 
 The final 0.9 point release. Two unauthenticated paths that could misdirect
