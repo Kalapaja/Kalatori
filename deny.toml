@@ -16,6 +16,15 @@ ignore = [
     # (alloy-sol-macro used to pull it in as well, but 1.6.1 moved to the
     # maintained proc-macro-error3 fork.) Drop this once subxt migrates too.
     "RUSTSEC-2026-0173",
+    # crypto-bigint 0.5: secret-dependent branches in operations meant to be
+    # constant-time. Reached through k256 / elliptic-curve 0.13, whose scalar
+    # arithmetic runs on secret keys when the Polygon signer (alloy-signer)
+    # signs and when BIP32 derives keys. The fix is crypto-bigint 0.7.6, which
+    # needs k256 0.14, and no alloy 2.x release (through 2.5.0) leaves k256
+    # 0.13. Accepted risk: exploiting it needs fine-grained timing or
+    # microarchitectural observation of those operations. Drop this when
+    # alloy moves to k256 0.14.
+    "RUSTSEC-2026-0387",
 ]
 
 [licenses]

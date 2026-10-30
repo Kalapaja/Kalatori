@@ -156,7 +156,7 @@ sha2 = "0.11"
 # Let's add some random and fun to financial operations :) (it's a joke, we don't really do anything like that)
 rand = "0.10"
 governor = "0.10"
-zip = "8.5"
+zip = "9"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
