@@ -1,6 +1,6 @@
 [package]
 name = "kalatori"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2024"
 description = "A non-custodial crypto payment-gateway daemon."
 homepage = "https://github.com/Kalapaja/Kalatori"
@@ -156,7 +156,7 @@ sha2 = "0.11"
 # Let's add some random and fun to financial operations :) (it's a joke, we don't really do anything like that)
 rand = "0.10"
 governor = "0.10"
-zip = "8.5"
+zip = "9"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

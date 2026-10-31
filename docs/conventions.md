@@ -4,7 +4,7 @@
 
 - **Rust edition 2024**, MSRV 1.91 (`rust-version` in root `Cargo.toml`
   `[workspace.package]`; every member inherits it)
-- **rustfmt**: Nightly required (`cargo +nightly fmt --all`)
+- **rustfmt**: a pinned nightly, `RUSTFMT_TOOLCHAIN` in the `Makefile` — run `make cargo-fmt-apply` / `make cargo-fmt` rather than `cargo +nightly fmt`. The options in `rustfmt.toml` are unstable and their output drifts between nightlies (the 2026-10-06 one rewraps comments across 32 files), so a floating nightly fails the CI fmt job on code nobody touched. Install once with `rustup toolchain install "$(make -s print-rustfmt-toolchain)" --profile minimal -c rustfmt`.
 - Self-named modules only (e.g., `chain.rs` + `chain/` directory) — **never `mod.rs`** (enforced by `mod_module_files` clippy lint). Rationale: better Git history, avoids file renaming issues.
 
 ## Lints
