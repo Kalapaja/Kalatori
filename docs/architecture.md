@@ -70,7 +70,26 @@ Actor pattern: mpsc channel + oneshot responses. Holds seed phrase (`Zeroize` + 
 Client interface: `KeyringClient` (mockable via `mockall_double`).
 
 ### `daemon/src/chain/` — Chain Monitoring & Execution
-- **`transfer_tracker.rs`** (`TransfersTracker`): Subscribes to finalized blocks per chain, detects incoming transfers, and notifies `TransactionsRecorder`. Failed subscriptions and streams that end before delivering an event use a cancellation-aware exponential retry delay (1–60 seconds). Retry state resets only after a stream delivers an event; degradation is reported on entry and at most once per minute, with recovery reported separately.
+- **`transfer_tracker.rs`** (`TransfersTracker`): Subscribes to finalized blocks per chain, detects incoming transfers, and notifies `TransactionsRecorder`. Failed subscriptions and streams that end before delivering an event use a cancellation-aware exponential retry delay (1–60 seconds). Retry state resets only after a stream delivers an event; degradation is reported on entry and at most once per minute, with recovery reported separately. Alongside the subscription it runs a **catch-up sweep** — see below.
+
+#### Catch-up sweep
+
+The subscription alone loses events without ever reporting it ([#333](https://github.com/Kalapaja/Kalatori/issues/333)): alloy reconnects and resubscribes underneath the daemon without the stream ending, so `sub.next()` keeps yielding, the 10-second inactivity watchdog never fires, and `eth_subscribe("logs")` has no backfill. There is no moment the daemon could hook "the subscription just came back" onto.
+
+The sweep therefore polls instead of reacting. Every `SWEEP_INTERVAL` (30 s) it reads `chain_sync_cursors` (see [DATABASE.md](DATABASE.md)), asks the client for the confirmed head, re-reads the gap with a bounded range request, and feeds whatever it finds through the same recording path as the live subscription. This covers every cause of a miss — reconnects, endpoint rotation, a daemon restart — not just the alloy defect that exposed it.
+
+These properties carry the correctness:
+
+- **The cursor advances only after every transfer in a range is recorded.** A failed write holds it, so the next tick retries the range. Re-delivery costs nothing: incoming transfers are deduplicated by `(chain, tx_hash)`, which makes the sweep an at-least-once mechanism rather than an exactly-once one.
+- **Reading stops at `head - confirmations`**, the same depth the live path waits for, so the sweep cannot credit a transfer the confirmation buffer is still holding back.
+- **Requests go through the request provider**, a second websocket separate from the subscription one, so a subscription socket that is reconnecting does not hold up recovery of what it dropped. The same connection carries balance checks and payouts, which is one more reason the range below is kept small.
+- **A range is capped at `MAX_SWEEP_RANGE` (1000 blocks) and narrows on failure.** Providers cap `eth_getLogs` by span and by result count (10,000 logs is common), and a single busy token such as USDC on Polygon fills that in under 1000 blocks. A failed read halves the next request, down to one block; a successful read at the full current width doubles it back (a short read at the head proves nothing about a wider one). Without this a capped provider would fail the same range forever.
+- **Every sweep RPC call is bounded by `SWEEP_REQUEST_TIMEOUT` (20 s).** The request provider sets no timeout, and the sweep runs inline in the tracker's `select!`, so an endpoint that never answers would otherwise stall the live subscription, endpoint rotation and shutdown with it. A timeout is a failed read like any other.
+- **A stuck cursor is reported.** Single failures log at `debug`; every `SWEEP_FAILURE_WARN_THRESHOLD` (10) consecutive failed sweeps logs a `warn`, since a cursor that does not move looks exactly like a chain with nothing to recover.
+- **A response with a log outside the requested range is rejected whole**, and logs flagged `removed` are dropped, so an endpoint cannot get a transfer credited past the confirmation depth.
+
+Chain support is expressed in `BlockChainClient::latest_confirmed_block` and `fetch_transfers_in_range`, both returning `BackfillError`. Polygon implements them over `eth_blockNumber` and `eth_getLogs`. **Asset Hub returns `Unsupported`**: re-reading a range over subxt needs a block hash per block number, which means carrying an `RpcClient` beside the `OnlineClient`. The tracker disables the sweep on the first `Unsupported` and logs which chain is left uncovered — for that chain the only net remains the balance check at invoice expiry.
+
 - **`transactions_recorder.rs`** (`TransactionsRecorder`): Records detected transactions to DB, updates `InvoiceRegistry`. Its transaction-scoped recording path lets Asset Hub balance reconciliation read the persisted received total and write a synthetic adjustment in one SQLite transaction; payout/refund/webhook/status side effects use that same path and the registry changes only after commit. Checked amount failures abort the database transaction and are surfaced with invoice/transaction coordinates; durable live-event replay remains a separate persistence concern.
 - **`executor.rs`** (`TransfersExecutor`): Builds and submits payout transactions for both chains. Single executor instance handles Asset Hub + Polygon.
 - **`invoice_registry.rs`** (`InvoiceRegistry`): In-memory tracking of active invoices and their expected amounts. Thread-safe (internal `RwLock`). Invoice-data refreshes update only records that are still present, preserving the received amount; they never reinsert an invoice removed concurrently after reaching a terminal status.
@@ -170,6 +189,7 @@ Both are deterministic: same seed + same invoice params = same payment account.
 2. **Customer pays** to payment address on-chain
 3. **TransfersTracker** detects incoming transfer in finalized block → TransactionsRecorder saves transaction to DB, updates invoice status in InvoiceRegistry
    - Asset Hub balance recovery re-reads the transaction sum inside the same transaction that writes its coordinate-less adjustment. A transfer committed after the chain balance fetch is therefore included before the delta is calculated, while a genuine positive shortfall is still recorded.
+   - On Polygon a transfer the subscription dropped is recovered by the catch-up sweep within one sweep interval instead of waiting for invoice expiry. Asset Hub has no sweep, so there the expiry balance check remains the only net.
 4. **TransfersExecutor** picks up payouts from DB → builds transaction → signs via Keyring → submits to chain → records result
 5. **ExpirationDetector** periodically checks for expired invoices → updates status
 6. **WebhookSender** periodically sends unsent webhook events to configured URLs
